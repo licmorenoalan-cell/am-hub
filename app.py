@@ -958,8 +958,9 @@ def render_inicio_cliente(cliente, contenidos, materiales, campanias, reportes):
 
 
 
+
 def render_calendario(cliente, contenidos):
-    header("Calendario de contenidos", f"Planificación y estado de piezas | {cliente}")
+    header("Calendario de contenidos", f"Planificación mensual | {cliente}")
 
     df = filter_cliente(contenidos, cliente)
 
@@ -967,17 +968,51 @@ def render_calendario(cliente, contenidos):
         st.info("No hay contenidos cargados para este cliente.")
         return
 
-    c1, c2, c3 = st.columns(3)
+    df = df.copy()
 
-    with c1:
+    st.markdown(
+        """
+        <div style="
+            background: #FFFFFF;
+            border: 1px solid #E5E7EB;
+            border-radius: 22px;
+            padding: 22px 26px;
+            margin-bottom: 22px;
+            box-shadow: 0 12px 30px rgba(16, 24, 40, 0.05);
+        ">
+            <div style="font-size:1.25rem; font-weight:850; color:#172033; margin-bottom:6px;">
+                Vista de planificación
+            </div>
+            <div style="font-size:0.95rem; color:#667085; line-height:1.45;">
+                Acá podés consultar los contenidos planificados, sus objetivos y el estado de cada pieza.
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    total = len(df)
+    pendientes = df["estado"].astype(str).str.contains("Pendiente|revisión|aprobación|Correcciones|En diseño", case=False, na=False).sum()
+    aprobados = df["estado"].astype(str).str.contains("Aprobado|Programado|Publicado", case=False, na=False).sum()
+
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Contenidos planificados", total)
+    c2.metric("Pendientes / revisión", int(pendientes))
+    c3.metric("Aprobados / programados", int(aprobados))
+
+    st.markdown("<div style='height: 10px;'></div>", unsafe_allow_html=True)
+
+    f1, f2, f3 = st.columns(3)
+
+    with f1:
         estados = ["Todos"] + sorted(df["estado"].dropna().astype(str).unique().tolist())
         estado = st.selectbox("Estado", estados, key="cal_estado_cliente")
 
-    with c2:
+    with f2:
         formatos = ["Todos"] + sorted(df["formato"].dropna().astype(str).unique().tolist())
         formato = st.selectbox("Formato", formatos, key="cal_formato_cliente")
 
-    with c3:
+    with f3:
         canales = ["Todos"] + sorted(df["canal"].dropna().astype(str).unique().tolist())
         canal = st.selectbox("Canal", canales, key="cal_canal_cliente")
 
@@ -990,29 +1025,52 @@ def render_calendario(cliente, contenidos):
     if canal != "Todos":
         vista = vista[vista["canal"].astype(str) == canal]
 
-    st.markdown("### Contenidos planificados")
+    st.markdown("### Calendario")
 
     cols = ["fecha", "canal", "formato", "tema", "objetivo", "estado"]
     cols = [c for c in cols if c in vista.columns]
 
-    st.dataframe(vista[cols], use_container_width=True, hide_index=True)
+    st.dataframe(
+        vista[cols],
+        use_container_width=True,
+        hide_index=True,
+    )
 
-    st.markdown("### Detalle de contenidos")
+    st.markdown("### Detalle de piezas")
 
-    for _, row in vista.iterrows():
+    for _, row in vista.head(10).iterrows():
         with st.container(border=True):
-            st.write(f"**{row.get('formato', '')} — {row.get('tema', '')}**")
-            st.caption(f"{row.get('fecha', '')} | {row.get('canal', '')} | Objetivo: {row.get('objetivo', '')}")
-            st.markdown(status_badge(row.get("estado", "")), unsafe_allow_html=True)
+            top_left, top_right = st.columns([0.76, 0.24])
 
-            if str(row.get("copy", "")).strip():
-                st.markdown("**Copy**")
-                st.write(row.get("copy", ""))
+            with top_left:
+                st.markdown(
+                    f"""
+                    <div style="font-size:1.05rem; font-weight:800; color:#172033;">
+                        {row.get('formato', '')} — {row.get('tema', '')}
+                    </div>
+                    <div style="font-size:0.88rem; color:#667085; margin-top:3px;">
+                        {row.get('fecha', '')} | {row.get('canal', '')}
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
 
-            if str(row.get("link_canva", "")).strip():
-                st.link_button("Ver diseño en Canva", row.get("link_canva", ""))
+            with top_right:
+                st.markdown(status_badge(row.get("estado", "")), unsafe_allow_html=True)
 
+            objetivo = str(row.get("objetivo", "")).strip()
+            if objetivo:
+                st.markdown("**Objetivo**")
+                st.write(objetivo)
 
+            copy_text = str(row.get("copy", "")).strip()
+            if copy_text:
+                with st.expander("Ver copy"):
+                    st.write(copy_text)
+
+            link_canva = str(row.get("link_canva", "")).strip()
+            if link_canva:
+                st.link_button("Ver diseño en Canva", link_canva)
 
 def render_aprobaciones(cliente, contenidos):
     header("Aprobaciones", f"Revisión de contenidos y copies | {cliente}")
