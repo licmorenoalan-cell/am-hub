@@ -1181,8 +1181,9 @@ def render_campanias(cliente, campanias):
                 st.write(row.get("observacion", ""))
 
 
+
 def render_reportes(cliente, reportes):
-    header("Reportería", f"Resultados mensuales | {cliente}")
+    header("Reportería", f"Resultados mensuales y lectura estratégica | {cliente}")
 
     df = filter_cliente(reportes, cliente)
 
@@ -1190,8 +1191,34 @@ def render_reportes(cliente, reportes):
         st.info("No hay reportes cargados.")
         return
 
-    reporte = st.selectbox("Reporte", df["mes"].astype(str).tolist(), key="reporte_cliente_mes")
+    reporte = st.selectbox(
+        "Seleccionar reporte",
+        df["mes"].astype(str).tolist(),
+        key="reporte_cliente_mes",
+    )
+
     row = df[df["mes"].astype(str) == reporte].iloc[0]
+
+    st.markdown(
+        f"""
+        <div style="
+            background: #FFFFFF;
+            border: 1px solid #E5E7EB;
+            border-radius: 22px;
+            padding: 24px 28px;
+            margin-bottom: 22px;
+            box-shadow: 0 12px 30px rgba(16, 24, 40, 0.05);
+        ">
+            <div style="font-size:0.9rem; color:#667085; margin-bottom:6px;">
+                Reporte seleccionado
+            </div>
+            <div style="font-size:1.75rem; font-weight:850; color:#244777; letter-spacing:-0.035em;">
+                {row.get('mes', '')}
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
     c1, c2, c3, c4 = st.columns(4)
 
@@ -1200,17 +1227,46 @@ def render_reportes(cliente, reportes):
     c3.metric("Consultas", int(float(row.get("consultas", 0))))
     c4.metric("Inversión", money(row.get("inversion", 0)))
 
-    st.markdown("### Lectura estratégica")
+    st.markdown("<div style='height: 14px;'></div>", unsafe_allow_html=True)
 
-    with st.container(border=True):
-        st.markdown("**Qué funcionó**")
-        st.write(row.get("que_funciono", ""))
+    col_left, col_right = st.columns([0.52, 0.48], gap="large")
 
-        st.markdown("**Próximo foco**")
-        st.write(row.get("proximo_foco", ""))
+    with col_left:
+        st.markdown("### Lectura estratégica")
 
-        st.markdown(status_badge(row.get("estado", "")), unsafe_allow_html=True)
+        with st.container(border=True):
+            st.markdown("**Qué funcionó**")
+            st.write(row.get("que_funciono", ""))
 
+            st.markdown("**Próximo foco**")
+            st.write(row.get("proximo_foco", ""))
+
+            st.markdown("**Estado del reporte**")
+            st.markdown(status_badge(row.get("estado", "")), unsafe_allow_html=True)
+
+    with col_right:
+        st.markdown("### Resumen ejecutivo")
+
+        alcance = int(float(row.get("alcance", 0)))
+        interacciones = int(float(row.get("interacciones", 0)))
+        consultas = int(float(row.get("consultas", 0)))
+        inversion = float(row.get("inversion", 0) or 0)
+
+        costo_consulta = inversion / consultas if consultas else 0
+
+        with st.container(border=True):
+            st.write(f"Durante **{row.get('mes', '')}**, la gestión alcanzó aproximadamente **{alcance:,} personas**.".replace(",", "."))
+            st.write(f"Se registraron **{interacciones:,} interacciones** y **{consultas} consultas**.".replace(",", "."))
+            if inversion > 0:
+                st.write(f"La inversión publicitaria fue de **{money(inversion)}**, con un costo estimado por consulta de **{money(costo_consulta)}**.")
+            else:
+                st.write("No se registró inversión publicitaria para este período.")
+
+    st.markdown("### Historial de reportes")
+
+    cols = ["mes", "alcance", "interacciones", "consultas", "inversion", "estado"]
+    cols = [c for c in cols if c in df.columns]
+    st.dataframe(df[cols], use_container_width=True, hide_index=True)
 
 def render_admin_dashboard(clientes, contenidos, materiales, campanias, reportes, tareas):
     header("Dashboard AM", "Vista interna de gestión de clientes, contenidos y campañas.")
