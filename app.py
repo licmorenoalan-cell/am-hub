@@ -1013,8 +1013,9 @@ def render_calendario(cliente, contenidos):
                 st.link_button("Ver diseño en Canva", row.get("link_canva", ""))
 
 
+
 def render_aprobaciones(cliente, contenidos):
-    header("Aprobaciones", f"Revisión de piezas y copies | {cliente}")
+    header("Aprobaciones", f"Revisión de contenidos y copies | {cliente}")
 
     df = filter_cliente(contenidos, cliente)
 
@@ -1030,48 +1031,91 @@ def render_aprobaciones(cliente, contenidos):
         )
     ].copy()
 
+    aprobados = df[
+        df["estado"].astype(str).str.contains(
+            "Aprobado|Programado|Publicado",
+            case=False,
+            na=False,
+        )
+    ].copy()
+
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Pendientes", len(pendientes))
+    c2.metric("Aprobados / programados", len(aprobados))
+    c3.metric("Total contenidos", len(df))
+
+    st.markdown("<div style='height: 12px;'></div>", unsafe_allow_html=True)
+
     if pendientes.empty:
         st.success("No hay contenidos pendientes de revisión.")
         return
 
+    st.markdown("### Contenidos para revisar")
+
     contenidos_all = contenidos.copy()
 
     for _, row in pendientes.iterrows():
+        estado_actual = str(row.get("estado", ""))
+
         with st.container(border=True):
-            st.markdown(f"### {row.get('formato', '')} — {row.get('tema', '')}")
-            st.caption(f"{row.get('fecha', '')} | {row.get('canal', '')} | Objetivo: {row.get('objetivo', '')}")
-            st.markdown(status_badge(row.get("estado", "")), unsafe_allow_html=True)
+            top_left, top_right = st.columns([0.76, 0.24])
 
-            st.markdown("**Copy propuesto**")
-            st.write(row.get("copy", ""))
+            with top_left:
+                st.markdown(
+                    f"""
+                    <div style="font-size:1.1rem; font-weight:800; color:#172033; margin-bottom:4px;">
+                        {row.get('formato', '')} — {row.get('tema', '')}
+                    </div>
+                    <div style="font-size:0.88rem; color:#667085; margin-bottom:10px;">
+                        {row.get('fecha', '')} | {row.get('canal', '')} | Objetivo: {row.get('objetivo', '')}
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
 
-            if str(row.get("link_canva", "")).strip():
-                st.link_button("Ver diseño en Canva", row.get("link_canva", ""))
+            with top_right:
+                st.markdown(status_badge(estado_actual), unsafe_allow_html=True)
+
+            copy_text = str(row.get("copy", "")).strip()
+            if copy_text:
+                st.markdown("**Copy propuesto**")
+                st.write(copy_text)
+
+            link_canva = str(row.get("link_canva", "")).strip()
+            if link_canva:
+                st.link_button("Abrir diseño en Canva", link_canva)
 
             comentario = st.text_area(
                 "Comentario / correcciones",
                 value=str(row.get("comentario_cliente", "")),
                 key=f"comentario_cliente_{row.get('id', '')}",
+                placeholder="Escribí cambios o comentarios para el equipo AM...",
             )
 
-            c1, c2 = st.columns(2)
+            action_left, action_right, _ = st.columns([0.28, 0.32, 0.40])
 
-            with c1:
-                if st.button("Aprobar contenido", key=f"aprobar_{row.get('id', '')}"):
+            with action_left:
+                if st.button("Aprobar", key=f"aprobar_{row.get('id', '')}"):
                     contenidos_all.loc[contenidos_all["id"] == row.get("id"), "estado"] = "Aprobado"
                     contenidos_all.loc[contenidos_all["id"] == row.get("id"), "comentario_cliente"] = comentario
                     save_csv(contenidos_all, CONTENIDOS_PATH)
                     st.success("Contenido aprobado.")
                     st.rerun()
 
-            with c2:
-                if st.button("Solicitar correcciones", key=f"corregir_{row.get('id', '')}"):
+            with action_right:
+                if st.button("Pedir cambios", key=f"corregir_{row.get('id', '')}"):
                     contenidos_all.loc[contenidos_all["id"] == row.get("id"), "estado"] = "Correcciones"
                     contenidos_all.loc[contenidos_all["id"] == row.get("id"), "comentario_cliente"] = comentario
                     save_csv(contenidos_all, CONTENIDOS_PATH)
                     st.warning("Correcciones registradas.")
                     st.rerun()
 
+    st.markdown("### Historial reciente")
+
+    cols = ["fecha", "canal", "formato", "tema", "estado"]
+    cols = [c for c in cols if c in df.columns]
+
+    st.dataframe(df[cols].tail(8), use_container_width=True, hide_index=True)
 
 def render_materiales(cliente, materiales):
     header("Materiales pendientes", f"Solicitudes de material | {cliente}")
