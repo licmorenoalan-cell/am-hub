@@ -786,6 +786,388 @@ def header(title, subtitle=""):
     )
 
 
+
+
+def kpi_card(label, value, foot=""):
+    st.markdown(
+        f"""
+        <div class="metric-card">
+            <div class="metric-label">{label}</div>
+            <div class="metric-value">{value}</div>
+            <div class="metric-foot">{foot}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def render_inicio_cliente(cliente, contenidos, materiales, campanias, reportes):
+    header("AM Hub", f"Portal de gestión digital | {cliente}")
+
+    contenidos_c = filter_cliente(contenidos, cliente)
+    materiales_c = filter_cliente(materiales, cliente)
+    campanias_c = filter_cliente(campanias, cliente)
+    reportes_c = filter_cliente(reportes, cliente)
+
+    pendientes_aprobacion = contenidos_c[
+        contenidos_c["estado"].astype(str).str.contains(
+            "Pendiente|revisión|aprobación|Correcciones",
+            case=False,
+            na=False,
+        )
+    ].copy() if not contenidos_c.empty else contenidos_c.copy()
+
+    materiales_pend = materiales_c[
+        ~materiales_c["estado"].astype(str).str.contains(
+            "Recibido|Publicado|Usado",
+            case=False,
+            na=False,
+        )
+    ].copy() if not materiales_c.empty else materiales_c.copy()
+
+    camp_act = campanias_c[
+        campanias_c["estado"].astype(str).str.contains(
+            "Activa",
+            case=False,
+            na=False,
+        )
+    ].copy() if not campanias_c.empty else campanias_c.copy()
+
+    rep_disp = reportes_c[
+        reportes_c["estado"].astype(str).str.contains(
+            "Disponible",
+            case=False,
+            na=False,
+        )
+    ].copy() if not reportes_c.empty else reportes_c.copy()
+
+    st.markdown(
+        f"""
+        <div style="
+            background: linear-gradient(135deg, #244777 0%, #0788A6 100%);
+            border-radius: 24px;
+            padding: 28px 32px;
+            margin-bottom: 28px;
+            color: white;
+            box-shadow: 0 18px 45px rgba(36, 71, 119, 0.18);
+        ">
+            <div style="font-size: 0.95rem; opacity: 0.82; margin-bottom: 6px;">
+                Resumen de gestión
+            </div>
+            <div style="font-size: 2rem; font-weight: 850; letter-spacing: -0.035em; margin-bottom: 8px;">
+                {cliente}
+            </div>        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    c1, c2, c3, c4 = st.columns(4)
+
+    with c1:
+        kpi_card("Contenidos del mes", len(contenidos_c), "Calendario vigente")
+    with c2:
+        kpi_card("Pendientes de aprobación", len(pendientes_aprobacion), "Requieren revisión")
+    with c3:
+        kpi_card("Campañas activas", len(camp_act), "Pauta en curso")
+    with c4:
+        kpi_card("Reportes disponibles", len(rep_disp), "Últimos informes")
+
+    st.markdown("<div style='height: 16px;'></div>", unsafe_allow_html=True)
+
+    col_left, col_right = st.columns([0.58, 0.42], gap="large")
+
+    with col_left:
+        st.markdown("### Calendario próximo")
+
+        if contenidos_c.empty:
+            st.info("Todavía no hay contenidos cargados.")
+        else:
+            cols = ["fecha", "canal", "formato", "tema", "estado"]
+            cols = [c for c in cols if c in contenidos_c.columns]
+            st.dataframe(contenidos_c[cols].head(8), use_container_width=True, hide_index=True)
+
+        st.markdown("### Pendientes de aprobación")
+
+        if pendientes_aprobacion.empty:
+            st.success("No hay contenidos pendientes de aprobación.")
+        else:
+            for _, row in pendientes_aprobacion.head(4).iterrows():
+                with st.container(border=True):
+                    st.write(f"**{row.get('formato', '')} — {row.get('tema', '')}**")
+                    st.caption(
+                        f"{row.get('fecha', '')} | {row.get('canal', '')} | Objetivo: {row.get('objetivo', '')}"
+                    )
+                    st.markdown(status_badge(row.get("estado", "")), unsafe_allow_html=True)
+
+                    if str(row.get("copy", "")).strip():
+                        st.markdown("**Copy propuesto**")
+                        st.write(row.get("copy", ""))
+
+                    if str(row.get("link_canva", "")).strip():
+                        st.link_button("Ver diseño en Canva", row.get("link_canva", ""))
+
+    with col_right:
+        st.markdown("### Materiales pendientes")
+
+        if materiales_pend.empty:
+            st.success("No hay materiales pendientes.")
+        else:
+            for _, row in materiales_pend.head(5).iterrows():
+                with st.container(border=True):
+                    st.write(f"**{row.get('solicitud', '')}**")
+                    st.caption(
+                        f"Responsable: {row.get('responsable_cliente', '')} | Límite: {row.get('fecha_limite', '')}"
+                    )
+                    st.markdown(status_badge(row.get("estado", "")), unsafe_allow_html=True)
+
+        st.markdown("### Campañas activas")
+
+        if campanias_c.empty:
+            st.info("No hay campañas cargadas.")
+        else:
+            for _, row in campanias_c.head(4).iterrows():
+                with st.container(border=True):
+                    st.write(f"**{row.get('campania', '')}**")
+                    st.caption(f"{row.get('plataforma', '')} | Objetivo: {row.get('objetivo', '')}")
+
+                    ca, cb = st.columns(2)
+                    ca.metric("Presupuesto", money(row.get("presupuesto", 0)))
+                    cb.metric("Consultas", row.get("leads", 0))
+
+                    st.markdown(status_badge(row.get("estado", "")), unsafe_allow_html=True)
+
+        st.markdown("### Último reporte")
+
+        if rep_disp.empty:
+            st.info("Todavía no hay reportes disponibles.")
+        else:
+            row = rep_disp.iloc[-1]
+            with st.container(border=True):
+                st.write(f"**{row.get('mes', '')}**")
+
+                ca, cb = st.columns(2)
+                ca.metric("Alcance", f"{int(float(row.get('alcance', 0))):,}".replace(",", "."))
+                cb.metric("Consultas", int(float(row.get("consultas", 0))))
+
+                st.markdown("**Qué funcionó**")
+                st.write(row.get("que_funciono", ""))
+
+                st.markdown("**Próximo foco**")
+                st.write(row.get("proximo_foco", ""))
+
+
+
+
+def render_calendario(cliente, contenidos):
+    header("Calendario de contenidos", f"Planificación y estado de piezas | {cliente}")
+
+    df = filter_cliente(contenidos, cliente)
+
+    if df.empty:
+        st.info("No hay contenidos cargados para este cliente.")
+        return
+
+    c1, c2, c3 = st.columns(3)
+
+    with c1:
+        estados = ["Todos"] + sorted(df["estado"].dropna().astype(str).unique().tolist())
+        estado = st.selectbox("Estado", estados, key="cal_estado_cliente")
+
+    with c2:
+        formatos = ["Todos"] + sorted(df["formato"].dropna().astype(str).unique().tolist())
+        formato = st.selectbox("Formato", formatos, key="cal_formato_cliente")
+
+    with c3:
+        canales = ["Todos"] + sorted(df["canal"].dropna().astype(str).unique().tolist())
+        canal = st.selectbox("Canal", canales, key="cal_canal_cliente")
+
+    vista = df.copy()
+
+    if estado != "Todos":
+        vista = vista[vista["estado"].astype(str) == estado]
+    if formato != "Todos":
+        vista = vista[vista["formato"].astype(str) == formato]
+    if canal != "Todos":
+        vista = vista[vista["canal"].astype(str) == canal]
+
+    st.markdown("### Contenidos planificados")
+
+    cols = ["fecha", "canal", "formato", "tema", "objetivo", "estado"]
+    cols = [c for c in cols if c in vista.columns]
+
+    st.dataframe(vista[cols], use_container_width=True, hide_index=True)
+
+    st.markdown("### Detalle de contenidos")
+
+    for _, row in vista.iterrows():
+        with st.container(border=True):
+            st.write(f"**{row.get('formato', '')} — {row.get('tema', '')}**")
+            st.caption(f"{row.get('fecha', '')} | {row.get('canal', '')} | Objetivo: {row.get('objetivo', '')}")
+            st.markdown(status_badge(row.get("estado", "")), unsafe_allow_html=True)
+
+            if str(row.get("copy", "")).strip():
+                st.markdown("**Copy**")
+                st.write(row.get("copy", ""))
+
+            if str(row.get("link_canva", "")).strip():
+                st.link_button("Ver diseño en Canva", row.get("link_canva", ""))
+
+
+def render_aprobaciones(cliente, contenidos):
+    header("Aprobaciones", f"Revisión de piezas y copies | {cliente}")
+
+    df = filter_cliente(contenidos, cliente)
+
+    if df.empty:
+        st.info("No hay contenidos cargados para aprobar.")
+        return
+
+    pendientes = df[
+        df["estado"].astype(str).str.contains(
+            "Pendiente|revisión|aprobación|Correcciones|En diseño",
+            case=False,
+            na=False,
+        )
+    ].copy()
+
+    if pendientes.empty:
+        st.success("No hay contenidos pendientes de revisión.")
+        return
+
+    contenidos_all = contenidos.copy()
+
+    for _, row in pendientes.iterrows():
+        with st.container(border=True):
+            st.markdown(f"### {row.get('formato', '')} — {row.get('tema', '')}")
+            st.caption(f"{row.get('fecha', '')} | {row.get('canal', '')} | Objetivo: {row.get('objetivo', '')}")
+            st.markdown(status_badge(row.get("estado", "")), unsafe_allow_html=True)
+
+            st.markdown("**Copy propuesto**")
+            st.write(row.get("copy", ""))
+
+            if str(row.get("link_canva", "")).strip():
+                st.link_button("Ver diseño en Canva", row.get("link_canva", ""))
+
+            comentario = st.text_area(
+                "Comentario / correcciones",
+                value=str(row.get("comentario_cliente", "")),
+                key=f"comentario_cliente_{row.get('id', '')}",
+            )
+
+            c1, c2 = st.columns(2)
+
+            with c1:
+                if st.button("Aprobar contenido", key=f"aprobar_{row.get('id', '')}"):
+                    contenidos_all.loc[contenidos_all["id"] == row.get("id"), "estado"] = "Aprobado"
+                    contenidos_all.loc[contenidos_all["id"] == row.get("id"), "comentario_cliente"] = comentario
+                    save_csv(contenidos_all, CONTENIDOS_PATH)
+                    st.success("Contenido aprobado.")
+                    st.rerun()
+
+            with c2:
+                if st.button("Solicitar correcciones", key=f"corregir_{row.get('id', '')}"):
+                    contenidos_all.loc[contenidos_all["id"] == row.get("id"), "estado"] = "Correcciones"
+                    contenidos_all.loc[contenidos_all["id"] == row.get("id"), "comentario_cliente"] = comentario
+                    save_csv(contenidos_all, CONTENIDOS_PATH)
+                    st.warning("Correcciones registradas.")
+                    st.rerun()
+
+
+def render_materiales(cliente, materiales):
+    header("Materiales pendientes", f"Solicitudes de material | {cliente}")
+
+    df = filter_cliente(materiales, cliente)
+
+    if df.empty:
+        st.info("No hay materiales solicitados.")
+        return
+
+    pendientes = df[
+        ~df["estado"].astype(str).str.contains("Recibido|Publicado|Usado", case=False, na=False)
+    ].copy()
+
+    c1, c2 = st.columns(2)
+    c1.metric("Solicitudes totales", len(df))
+    c2.metric("Pendientes", len(pendientes))
+
+    st.markdown("### Solicitudes")
+
+    for _, row in df.iterrows():
+        with st.container(border=True):
+            st.write(f"**{row.get('solicitud', '')}**")
+            st.caption(f"Responsable: {row.get('responsable_cliente', '')} | Fecha límite: {row.get('fecha_limite', '')}")
+            st.markdown(status_badge(row.get("estado", "")), unsafe_allow_html=True)
+
+            if str(row.get("observacion", "")).strip():
+                st.write(row.get("observacion", ""))
+
+
+def render_campanias(cliente, campanias):
+    header("Campañas publicitarias", f"Seguimiento de pauta | {cliente}")
+
+    df = filter_cliente(campanias, cliente)
+
+    if df.empty:
+        st.info("No hay campañas cargadas.")
+        return
+
+    presupuesto = pd.to_numeric(df["presupuesto"], errors="coerce").fillna(0).sum()
+    leads = pd.to_numeric(df["leads"], errors="coerce").fillna(0).sum()
+    activas = df["estado"].astype(str).str.contains("Activa", case=False, na=False).sum()
+
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Presupuesto", money(presupuesto))
+    c2.metric("Consultas / leads", int(leads))
+    c3.metric("Campañas activas", int(activas))
+
+    st.markdown("### Campañas")
+
+    for _, row in df.iterrows():
+        with st.container(border=True):
+            st.write(f"**{row.get('campania', '')}**")
+            st.caption(f"{row.get('plataforma', '')} | Objetivo: {row.get('objetivo', '')}")
+            st.markdown(status_badge(row.get("estado", "")), unsafe_allow_html=True)
+
+            ca, cb, cc = st.columns(3)
+            ca.metric("Presupuesto", money(row.get("presupuesto", 0)))
+            cb.metric("Consultas", row.get("leads", 0))
+            cc.metric("Costo por lead", money(row.get("costo_por_lead", 0)))
+
+            if str(row.get("observacion", "")).strip():
+                st.write(row.get("observacion", ""))
+
+
+def render_reportes(cliente, reportes):
+    header("Reportería", f"Resultados mensuales | {cliente}")
+
+    df = filter_cliente(reportes, cliente)
+
+    if df.empty:
+        st.info("No hay reportes cargados.")
+        return
+
+    reporte = st.selectbox("Reporte", df["mes"].astype(str).tolist(), key="reporte_cliente_mes")
+    row = df[df["mes"].astype(str) == reporte].iloc[0]
+
+    c1, c2, c3, c4 = st.columns(4)
+
+    c1.metric("Alcance", f"{int(float(row.get('alcance', 0))):,}".replace(",", "."))
+    c2.metric("Interacciones", f"{int(float(row.get('interacciones', 0))):,}".replace(",", "."))
+    c3.metric("Consultas", int(float(row.get("consultas", 0))))
+    c4.metric("Inversión", money(row.get("inversion", 0)))
+
+    st.markdown("### Lectura estratégica")
+
+    with st.container(border=True):
+        st.markdown("**Qué funcionó**")
+        st.write(row.get("que_funciono", ""))
+
+        st.markdown("**Próximo foco**")
+        st.write(row.get("proximo_foco", ""))
+
+        st.markdown(status_badge(row.get("estado", "")), unsafe_allow_html=True)
+
+
 def render_admin_dashboard(clientes, contenidos, materiales, campanias, reportes, tareas):
     header("Dashboard AM", "Vista interna de gestión de clientes, contenidos y campañas.")
 
