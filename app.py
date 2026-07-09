@@ -680,17 +680,33 @@ def preparar_logo_sidebar(ruta_logo):
         return None
 
 def sidebar():
-    logo_path = logo_sidebar_path()
+    logo_path = ASSETS_DIR / "isologo_sidebar_limpio.png"
+    if not logo_path.exists():
+        logo_path = ASSETS_DIR / "isologo B.png"
 
-    if logo_path is not None:
-        st.sidebar.image(str(logo_path), width=190)
+    st.sidebar.markdown("<div style='height: 4px;'></div>", unsafe_allow_html=True)
+
+    if logo_path.exists():
+        st.sidebar.image(str(logo_path), width=112)
     else:
         st.sidebar.markdown("## AM Consultora")
 
-    st.sidebar.markdown("### AM Hub")
-    st.sidebar.caption("Portal de gestión digital")
+    st.sidebar.markdown(
+        """
+        <div style="margin-top: 10px; margin-bottom: 24px;">
+            <div style="font-size: 1.35rem; font-weight: 800; color: white;">
+                AM Hub
+            </div>
+            <div style="font-size: 0.9rem; color: rgba(255,255,255,0.78); margin-top: 2px;">
+                Portal de gestión digital
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
     role = st.session_state.get("role")
+
     if role == "cliente":
         menu = st.sidebar.radio(
             "Menú",
@@ -702,6 +718,7 @@ def sidebar():
                 "Campañas",
                 "Reportes",
             ],
+            key="menu_cliente",
         )
     else:
         menu = st.sidebar.radio(
@@ -716,233 +733,58 @@ def sidebar():
                 "Tareas",
                 "Vista cliente",
             ],
+            key="menu_admin",
         )
 
-    st.sidebar.divider()
-    st.sidebar.write(f"**Usuario:** {st.session_state.get('name')}")
-    st.sidebar.write(f"**Rol:** {role}")
-    logout_button()
+    st.sidebar.markdown("<div style='height: 34px;'></div>", unsafe_allow_html=True)
+    st.sidebar.markdown("---")
 
-    return menu
-
-def kpi_card(label, value, foot=""):
-    st.markdown(
+    st.sidebar.markdown(
         f"""
-        <div class="metric-card">
-            <div class="metric-label">{label}</div>
-            <div class="metric-value">{value}</div>
-            <div class="metric-foot">{foot}</div>
+        <div style="font-size: 0.9rem; line-height: 1.6;">
+            <strong>Usuario:</strong> {st.session_state.get('name')}<br>
+            <strong>Rol:</strong> {role}
         </div>
         """,
         unsafe_allow_html=True,
     )
 
+    st.sidebar.markdown("<div style='height: 10px;'></div>", unsafe_allow_html=True)
+    logout_button()
 
-def header(title, subtitle=""):
-    st.markdown(f'<div class="main-title">{title}</div>', unsafe_allow_html=True)
-    if subtitle:
-        st.markdown(f'<div class="subtitle">{subtitle}</div>', unsafe_allow_html=True)
-
-
-def render_inicio_cliente(cliente, contenidos, materiales, campanias, reportes):
-    header("AM Hub", f"Portal de gestión digital | {cliente}")
-
-    contenidos_c = filter_cliente(contenidos, cliente)
-    materiales_c = filter_cliente(materiales, cliente)
-    campanias_c = filter_cliente(campanias, cliente)
-    reportes_c = filter_cliente(reportes, cliente)
-
-    pendientes_aprobacion = contenidos_c[contenidos_c["estado"].astype(str).str.contains("Pendiente|revisión|aprobación", case=False, na=False)]
-    materiales_pend = materiales_c[~materiales_c["estado"].astype(str).str.contains("Recibido|Publicado|Usado", case=False, na=False)]
-    camp_act = campanias_c[campanias_c["estado"].astype(str).str.contains("Activa", case=False, na=False)]
-    rep_disp = reportes_c[reportes_c["estado"].astype(str).str.contains("Disponible", case=False, na=False)]
-
-    c1, c2, c3, c4 = st.columns(4)
-    with c1:
-        kpi_card("Contenidos del mes", len(contenidos_c), "Calendario vigente")
-    with c2:
-        kpi_card("Pendientes de aprobación", len(pendientes_aprobacion), "Requieren revisión")
-    with c3:
-        kpi_card("Campañas activas", len(camp_act), "Pauta en curso")
-    with c4:
-        kpi_card("Reportes disponibles", len(rep_disp), "Últimos informes")
-
-    st.markdown("### Calendario de contenidos")
-    if contenidos_c.empty:
-        st.info("Todavía no hay contenidos cargados.")
-    else:
-        vista = contenidos_c[["fecha", "canal", "formato", "tema", "estado"]].copy()
-        st.dataframe(vista, use_container_width=True, hide_index=True)
-
-    col1, col2 = st.columns(2)
-
-    with col1:
-        st.markdown("### Pendientes de aprobación")
-        if pendientes_aprobacion.empty:
-            st.success("No hay contenidos pendientes de aprobación.")
-        else:
-            for _, row in pendientes_aprobacion.head(5).iterrows():
-                with st.container(border=True):
-                    st.write(f"**{row['formato']} — {row['tema']}**")
-                    st.caption(f"Fecha sugerida: {row['fecha']} | Canal: {row['canal']}")
-                    st.markdown(status_badge(row["estado"]), unsafe_allow_html=True)
-
-    with col2:
-        st.markdown("### Materiales pendientes")
-        if materiales_pend.empty:
-            st.success("No hay materiales pendientes.")
-        else:
-            for _, row in materiales_pend.head(5).iterrows():
-                with st.container(border=True):
-                    st.write(f"**{row['solicitud']}**")
-                    st.caption(f"Responsable: {row['responsable_cliente']} | Límite: {row['fecha_limite']}")
-                    st.markdown(status_badge(row["estado"]), unsafe_allow_html=True)
-
-
-def render_calendario(cliente, contenidos):
-    header("Calendario de contenidos", "Revisión de piezas, copies y fechas sugeridas.")
-
-    df = filter_cliente(contenidos, cliente)
-
-    if df.empty:
-        st.info("No hay contenidos cargados.")
-        return
-
-    filtros = st.columns(3)
-    with filtros[0]:
-        estado = st.selectbox("Estado", ["Todos"] + sorted(df["estado"].dropna().astype(str).unique().tolist()))
-    with filtros[1]:
-        formato = st.selectbox("Formato", ["Todos"] + sorted(df["formato"].dropna().astype(str).unique().tolist()))
-    with filtros[2]:
-        canal = st.selectbox("Canal", ["Todos"] + sorted(df["canal"].dropna().astype(str).unique().tolist()))
-
-    vista = df.copy()
-
-    if estado != "Todos":
-        vista = vista[vista["estado"].astype(str) == estado]
-    if formato != "Todos":
-        vista = vista[vista["formato"].astype(str) == formato]
-    if canal != "Todos":
-        vista = vista[vista["canal"].astype(str) == canal]
-
-    st.dataframe(
-        vista[["id", "fecha", "canal", "formato", "tema", "objetivo", "estado"]],
-        use_container_width=True,
-        hide_index=True,
-    )
-
-
-def render_aprobaciones(cliente, contenidos):
-    header("Aprobaciones", "Revisá contenidos, copies y links de diseño.")
-
-    df = filter_cliente(contenidos, cliente)
-    pendientes = df[df["estado"].astype(str).str.contains("Pendiente|revisión|aprobación", case=False, na=False)].copy()
-
-    if pendientes.empty:
-        st.success("No hay contenidos pendientes de aprobación.")
-        return
-
-    contenidos_all = contenidos.copy()
-
-    for _, row in pendientes.iterrows():
-        with st.container(border=True):
-            st.markdown(f"### {row['formato']} — {row['tema']}")
-            st.caption(f"{row['fecha']} | {row['canal']} | Objetivo: {row['objetivo']}")
-            st.markdown(status_badge(row["estado"]), unsafe_allow_html=True)
-
-            st.markdown("**Copy propuesto**")
-            st.write(row["copy"])
-
-            if str(row["link_canva"]).strip():
-                st.link_button("Ver diseño en Canva", row["link_canva"])
-
-            comentario = st.text_area(
-                "Comentario / correcciones",
-                value=str(row.get("comentario_cliente", "")),
-                key=f"comentario_{row['id']}",
-            )
-
-            c1, c2 = st.columns(2)
-
-            with c1:
-                if st.button("Aprobar contenido", key=f"aprobar_{row['id']}"):
-                    contenidos_all.loc[contenidos_all["id"] == row["id"], "estado"] = "Aprobado"
-                    contenidos_all.loc[contenidos_all["id"] == row["id"], "comentario_cliente"] = comentario
-                    save_csv(contenidos_all, CONTENIDOS_PATH)
-                    st.success("Contenido aprobado.")
-                    st.rerun()
-
-            with c2:
-                if st.button("Solicitar correcciones", key=f"corregir_{row['id']}"):
-                    contenidos_all.loc[contenidos_all["id"] == row["id"], "estado"] = "Correcciones"
-                    contenidos_all.loc[contenidos_all["id"] == row["id"], "comentario_cliente"] = comentario
-                    save_csv(contenidos_all, CONTENIDOS_PATH)
-                    st.warning("Correcciones registradas.")
-                    st.rerun()
-
-
-def render_materiales(cliente, materiales):
-    header("Materiales pendientes", "Solicitudes de fotos, videos, grabaciones o información.")
-
-    df = filter_cliente(materiales, cliente)
-
-    if df.empty:
-        st.info("No hay materiales solicitados.")
-        return
-
-    st.dataframe(df, use_container_width=True, hide_index=True)
-
-
-def render_campanias(cliente, campanias):
-    header("Campañas publicitarias", "Seguimiento simple de pauta y resultados.")
-
-    df = filter_cliente(campanias, cliente)
-
-    if df.empty:
-        st.info("No hay campañas cargadas.")
-        return
-
-    c1, c2, c3 = st.columns(3)
-
-    presupuesto = pd.to_numeric(df["presupuesto"], errors="coerce").fillna(0).sum()
-    leads = pd.to_numeric(df["leads"], errors="coerce").fillna(0).sum()
-    activas = df["estado"].astype(str).str.contains("Activa", case=False, na=False).sum()
-
-    c1.metric("Presupuesto", money(presupuesto))
-    c2.metric("Leads / consultas", int(leads))
-    c3.metric("Campañas activas", int(activas))
-
-    st.dataframe(df, use_container_width=True, hide_index=True)
-
-
-def render_reportes(cliente, reportes):
-    header("Reportería", "Resultados mensuales con lectura estratégica.")
-
-    df = filter_cliente(reportes, cliente)
-
-    if df.empty:
-        st.info("No hay reportes cargados.")
-        return
-
-    reporte = st.selectbox("Reporte", df["mes"].astype(str).tolist())
-    row = df[df["mes"].astype(str) == reporte].iloc[0]
-
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Alcance", f"{int(float(row['alcance'])):,}".replace(",", "."))
-    c2.metric("Interacciones", f"{int(float(row['interacciones'])):,}".replace(",", "."))
-    c3.metric("Consultas", int(float(row["consultas"])))
-    c4.metric("Inversión", money(row["inversion"]))
-
-    st.markdown("### Qué funcionó")
-    st.write(row["que_funciono"])
-
-    st.markdown("### Próximo foco")
-    st.write(row["proximo_foco"])
-
+    return menu
 
 # ============================================================
 # Vista interna
 # ============================================================
+
+
+def header(title, subtitle=""):
+    st.markdown(
+        f"""
+        <div style="margin-bottom: 26px;">
+            <h1 style="
+                margin: 0 0 6px 0;
+                color: #244777;
+                font-size: 2.25rem;
+                font-weight: 850;
+                letter-spacing: -0.035em;
+            ">
+                {title}
+            </h1>
+            <p style="
+                margin: 0;
+                color: #667085;
+                font-size: 1rem;
+                line-height: 1.45;
+            ">
+                {subtitle}
+            </p>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
 
 def render_admin_dashboard(clientes, contenidos, materiales, campanias, reportes, tareas):
     header("Dashboard AM", "Vista interna de gestión de clientes, contenidos y campañas.")
