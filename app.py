@@ -1539,8 +1539,9 @@ def render_admin_dashboard(clientes, contenidos, materiales, campanias, reportes
 
 
 
+
 def render_crud_table(title, path, df):
-    header(title, "Carga y edición de información operativa del portal")
+    header(title, "Carga y gestión de información del portal")
 
     df = df.copy()
 
@@ -1553,132 +1554,340 @@ def render_crud_table(title, path, df):
     if clientes_df is not None and not clientes_df.empty and "cliente" in clientes_df.columns:
         clientes_lista = sorted(clientes_df["cliente"].dropna().astype(str).unique().tolist())
 
+    archivo = Path(path).name
+
+    def next_id(dataframe):
+        if dataframe is None or dataframe.empty or "id" not in dataframe.columns:
+            return 1
+        ids = pd.to_numeric(dataframe["id"], errors="coerce").fillna(0)
+        return int(ids.max()) + 1
+
+    def append_and_save(nuevo):
+        nonlocal df
+        nuevo_df = pd.DataFrame([nuevo])
+        df = pd.concat([df, nuevo_df], ignore_index=True)
+        save_csv(df, path)
+        st.success("Registro cargado correctamente.")
+        st.rerun()
+
     st.markdown(
         """
         <div style="
             background: #FFFFFF;
             border: 1px solid #E5E7EB;
-            border-radius: 18px;
-            padding: 18px 22px;
-            margin-bottom: 18px;
+            border-radius: 20px;
+            padding: 20px 24px;
+            margin-bottom: 22px;
             box-shadow: 0 10px 24px rgba(16, 24, 40, 0.04);
         ">
-            <div style="font-size:1.05rem; font-weight:800; color:#172033; margin-bottom:4px;">
-                Editor de datos
+            <div style="font-size:1.1rem; font-weight:850; color:#172033; margin-bottom:5px;">
+                Carga de información
             </div>
-            <div style="font-size:0.92rem; color:#667085; line-height:1.45;">
-                Cargá o editá información. Si el dato está asociado a un cliente, seleccioná el cliente desde el desplegable para que aparezca correctamente en su portal.
+            <div style="font-size:0.94rem; color:#667085; line-height:1.45;">
+                Usá los formularios para cargar datos de forma ordenada. Cuando corresponde, el cliente se selecciona desde el desplegable para que la información aparezca en su portal.
             </div>
         </div>
         """,
         unsafe_allow_html=True,
     )
 
-    column_config = {}
+    # ------------------------------------------------------------
+    # CLIENTES
+    # ------------------------------------------------------------
+    if archivo == "clientes.csv":
+        st.markdown("### Nuevo cliente")
 
-    # Todo submenú que tenga columna cliente usa desplegable automático.
-    if "cliente" in df.columns:
-        if clientes_lista:
-            column_config["cliente"] = st.column_config.SelectboxColumn(
-                "Cliente",
-                options=clientes_lista,
-                required=True,
-                help="Cliente asociado. Este dato define en qué portal se verá la información.",
-            )
+        with st.form("form_clientes"):
+            col1, col2, col3 = st.columns(3)
+
+            with col1:
+                cliente = st.text_input("Nombre del cliente")
+                rubro = st.text_input("Rubro")
+
+            with col2:
+                estado = st.selectbox("Estado", ["Activo", "Pausado", "Finalizado", "Prospecto"])
+                plan = st.text_input("Plan / servicio")
+
+            with col3:
+                responsable_am = st.text_input("Responsable AM")
+                fecha_inicio = st.date_input("Fecha de inicio")
+
+            notas = st.text_area("Notas internas")
+
+            submitted = st.form_submit_button("Guardar cliente", use_container_width=True)
+
+            if submitted:
+                if not cliente.strip():
+                    st.error("El nombre del cliente es obligatorio.")
+                else:
+                    nuevo = {
+                        "cliente": cliente.strip(),
+                        "rubro": rubro,
+                        "estado": estado,
+                        "plan": plan,
+                        "responsable_am": responsable_am,
+                        "fecha_inicio": fecha_inicio.strftime("%Y-%m-%d"),
+                        "notas": notas,
+                    }
+                    append_and_save(nuevo)
+
+    # ------------------------------------------------------------
+    # CONTENIDOS
+    # ------------------------------------------------------------
+    elif archivo == "contenidos.csv":
+        st.markdown("### Nuevo contenido para aprobación")
+
+        if not clientes_lista:
+            st.warning("Primero cargá clientes en el menú Clientes.")
         else:
-            st.warning("Todavía no hay clientes cargados. Cargalos primero en la sección Clientes.")
+            with st.form("form_contenidos"):
+                col1, col2, col3 = st.columns(3)
 
-    # Fechas con calendario automático.
-    date_cols = ["fecha", "fecha_inicio", "fecha_limite"]
+                with col1:
+                    cliente = st.selectbox("Cliente", clientes_lista)
+                    fecha = st.date_input("Fecha de publicación / propuesta")
 
-    for col in date_cols:
-        if col in df.columns:
-            df[col] = pd.to_datetime(df[col], errors="coerce").dt.date
-            label = {
-                "fecha": "Fecha",
-                "fecha_inicio": "Fecha inicio",
-                "fecha_limite": "Fecha límite",
-            }.get(col, col)
+                with col2:
+                    canal = st.selectbox("Canal", ["Instagram", "Facebook", "LinkedIn", "TikTok", "YouTube", "Email", "Web", "Otro"])
+                    formato = st.selectbox("Formato", ["Post", "Carrusel", "Reel", "Historia", "Video", "Newsletter", "Landing", "Otro"])
 
-            column_config[col] = st.column_config.DateColumn(
-                label,
-                format="YYYY-MM-DD",
-            )
+                with col3:
+                    estado = st.selectbox("Estado", ["Pendiente de aprobación", "En diseño", "Correcciones", "Aprobado", "Programado", "Publicado"])
+                    link_canva = st.text_input("Link Canva")
 
-    # Algunos desplegables útiles para reducir errores de carga.
-    if "estado" in df.columns:
-        opciones_estado = sorted([x for x in df["estado"].dropna().astype(str).unique().tolist() if x.strip()])
-        opciones_base = [
-            "Pendiente de aprobación",
-            "En diseño",
-            "Correcciones",
-            "Aprobado",
-            "Programado",
-            "Publicado",
-            "Activo",
-            "Pausada",
-            "Disponible",
-            "Borrador",
-            "En revisión",
-            "Pendiente",
-            "Recibido",
-            "Finalizado",
-        ]
-        opciones = []
-        for x in opciones_base + opciones_estado:
-            if x not in opciones:
-                opciones.append(x)
+                tema = st.text_input("Tema")
+                objetivo = st.text_input("Objetivo")
+                copy_text = st.text_area("Copy propuesto")
 
-        column_config["estado"] = st.column_config.SelectboxColumn(
-            "Estado",
-            options=opciones,
+                submitted = st.form_submit_button("Guardar contenido", use_container_width=True)
+
+                if submitted:
+                    if not tema.strip():
+                        st.error("El tema es obligatorio.")
+                    else:
+                        nuevo = {
+                            "id": next_id(df),
+                            "cliente": cliente,
+                            "fecha": fecha.strftime("%Y-%m-%d"),
+                            "canal": canal,
+                            "formato": formato,
+                            "tema": tema,
+                            "objetivo": objetivo,
+                            "copy": copy_text,
+                            "link_canva": link_canva,
+                            "estado": estado,
+                            "comentario_cliente": "",
+                        }
+                        append_and_save(nuevo)
+
+    # ------------------------------------------------------------
+    # MATERIALES
+    # ------------------------------------------------------------
+    elif archivo == "materiales.csv":
+        st.markdown("### Nuevo material solicitado")
+
+        if not clientes_lista:
+            st.warning("Primero cargá clientes en el menú Clientes.")
+        else:
+            with st.form("form_materiales"):
+                col1, col2, col3 = st.columns(3)
+
+                with col1:
+                    cliente = st.selectbox("Cliente", clientes_lista)
+                    solicitud = st.text_input("Solicitud")
+
+                with col2:
+                    responsable_cliente = st.text_input("Responsable del cliente")
+                    fecha_limite = st.date_input("Fecha límite")
+
+                with col3:
+                    estado = st.selectbox("Estado", ["Solicitado", "Pendiente", "Recibido", "Usado", "Cancelado"])
+
+                observacion = st.text_area("Indicaciones / observaciones")
+
+                submitted = st.form_submit_button("Guardar solicitud", use_container_width=True)
+
+                if submitted:
+                    if not solicitud.strip():
+                        st.error("La solicitud es obligatoria.")
+                    else:
+                        nuevo = {
+                            "id": next_id(df),
+                            "cliente": cliente,
+                            "solicitud": solicitud,
+                            "responsable_cliente": responsable_cliente,
+                            "fecha_limite": fecha_limite.strftime("%Y-%m-%d"),
+                            "estado": estado,
+                            "observacion": observacion,
+                        }
+                        append_and_save(nuevo)
+
+    # ------------------------------------------------------------
+    # CAMPAÑAS
+    # ------------------------------------------------------------
+    elif archivo == "campanias.csv":
+        st.markdown("### Nueva campaña")
+
+        if not clientes_lista:
+            st.warning("Primero cargá clientes en el menú Clientes.")
+        else:
+            with st.form("form_campanias"):
+                col1, col2, col3 = st.columns(3)
+
+                with col1:
+                    cliente = st.selectbox("Cliente", clientes_lista)
+                    campania = st.text_input("Nombre de campaña")
+
+                with col2:
+                    plataforma = st.selectbox("Plataforma", ["Meta Ads", "Google Ads", "LinkedIn Ads", "TikTok Ads", "Orgánico", "Otro"])
+                    objetivo = st.text_input("Objetivo")
+
+                with col3:
+                    presupuesto = st.number_input("Presupuesto", min_value=0.0, step=1000.0)
+                    estado = st.selectbox("Estado", ["Activa", "Pausada", "Finalizada", "Borrador"])
+
+                col4, col5 = st.columns(2)
+                with col4:
+                    leads = st.number_input("Consultas / leads", min_value=0, step=1)
+                with col5:
+                    costo_por_lead = st.number_input("Costo por lead", min_value=0.0, step=100.0)
+
+                observacion = st.text_area("Observaciones")
+
+                submitted = st.form_submit_button("Guardar campaña", use_container_width=True)
+
+                if submitted:
+                    if not campania.strip():
+                        st.error("El nombre de la campaña es obligatorio.")
+                    else:
+                        nuevo = {
+                            "id": next_id(df),
+                            "cliente": cliente,
+                            "campania": campania,
+                            "plataforma": plataforma,
+                            "objetivo": objetivo,
+                            "presupuesto": presupuesto,
+                            "estado": estado,
+                            "leads": leads,
+                            "costo_por_lead": costo_por_lead,
+                            "observacion": observacion,
+                        }
+                        append_and_save(nuevo)
+
+    # ------------------------------------------------------------
+    # REPORTES
+    # ------------------------------------------------------------
+    elif archivo == "reportes.csv":
+        st.markdown("### Nuevo reporte mensual")
+
+        if not clientes_lista:
+            st.warning("Primero cargá clientes en el menú Clientes.")
+        else:
+            with st.form("form_reportes"):
+                col1, col2, col3 = st.columns(3)
+
+                with col1:
+                    cliente = st.selectbox("Cliente", clientes_lista)
+                    mes = st.text_input("Mes", placeholder="Ej: Julio 2026")
+
+                with col2:
+                    alcance = st.number_input("Alcance", min_value=0, step=100)
+                    interacciones = st.number_input("Interacciones", min_value=0, step=50)
+
+                with col3:
+                    consultas = st.number_input("Consultas", min_value=0, step=1)
+                    inversion = st.number_input("Inversión publicitaria", min_value=0.0, step=1000.0)
+
+                estado = st.selectbox("Estado", ["Disponible", "Borrador", "En revisión"])
+                que_funciono = st.text_area("Qué funcionó")
+                proximo_foco = st.text_area("Próximo foco")
+
+                submitted = st.form_submit_button("Guardar reporte", use_container_width=True)
+
+                if submitted:
+                    if not mes.strip():
+                        st.error("El mes del reporte es obligatorio.")
+                    else:
+                        nuevo = {
+                            "id": next_id(df),
+                            "cliente": cliente,
+                            "mes": mes,
+                            "alcance": alcance,
+                            "interacciones": interacciones,
+                            "consultas": consultas,
+                            "inversion": inversion,
+                            "estado": estado,
+                            "que_funciono": que_funciono,
+                            "proximo_foco": proximo_foco,
+                        }
+                        append_and_save(nuevo)
+
+    # ------------------------------------------------------------
+    # TAREAS
+    # ------------------------------------------------------------
+    elif archivo == "tareas.csv":
+        st.markdown("### Nueva tarea interna")
+
+        if not clientes_lista:
+            st.warning("Primero cargá clientes en el menú Clientes.")
+        else:
+            with st.form("form_tareas"):
+                col1, col2, col3 = st.columns(3)
+
+                with col1:
+                    cliente = st.selectbox("Cliente", clientes_lista)
+                    tarea = st.text_input("Tarea")
+
+                with col2:
+                    responsable_am = st.text_input("Responsable AM")
+                    fecha_limite = st.date_input("Fecha límite")
+
+                with col3:
+                    prioridad = st.selectbox("Prioridad", ["Alta", "Media", "Baja"])
+                    estado = st.selectbox("Estado", ["Pendiente", "En curso", "Finalizado", "Pausado"])
+
+                submitted = st.form_submit_button("Guardar tarea", use_container_width=True)
+
+                if submitted:
+                    if not tarea.strip():
+                        st.error("La tarea es obligatoria.")
+                    else:
+                        nuevo = {
+                            "id": next_id(df),
+                            "cliente": cliente,
+                            "tarea": tarea,
+                            "responsable_am": responsable_am,
+                            "prioridad": prioridad,
+                            "estado": estado,
+                            "fecha_limite": fecha_limite.strftime("%Y-%m-%d"),
+                        }
+                        append_and_save(nuevo)
+
+    else:
+        st.warning("No hay formulario específico para esta sección.")
+
+    st.markdown("---")
+    st.markdown("### Últimos registros")
+
+    if df.empty:
+        st.info("Todavía no hay registros cargados.")
+    else:
+        st.dataframe(df.tail(10), use_container_width=True, hide_index=True)
+
+    with st.expander("Edición avanzada en tabla"):
+        st.caption("Usá esta vista solo para correcciones puntuales o edición masiva.")
+        edited = st.data_editor(
+            df,
+            use_container_width=True,
+            hide_index=True,
+            num_rows="dynamic",
+            key=f"editor_avanzado_{title}",
         )
 
-    if "canal" in df.columns:
-        column_config["canal"] = st.column_config.SelectboxColumn(
-            "Canal",
-            options=["Instagram", "Facebook", "LinkedIn", "TikTok", "YouTube", "Email", "Web", "Otro"],
-        )
-
-    if "formato" in df.columns:
-        column_config["formato"] = st.column_config.SelectboxColumn(
-            "Formato",
-            options=["Post", "Carrusel", "Reel", "Historia", "Video", "Newsletter", "Landing", "Otro"],
-        )
-
-    if "plataforma" in df.columns:
-        column_config["plataforma"] = st.column_config.SelectboxColumn(
-            "Plataforma",
-            options=["Meta Ads", "Google Ads", "LinkedIn Ads", "TikTok Ads", "Orgánico", "Otro"],
-        )
-
-    if "prioridad" in df.columns:
-        column_config["prioridad"] = st.column_config.SelectboxColumn(
-            "Prioridad",
-            options=["Alta", "Media", "Baja"],
-        )
-
-    edited = st.data_editor(
-        df,
-        use_container_width=True,
-        hide_index=True,
-        num_rows="dynamic",
-        column_config=column_config,
-        key=f"editor_{title}",
-    )
-
-    if st.button(f"Guardar cambios en {title}", use_container_width=True):
-        clean = edited.copy()
-
-        # Convertir fechas a texto estándar antes de guardar CSV.
-        for col in date_cols:
-            if col in clean.columns:
-                clean[col] = pd.to_datetime(clean[col], errors="coerce").dt.strftime("%Y-%m-%d")
-                clean[col] = clean[col].fillna("")
-
-        save_csv(clean, path)
-        st.success(f"{title} actualizado correctamente.")
-        st.rerun()
+        if st.button(f"Guardar edición avanzada en {title}", use_container_width=True):
+            save_csv(edited, path)
+            st.success(f"{title} actualizado correctamente.")
+            st.rerun()
 
 
 
