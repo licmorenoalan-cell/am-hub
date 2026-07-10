@@ -801,6 +801,7 @@ def sidebar():
             "Menú",
             [
                 "Dashboard AM",
+                "Usuarios",
                 "Clientes",
                 "Contenidos",
                 "Materiales",
