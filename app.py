@@ -25,6 +25,7 @@ MATERIALES_PATH = DATA_DIR / "materiales.csv"
 CAMPANIAS_PATH = DATA_DIR / "campanias.csv"
 REPORTES_PATH = DATA_DIR / "reportes.csv"
 TAREAS_PATH = DATA_DIR / "tareas.csv"
+USUARIOS_PATH = DATA_DIR / "usuarios.csv"
 
 COLOR_NAVY = "#244777"
 COLOR_BLUE = "#234579"
@@ -501,81 +502,147 @@ def status_badge(status: str):
 # Login
 # ============================================================
 
+
+def ensure_users_file():
+    DATA_DIR.mkdir(exist_ok=True)
+
+    if USUARIOS_PATH.exists():
+        return
+
+    rows = [
+        {
+            "username": "alan",
+            "password": "alan_admin_2026",
+            "role": "admin",
+            "name": "Alan Moreno",
+            "cliente": "",
+            "activo": "Sí",
+        },
+        {
+            "username": "equipo",
+            "password": "equipo_am_2026",
+            "role": "equipo",
+            "name": "Equipo AM",
+            "cliente": "",
+            "activo": "Sí",
+        },
+        {
+            "username": "cliente_ritual",
+            "password": "ritual_2026",
+            "role": "cliente",
+            "name": "Ritual",
+            "cliente": "Ritual Medicina Estética",
+            "activo": "Sí",
+        },
+        {
+            "username": "cliente_ezca",
+            "password": "ezca_2026",
+            "role": "cliente",
+            "name": "EZCA",
+            "cliente": "EZCA Premoldeados",
+            "activo": "Sí",
+        },
+    ]
+
+    pd.DataFrame(rows).to_csv(USUARIOS_PATH, index=False)
+
+
+def load_users_df():
+    ensure_users_file()
+
+    df = pd.read_csv(USUARIOS_PATH, dtype=str).fillna("")
+
+    required_cols = ["username", "password", "role", "name", "cliente", "activo"]
+    for col in required_cols:
+        if col not in df.columns:
+            df[col] = ""
+
+    df["activo"] = df["activo"].replace({"": "Sí"})
+
+    return df[required_cols]
+
+
+def save_users_df(df):
+    required_cols = ["username", "password", "role", "name", "cliente", "activo"]
+
+    clean = df.copy().fillna("")
+
+    for col in required_cols:
+        if col not in clean.columns:
+            clean[col] = ""
+
+    clean = clean[required_cols]
+    clean["username"] = clean["username"].astype(str).str.strip()
+    clean["role"] = clean["role"].astype(str).str.strip()
+    clean["activo"] = clean["activo"].astype(str).str.strip()
+
+    clean = clean[clean["username"] != ""]
+    clean = clean.drop_duplicates(subset=["username"], keep="last")
+
+    clean.to_csv(USUARIOS_PATH, index=False)
+
+
+def load_users():
+    df = load_users_df()
+
+    users = {}
+
+    for _, row in df.iterrows():
+        username = str(row.get("username", "")).strip()
+        if not username:
+            continue
+
+        activo = str(row.get("activo", "Sí")).strip().lower()
+        if activo not in ["sí", "si", "yes", "true", "1", "activo"]:
+            continue
+
+        users[username] = {
+            "password": str(row.get("password", "")),
+            "role": str(row.get("role", "")),
+            "name": str(row.get("name", "")),
+            "cliente": str(row.get("cliente", "")),
+        }
+
+    return users
+
+
+
+
+
+
+
+
+
+
 def login():
-    logo_path = ASSETS_DIR / "isologo_login_limpio.png"
-    if not logo_path.exists():
-        logo_path = ASSETS_DIR / "isologo A.png"
+    brand_path = ASSETS_DIR / "login_brand_lockup.png"
 
-    logo_b64 = img_to_base64(logo_path) if logo_path.exists() else ""
-
-    st.markdown("<div style='height: 76px;'></div>", unsafe_allow_html=True)
+    st.markdown("<div style='height: 78px;'></div>", unsafe_allow_html=True)
 
     left_pad, brand_col, login_col, right_pad = st.columns([0.05, 0.42, 0.48, 0.05], gap="large")
 
     with brand_col:
-        if logo_b64:
-            st.markdown(
-                f"""
-                <div style="
-                    display: flex;
-                    align-items: center;
-                    gap: 28px;
-                    margin-top: 42px;
-                    margin-left: 4px;
-                ">
-                    <div style="
-                        color: #244777;
-                        font-size: 3.15rem;
-                        line-height: 1;
-                        font-weight: 850;
-                        letter-spacing: -0.045em;
-                        white-space: nowrap;
-                    ">
-                        AM Hub
-                    </div>
-                    <img src="data:image/png;base64,{logo_b64}" style="
-                        width: 150px;
-                        height: auto;
-                        display: block;
-                    " />
-                </div>
+        st.markdown("<div style='height: 36px;'></div>", unsafe_allow_html=True)
 
-                <div style="
-                    margin-top: 28px;
-                    margin-left: 4px;
-                    color: #667085;
-                    font-size: 1.45rem;
-                    line-height: 1.35;
-                    font-weight: 500;
-                    letter-spacing: -0.02em;
-                    white-space: nowrap;
-                ">
-                    Portal de gestión digital | AM Consultora
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
+        if brand_path.exists():
+            st.image(str(brand_path), width=430)
         else:
             st.markdown(
                 """
                 <div style="
-                    margin-top: 42px;
-                    color: #244777;
                     font-size: 3.15rem;
+                    font-weight: 900;
+                    color: #244777;
+                    letter-spacing: -0.055em;
                     line-height: 1;
-                    font-weight: 850;
-                    letter-spacing: -0.045em;
+                    margin-bottom: 16px;
                 ">
                     AM Hub
                 </div>
                 <div style="
-                    margin-top: 28px;
+                    font-size: 1.05rem;
                     color: #667085;
-                    font-size: 1.45rem;
-                    line-height: 1.35;
-                    font-weight: 500;
-                    letter-spacing: -0.02em;
-                    white-space: nowrap;
+                    line-height: 1.45;
                 ">
                     Portal de gestión digital | AM Consultora
                 </div>
@@ -589,60 +656,69 @@ def login():
             <div style="
                 background: #FFFFFF;
                 border: 1px solid #E5E7EB;
-                border-radius: 18px;
-                padding: 30px 34px 22px 34px;
-                box-shadow: 0 16px 40px rgba(16, 24, 40, 0.07);
-                margin-top: 18px;
+                border-radius: 24px;
+                padding: 28px 32px 8px 32px;
+                box-shadow: 0 18px 45px rgba(16, 24, 40, 0.08);
             ">
-                <h2 style="
-                    margin: 0 0 12px 0;
-                    color: #172033;
-                    font-size: 1.45rem;
-                    line-height: 1.15;
+                <div style="
+                    font-size: 1.65rem;
                     font-weight: 850;
+                    color: #172033;
+                    margin-bottom: 6px;
+                    letter-spacing: -0.035em;
                 ">
-                    Acceso clientes
-                </h2>
-                <p style="
-                    margin: 0;
+                    Acceso
+                </div>
+                <div style="
+                    font-size: 0.96rem;
                     color: #667085;
-                    font-size: 0.88rem;
-                    line-height: 1.4;
+                    margin-bottom: 18px;
                 ">
                     Ingresá con tu usuario para ver el portal correspondiente.
-                </p>
+                </div>
             </div>
             """,
             unsafe_allow_html=True,
         )
 
-        with st.form("login_form"):
-            username = st.text_input("Usuario")
-            password = st.text_input("Contraseña", type="password")
-            submit = st.form_submit_button("Ingresar")
+        username = st.text_input("Usuario", key="login_username")
+        password = st.text_input("Contraseña", type="password", key="login_password")
 
-        if submit:
-            user = USERS.get(username)
-            if user and user["password"] == password:
+        if st.button("Ingresar", key="login_button", use_container_width=True):
+            users = load_users() if "load_users" in globals() else USERS
+
+            username_clean = str(username).strip()
+            password_clean = str(password).strip()
+
+            user = users.get(username_clean)
+
+            if user and str(user.get("password", "")).strip() == password_clean:
+                st.session_state["logged_in"] = True
                 st.session_state["auth"] = True
-                st.session_state["username"] = username
-                st.session_state["role"] = user["role"]
-                st.session_state["name"] = user["name"]
-                st.session_state["cliente"] = user["cliente"]
+                st.session_state["username"] = username_clean
+                st.session_state["role"] = str(user.get("role", "")).strip()
+                st.session_state["name"] = str(user.get("name", "")).strip()
+                st.session_state["cliente"] = str(user.get("cliente", "")).strip()
                 st.rerun()
             else:
-                st.error("Usuario o contraseña incorrectos.")
+                st.error("Usuario o contraseña incorrectos, o usuario inactivo.")
+
+
 
 def logout_button():
-    if st.sidebar.button("Cerrar sesión"):
-        for k in ["auth", "username", "role", "name", "cliente"]:
+    if st.sidebar.button("Cerrar sesión", use_container_width=True):
+        for k in [
+            "logged_in",
+            "auth",
+            "username",
+            "role",
+            "name",
+            "cliente",
+            "menu",
+        ]:
             st.session_state.pop(k, None)
+
         st.rerun()
-
-
-# ============================================================
-# Sidebar
-# ============================================================
 
 
 
@@ -1326,6 +1402,115 @@ def render_reportes(cliente, reportes):
     cols = [c for c in cols if c in df.columns]
     st.dataframe(df[cols], use_container_width=True, hide_index=True)
 
+
+def render_usuarios(clientes):
+    header("Usuarios", "Alta, edición y permisos de acceso al portal")
+
+    df = load_users_df()
+
+    st.markdown(
+        """
+        <div style="
+            background: #FFFFFF;
+            border: 1px solid #E5E7EB;
+            border-radius: 22px;
+            padding: 22px 26px;
+            margin-bottom: 22px;
+            box-shadow: 0 12px 30px rgba(16, 24, 40, 0.05);
+        ">
+            <div style="font-size:1.2rem; font-weight:850; color:#172033; margin-bottom:6px;">
+                Gestión de accesos
+            </div>
+            <div style="font-size:0.95rem; color:#667085; line-height:1.45;">
+                Creá usuarios para clientes y asistentes. Los usuarios cliente ven solo su portal; los asistentes pueden cargar y gestionar información interna.
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Usuarios activos", len(df[df["activo"].astype(str).str.lower().isin(["sí", "si", "activo", "true", "1"])]))
+    c2.metric("Clientes", len(df[df["role"] == "cliente"]))
+    c3.metric("Equipo AM", len(df[df["role"].isin(["admin", "equipo"])]))
+
+    st.markdown("### Crear nuevo usuario")
+
+    clientes_lista = [""]
+    if clientes is not None and not clientes.empty and "cliente" in clientes.columns:
+        clientes_lista += sorted(clientes["cliente"].dropna().astype(str).unique().tolist())
+
+    with st.form("crear_usuario_form"):
+        col1, col2, col3 = st.columns(3)
+
+        with col1:
+            username = st.text_input("Usuario")
+            name = st.text_input("Nombre visible")
+
+        with col2:
+            password = st.text_input("Contraseña")
+            role = st.selectbox("Rol", ["cliente", "equipo", "admin"])
+
+        with col3:
+            cliente = st.selectbox("Cliente asociado", clientes_lista)
+            activo = st.selectbox("Activo", ["Sí", "No"])
+
+        crear = st.form_submit_button("Crear usuario")
+
+        if crear:
+            username = username.strip()
+
+            if not username:
+                st.error("El usuario no puede estar vacío.")
+            elif username in df["username"].astype(str).tolist():
+                st.error("Ya existe un usuario con ese nombre.")
+            elif role == "cliente" and not cliente:
+                st.error("Los usuarios cliente deben tener un cliente asociado.")
+            else:
+                nuevo = pd.DataFrame([
+                    {
+                        "username": username,
+                        "password": password,
+                        "role": role,
+                        "name": name,
+                        "cliente": cliente,
+                        "activo": activo,
+                    }
+                ])
+
+                df = pd.concat([df, nuevo], ignore_index=True)
+                save_users_df(df)
+                st.success("Usuario creado correctamente.")
+                st.rerun()
+
+    st.markdown("### Editar usuarios existentes")
+
+    st.caption("Para desactivar un usuario, cambiá Activo a No. Evitá borrar tu propio usuario admin.")
+
+    edited = st.data_editor(
+        df,
+        use_container_width=True,
+        hide_index=True,
+        num_rows="dynamic",
+        column_config={
+            "username": st.column_config.TextColumn("Usuario", required=True),
+            "password": st.column_config.TextColumn("Contraseña"),
+            "role": st.column_config.SelectboxColumn("Rol", options=["admin", "equipo", "cliente"], required=True),
+            "name": st.column_config.TextColumn("Nombre visible"),
+            "cliente": st.column_config.SelectboxColumn("Cliente asociado", options=clientes_lista),
+            "activo": st.column_config.SelectboxColumn("Activo", options=["Sí", "No"], required=True),
+        },
+        key="usuarios_editor",
+    )
+
+    if st.button("Guardar cambios de usuarios"):
+        save_users_df(edited)
+        st.success("Usuarios actualizados.")
+        st.rerun()
+
+
+
+
 def render_admin_dashboard(clientes, contenidos, materiales, campanias, reportes, tareas):
     header("Dashboard AM", "Vista interna de gestión de clientes, contenidos y campañas.")
 
@@ -1353,22 +1538,148 @@ def render_admin_dashboard(clientes, contenidos, materiales, campanias, reportes
         st.dataframe(tareas, use_container_width=True, hide_index=True)
 
 
+
 def render_crud_table(title, path, df):
-    header(title)
+    header(title, "Carga y edición de información operativa del portal")
 
-    st.dataframe(df, use_container_width=True, hide_index=True)
+    df = df.copy()
 
-    st.markdown("### Carga rápida")
-    with st.expander("Agregar registro"):
-        nuevo = {}
-        for col in df.columns:
-            nuevo[col] = st.text_input(col, key=f"{title}_{col}")
+    clientes_df = read_csv(
+        CLIENTES_PATH,
+        ["cliente", "rubro", "estado", "plan", "responsable_am", "fecha_inicio", "notas"],
+    )
 
-        if st.button(f"Agregar a {title}"):
-            df2 = pd.concat([df, pd.DataFrame([nuevo])], ignore_index=True)
-            save_csv(df2, path)
-            st.success("Registro agregado.")
-            st.rerun()
+    clientes_lista = []
+    if clientes_df is not None and not clientes_df.empty and "cliente" in clientes_df.columns:
+        clientes_lista = sorted(clientes_df["cliente"].dropna().astype(str).unique().tolist())
+
+    st.markdown(
+        """
+        <div style="
+            background: #FFFFFF;
+            border: 1px solid #E5E7EB;
+            border-radius: 18px;
+            padding: 18px 22px;
+            margin-bottom: 18px;
+            box-shadow: 0 10px 24px rgba(16, 24, 40, 0.04);
+        ">
+            <div style="font-size:1.05rem; font-weight:800; color:#172033; margin-bottom:4px;">
+                Editor de datos
+            </div>
+            <div style="font-size:0.92rem; color:#667085; line-height:1.45;">
+                Cargá o editá información. Si el dato está asociado a un cliente, seleccioná el cliente desde el desplegable para que aparezca correctamente en su portal.
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    column_config = {}
+
+    # Todo submenú que tenga columna cliente usa desplegable automático.
+    if "cliente" in df.columns:
+        if clientes_lista:
+            column_config["cliente"] = st.column_config.SelectboxColumn(
+                "Cliente",
+                options=clientes_lista,
+                required=True,
+                help="Cliente asociado. Este dato define en qué portal se verá la información.",
+            )
+        else:
+            st.warning("Todavía no hay clientes cargados. Cargalos primero en la sección Clientes.")
+
+    # Fechas con calendario automático.
+    date_cols = ["fecha", "fecha_inicio", "fecha_limite"]
+
+    for col in date_cols:
+        if col in df.columns:
+            df[col] = pd.to_datetime(df[col], errors="coerce").dt.date
+            label = {
+                "fecha": "Fecha",
+                "fecha_inicio": "Fecha inicio",
+                "fecha_limite": "Fecha límite",
+            }.get(col, col)
+
+            column_config[col] = st.column_config.DateColumn(
+                label,
+                format="YYYY-MM-DD",
+            )
+
+    # Algunos desplegables útiles para reducir errores de carga.
+    if "estado" in df.columns:
+        opciones_estado = sorted([x for x in df["estado"].dropna().astype(str).unique().tolist() if x.strip()])
+        opciones_base = [
+            "Pendiente de aprobación",
+            "En diseño",
+            "Correcciones",
+            "Aprobado",
+            "Programado",
+            "Publicado",
+            "Activo",
+            "Pausada",
+            "Disponible",
+            "Borrador",
+            "En revisión",
+            "Pendiente",
+            "Recibido",
+            "Finalizado",
+        ]
+        opciones = []
+        for x in opciones_base + opciones_estado:
+            if x not in opciones:
+                opciones.append(x)
+
+        column_config["estado"] = st.column_config.SelectboxColumn(
+            "Estado",
+            options=opciones,
+        )
+
+    if "canal" in df.columns:
+        column_config["canal"] = st.column_config.SelectboxColumn(
+            "Canal",
+            options=["Instagram", "Facebook", "LinkedIn", "TikTok", "YouTube", "Email", "Web", "Otro"],
+        )
+
+    if "formato" in df.columns:
+        column_config["formato"] = st.column_config.SelectboxColumn(
+            "Formato",
+            options=["Post", "Carrusel", "Reel", "Historia", "Video", "Newsletter", "Landing", "Otro"],
+        )
+
+    if "plataforma" in df.columns:
+        column_config["plataforma"] = st.column_config.SelectboxColumn(
+            "Plataforma",
+            options=["Meta Ads", "Google Ads", "LinkedIn Ads", "TikTok Ads", "Orgánico", "Otro"],
+        )
+
+    if "prioridad" in df.columns:
+        column_config["prioridad"] = st.column_config.SelectboxColumn(
+            "Prioridad",
+            options=["Alta", "Media", "Baja"],
+        )
+
+    edited = st.data_editor(
+        df,
+        use_container_width=True,
+        hide_index=True,
+        num_rows="dynamic",
+        column_config=column_config,
+        key=f"editor_{title}",
+    )
+
+    if st.button(f"Guardar cambios en {title}", use_container_width=True):
+        clean = edited.copy()
+
+        # Convertir fechas a texto estándar antes de guardar CSV.
+        for col in date_cols:
+            if col in clean.columns:
+                clean[col] = pd.to_datetime(clean[col], errors="coerce").dt.strftime("%Y-%m-%d")
+                clean[col] = clean[col].fillna("")
+
+        save_csv(clean, path)
+        st.success(f"{title} actualizado correctamente.")
+        st.rerun()
+
 
 
 def render_vista_cliente_admin(clientes, contenidos, materiales, campanias, reportes):
@@ -1391,10 +1702,13 @@ def main():
     ensure_data_dir()
     seed_data()
 
+    if "logged_in" not in st.session_state:
+        st.session_state["logged_in"] = False
+
     if "auth" not in st.session_state:
         st.session_state["auth"] = False
 
-    if not st.session_state["auth"]:
+    if not st.session_state.get("logged_in", False) and not st.session_state.get("auth", False):
         login()
         return
 
@@ -1423,6 +1737,8 @@ def main():
     else:
         if menu == "Dashboard AM":
             render_admin_dashboard(clientes, contenidos, materiales, campanias, reportes, tareas)
+        elif menu == "Usuarios":
+            render_usuarios(clientes)
         elif menu == "Clientes":
             render_crud_table("Clientes", CLIENTES_PATH, clientes)
         elif menu == "Contenidos":
