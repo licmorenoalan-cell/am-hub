@@ -798,7 +798,7 @@ def menu_cliente_por_servicios(cliente_nombre):
 
     if servicios["contabilidad"]:
         opciones += [
-            "Indicadores",
+            "Cash Flow",
             "Objetivos",
             "Documentos",
         ]
@@ -852,10 +852,11 @@ def sidebar():
                 "Dashboard AM",
                 "Edición rápida",
                 "Usuarios",
+                "Onboarding",
                 "Clientes",
                 "Objetivos",
                 "Documentos",
-                "Indicadores",
+                "Cash Flow",
                 "Contenidos",
                 "Materiales",
                 "Campañas",
@@ -870,9 +871,10 @@ def sidebar():
             "Menú",
             [
                 "Dashboard AM",
+                "Onboarding",
                 "Objetivos",
                 "Documentos",
-                "Indicadores",
+                "Cash Flow",
                 "Contenidos",
                 "Materiales",
                 "Campañas",
@@ -1602,6 +1604,223 @@ def render_reportes(cliente, reportes):
     st.dataframe(df[cols], use_container_width=True, hide_index=True)
 
 
+def render_onboarding_cliente():
+    header("Onboarding", "Alta integral de cliente, servicios contratados y usuario de acceso.")
+
+    role = st.session_state.get("role", "")
+
+    if role not in ["admin_general", "admin"]:
+        st.error("No tenés permisos para acceder al onboarding.")
+        return
+
+    clientes_df = read_csv(
+        CLIENTES_PATH,
+        [
+            "cliente",
+            "rubro",
+            "estado",
+            "plan",
+            "responsable_am",
+            "fecha_inicio",
+            "servicio_digital",
+            "servicio_consultoria",
+            "servicio_contabilidad",
+            "notas",
+        ],
+    )
+
+    usuarios_df = read_csv(
+        USUARIOS_PATH,
+        ["username", "password", "role", "name", "cliente", "activo"],
+    )
+
+    for col in ["servicio_digital", "servicio_consultoria", "servicio_contabilidad"]:
+        if col not in clientes_df.columns:
+            clientes_df[col] = "No"
+
+    st.markdown("### Nuevo cliente")
+
+    with st.form("form_onboarding_cliente"):
+        st.markdown("#### Datos del cliente")
+
+        c1, c2, c3 = st.columns(3)
+
+        with c1:
+            cliente = st.text_input("Nombre del cliente / marca")
+            rubro = st.text_input("Rubro")
+
+        with c2:
+            estado = st.selectbox("Estado", ["Activo", "Prospecto", "Pausado", "Finalizado"], index=0)
+            plan = st.text_input("Plan / acuerdo comercial")
+
+        with c3:
+            responsable_am = st.text_input("Responsable AM", value=st.session_state.get("name", "AM Consultora"))
+            fecha_inicio = st.date_input("Fecha de inicio")
+
+        st.markdown("#### Servicios contratados")
+
+        s1, s2, s3 = st.columns(3)
+
+        with s1:
+            servicio_digital = st.checkbox("Ecosistema digital")
+
+        with s2:
+            servicio_consultoria = st.checkbox("Consultoría")
+
+        with s3:
+            servicio_contabilidad = st.checkbox("Contabilidad / gestión")
+
+        notas = st.text_area("Notas internas")
+
+        st.markdown("#### Acceso del cliente")
+
+        crear_usuario = st.checkbox("Crear usuario de acceso para este cliente", value=True)
+
+        u1, u2, u3 = st.columns(3)
+
+        with u1:
+            username = st.text_input(
+                "Usuario",
+                placeholder="Ejemplo: cliente_cooperativa",
+                disabled=not crear_usuario,
+            )
+
+        with u2:
+            password = st.text_input(
+                "Contraseña inicial",
+                placeholder="Ejemplo: cooperativa_2026",
+                disabled=not crear_usuario,
+            )
+
+        with u3:
+            name = st.text_input(
+                "Nombre visible",
+                placeholder="Ejemplo: Cooperativa Villa Adelina",
+                disabled=not crear_usuario,
+            )
+
+        submitted = st.form_submit_button("Crear cliente y acceso", use_container_width=True)
+
+        if submitted:
+            cliente_limpio = cliente.strip()
+
+            if not cliente_limpio:
+                st.error("El nombre del cliente es obligatorio.")
+                return
+
+            if not servicio_digital and not servicio_consultoria and not servicio_contabilidad:
+                st.error("Seleccioná al menos un servicio contratado.")
+                return
+
+            if "cliente" in clientes_df.columns:
+                existe_cliente = clientes_df["cliente"].astype(str).str.strip().str.lower().eq(cliente_limpio.lower()).any()
+            else:
+                existe_cliente = False
+
+            if existe_cliente:
+                st.error("Ya existe un cliente con ese nombre. Revisá el menú Clientes o usá otro nombre.")
+                return
+
+            if crear_usuario:
+                if not username.strip():
+                    st.error("El usuario es obligatorio si vas a crear el acceso.")
+                    return
+
+                if not password.strip():
+                    st.error("La contraseña es obligatoria si vas a crear el acceso.")
+                    return
+
+                usuario_limpio = username.strip()
+
+                existe_usuario = usuarios_df["username"].astype(str).str.strip().str.lower().eq(usuario_limpio.lower()).any()
+
+                if existe_usuario:
+                    st.error("Ya existe un usuario con ese nombre. Elegí otro usuario.")
+                    return
+
+            nuevo_cliente = {
+                "cliente": cliente_limpio,
+                "rubro": rubro,
+                "estado": estado,
+                "plan": plan,
+                "responsable_am": responsable_am,
+                "fecha_inicio": fecha_inicio.strftime("%Y-%m-%d"),
+                "servicio_digital": "Sí" if servicio_digital else "No",
+                "servicio_consultoria": "Sí" if servicio_consultoria else "No",
+                "servicio_contabilidad": "Sí" if servicio_contabilidad else "No",
+                "notas": notas,
+            }
+
+            clientes_actualizado = pd.concat(
+                [clientes_df, pd.DataFrame([nuevo_cliente])],
+                ignore_index=True,
+            )
+
+            save_csv(clientes_actualizado, CLIENTES_PATH)
+
+            if crear_usuario:
+                nuevo_usuario = {
+                    "username": username.strip(),
+                    "password": password.strip(),
+                    "role": "cliente",
+                    "name": name.strip() if name.strip() else cliente_limpio,
+                    "cliente": cliente_limpio,
+                    "activo": "Sí",
+                }
+
+                usuarios_actualizado = pd.concat(
+                    [usuarios_df, pd.DataFrame([nuevo_usuario])],
+                    ignore_index=True,
+                )
+
+                save_csv(usuarios_actualizado, USUARIOS_PATH)
+
+            st.success("Cliente creado correctamente y acceso vinculado automáticamente.")
+            st.rerun()
+
+    st.markdown("### Últimos clientes cargados")
+
+    if clientes_df is None or clientes_df.empty:
+        st.info("Todavía no hay clientes cargados.")
+    else:
+        columnas = [
+            "cliente",
+            "estado",
+            "plan",
+            "responsable_am",
+            "servicio_digital",
+            "servicio_consultoria",
+            "servicio_contabilidad",
+        ]
+        columnas = [c for c in columnas if c in clientes_df.columns]
+
+        st.dataframe(
+            clientes_df[columnas].tail(10),
+            use_container_width=True,
+            hide_index=True,
+        )
+
+    st.markdown("### Usuarios cliente activos")
+
+    if usuarios_df is None or usuarios_df.empty:
+        st.info("Todavía no hay usuarios cargados.")
+    else:
+        vista_usuarios = usuarios_df.copy()
+
+        if "role" in vista_usuarios.columns:
+            vista_usuarios = vista_usuarios[vista_usuarios["role"].astype(str) == "cliente"]
+
+        columnas_u = ["username", "name", "cliente", "activo"]
+        columnas_u = [c for c in columnas_u if c in vista_usuarios.columns]
+
+        st.dataframe(
+            vista_usuarios[columnas_u].tail(10),
+            use_container_width=True,
+            hide_index=True,
+        )
+
+
+
 def render_usuarios(clientes):
     header("Usuarios", "Alta, edición y permisos de acceso al portal")
 
@@ -1891,6 +2110,283 @@ def cargar_indicadores():
     )
 
 
+def render_inicio_cliente_ejecutivo(cliente):
+    header("Inicio", f"Panel ejecutivo | {cliente}")
+
+    servicios = servicios_activos_cliente(cliente)
+
+    # --------------------------------------------------------
+    # Servicios activos
+    # --------------------------------------------------------
+    servicios_texto = []
+
+    if servicios.get("digital"):
+        servicios_texto.append("Ecosistema digital")
+
+    if servicios.get("consultoria"):
+        servicios_texto.append("Consultoría")
+
+    if servicios.get("contabilidad"):
+        servicios_texto.append("Contabilidad / gestión")
+
+    st.markdown("### Servicios activos")
+
+    if servicios_texto:
+        cols = st.columns(len(servicios_texto))
+
+        for i, servicio in enumerate(servicios_texto):
+            with cols[i]:
+                st.markdown(
+                    f"""
+                    <div style="
+                        background:white;
+                        border:1px solid #E5E7EB;
+                        border-radius:18px;
+                        padding:18px;
+                        box-shadow:0 8px 20px rgba(16,24,40,0.04);
+                        min-height:92px;
+                    ">
+                        <div style="font-size:0.78rem; color:#667085; font-weight:700;">
+                            Servicio contratado
+                        </div>
+                        <div style="font-size:1.05rem; color:#172033; font-weight:900; margin-top:8px;">
+                            {servicio}
+                        </div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+    else:
+        st.info("Todavía no hay servicios activos configurados para este cliente.")
+
+    # --------------------------------------------------------
+    # Cargar fuentes
+    # --------------------------------------------------------
+    objetivos = cargar_objetivos() if "cargar_objetivos" in globals() else pd.DataFrame()
+    movimientos = read_csv(
+        INDICADORES_MOVIMIENTOS_PATH,
+        ["id", "cliente", "mes", "tipo", "categoria", "importe", "observacion", "fecha_carga", "cargado_por"],
+    ) if "INDICADORES_MOVIMIENTOS_PATH" in globals() else pd.DataFrame()
+
+    contenidos = read_csv(
+        CONTENIDOS_PATH,
+        ["id", "cliente", "fecha", "canal", "formato", "tema", "objetivo", "copy", "link", "estado", "comentarios_cliente"],
+    )
+
+    materiales = read_csv(
+        MATERIALES_PATH,
+        ["id", "cliente", "solicitud", "responsable_cliente", "fecha_limite", "estado", "observacion"],
+    )
+
+    # --------------------------------------------------------
+    # Objetivos
+    # --------------------------------------------------------
+    obj_cliente = objetivos.copy()
+    if obj_cliente is not None and not obj_cliente.empty and "cliente" in obj_cliente.columns:
+        obj_cliente = obj_cliente[obj_cliente["cliente"].astype(str) == str(cliente)]
+    else:
+        obj_cliente = pd.DataFrame()
+
+    if not obj_cliente.empty:
+        obj_en_curso = obj_cliente[obj_cliente["estado"].astype(str).isin(["Pendiente", "En curso", "En revisión"])] if "estado" in obj_cliente.columns else obj_cliente
+        obj_finalizados = obj_cliente[obj_cliente["estado"].astype(str) == "Finalizado"] if "estado" in obj_cliente.columns else pd.DataFrame()
+        avance_promedio = pd.to_numeric(obj_cliente.get("avance", 0), errors="coerce").fillna(0).mean() if "avance" in obj_cliente.columns else 0
+    else:
+        obj_en_curso = pd.DataFrame()
+        obj_finalizados = pd.DataFrame()
+        avance_promedio = 0
+
+    # --------------------------------------------------------
+    # Indicadores
+    # --------------------------------------------------------
+    mov_cliente = movimientos.copy()
+    if mov_cliente is not None and not mov_cliente.empty and "cliente" in mov_cliente.columns:
+        mov_cliente = mov_cliente[mov_cliente["cliente"].astype(str) == str(cliente)]
+    else:
+        mov_cliente = pd.DataFrame()
+
+    ingresos_total = 0
+    gastos_total = 0
+    resultado_total = 0
+    ultimo_mes = ""
+
+    if not mov_cliente.empty:
+        mov_cliente["importe"] = pd.to_numeric(mov_cliente["importe"], errors="coerce").fillna(0)
+        mov_cliente["mes"] = mov_cliente["mes"].astype(str)
+
+        ultimo_mes = sorted(mov_cliente["mes"].dropna().astype(str).unique().tolist())[-1]
+        mov_ultimo = mov_cliente[mov_cliente["mes"] == ultimo_mes]
+
+        ingresos_total = mov_ultimo.loc[mov_ultimo["tipo"] == "Ingreso", "importe"].sum()
+        gastos_total = mov_ultimo.loc[mov_ultimo["tipo"] == "Gasto", "importe"].sum()
+        resultado_total = ingresos_total - gastos_total
+
+    # --------------------------------------------------------
+    # Contenidos y materiales
+    # --------------------------------------------------------
+    cont_cliente = contenidos.copy()
+    if cont_cliente is not None and not cont_cliente.empty and "cliente" in cont_cliente.columns:
+        cont_cliente = cont_cliente[cont_cliente["cliente"].astype(str) == str(cliente)]
+    else:
+        cont_cliente = pd.DataFrame()
+
+    mat_cliente = materiales.copy()
+    if mat_cliente is not None and not mat_cliente.empty and "cliente" in mat_cliente.columns:
+        mat_cliente = mat_cliente[mat_cliente["cliente"].astype(str) == str(cliente)]
+    else:
+        mat_cliente = pd.DataFrame()
+
+    pendientes_aprobacion = 0
+    if not cont_cliente.empty and "estado" in cont_cliente.columns:
+        pendientes_aprobacion = cont_cliente["estado"].astype(str).str.contains("Pendiente|Correcciones|En diseño", case=False, na=False).sum()
+
+    materiales_pendientes = 0
+    if not mat_cliente.empty and "estado" in mat_cliente.columns:
+        materiales_pendientes = mat_cliente["estado"].astype(str).str.contains("Solicitado|Pendiente", case=False, na=False).sum()
+
+    # --------------------------------------------------------
+    # KPIs resumen
+    # --------------------------------------------------------
+    st.markdown("### Resumen operativo")
+
+    k1, k2, k3, k4 = st.columns(4)
+
+    k1.metric("Objetivos activos", len(obj_en_curso))
+    k2.metric("Avance promedio", f"{avance_promedio:.0f}%")
+
+    if servicios.get("digital"):
+        k3.metric("Aprobaciones pendientes", int(pendientes_aprobacion))
+        k4.metric("Materiales pendientes", int(materiales_pendientes))
+    elif servicios.get("contabilidad"):
+        k3.metric("Último mes", ultimo_mes or "-")
+        k4.metric("Resultado", f"$ {resultado_total:,.0f}".replace(",", "."))
+    else:
+        k3.metric("Objetivos finalizados", len(obj_finalizados))
+        k4.metric("Próximas acciones", len(obj_en_curso))
+
+    # --------------------------------------------------------
+    # Bloques principales
+    # --------------------------------------------------------
+    col_a, col_b = st.columns(2)
+
+    with col_a:
+        st.markdown("### Próximas acciones")
+
+        if obj_en_curso.empty:
+            st.info("No hay próximas acciones cargadas.")
+        else:
+            acciones = obj_en_curso.copy()
+
+            if "fecha_limite" in acciones.columns:
+                acciones = acciones.sort_values("fecha_limite", ascending=True)
+
+            acciones = acciones.head(5)
+
+            for _, row in acciones.iterrows():
+                st.markdown(
+                    f"""
+                    <div style="
+                        background:white;
+                        border:1px solid #E5E7EB;
+                        border-radius:16px;
+                        padding:14px 16px;
+                        margin-bottom:10px;
+                        box-shadow:0 6px 16px rgba(16,24,40,0.04);
+                    ">
+                        <div style="font-weight:850; color:#172033; margin-bottom:5px;">
+                            {row.get('objetivo', '')}
+                        </div>
+                        <div style="font-size:0.86rem; color:#667085; margin-bottom:6px;">
+                            {row.get('proxima_accion', '')}
+                        </div>
+                        <div style="font-size:0.78rem; color:#244777;">
+                            Estado: {row.get('estado', '')} · Límite: {row.get('fecha_limite', '')}
+                        </div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+
+    with col_b:
+        if servicios.get("contabilidad") and not mov_cliente.empty:
+            st.markdown("### Último Cash Flow")
+
+            i1, i2, i3 = st.columns(3)
+            i1.metric("Ingresos", f"$ {ingresos_total:,.0f}".replace(",", "."))
+            i2.metric("Gastos", f"$ {gastos_total:,.0f}".replace(",", "."))
+            i3.metric("Resultado", f"$ {resultado_total:,.0f}".replace(",", "."))
+
+            st.caption(f"Último mes cargado: {ultimo_mes}")
+
+        elif servicios.get("digital"):
+            st.markdown("### Pendientes digitales")
+
+            if pendientes_aprobacion == 0 and materiales_pendientes == 0:
+                st.success("No hay pendientes digitales críticos.")
+            else:
+                st.warning(
+                    f"Hay {pendientes_aprobacion} contenido(s) pendiente(s) y "
+                    f"{materiales_pendientes} solicitud(es) de material pendiente(s)."
+                )
+
+            if not cont_cliente.empty:
+                recientes = cont_cliente.tail(5)
+                st.markdown("#### Últimos contenidos")
+                st.dataframe(
+                    recientes[[c for c in ["fecha", "canal", "formato", "tema", "estado"] if c in recientes.columns]],
+                    use_container_width=True,
+                    hide_index=True,
+                )
+
+        else:
+            st.markdown("### Estado general")
+            st.info("Usá Objetivos para crear, actualizar y seguir el plan de trabajo.")
+
+    # --------------------------------------------------------
+    # Accesos rápidos
+    # --------------------------------------------------------
+    st.markdown("### Accesos rápidos")
+
+    accesos = ["Objetivos"]
+
+    if servicios.get("digital"):
+        accesos += ["Calendario", "Aprobaciones", "Materiales", "Campañas", "Reportes"]
+
+    if servicios.get("contabilidad"):
+        accesos += ["Cash Flow"]
+
+    if servicios.get("consultoria") or servicios.get("contabilidad"):
+        accesos += ["Documentos"]
+
+    accesos_limpios = []
+    for acceso in accesos:
+        if acceso not in accesos_limpios:
+            accesos_limpios.append(acceso)
+
+    cols = st.columns(min(len(accesos_limpios), 4))
+
+    for i, acceso in enumerate(accesos_limpios):
+        with cols[i % len(cols)]:
+            st.markdown(
+                f"""
+                <div style="
+                    background:#F8FAFC;
+                    border:1px solid #E5E7EB;
+                    border-radius:15px;
+                    padding:13px 14px;
+                    margin-bottom:10px;
+                    text-align:center;
+                    font-weight:800;
+                    color:#244777;
+                ">
+                    {acceso}
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+
+
+
 def render_objetivos(cliente="", modo="cliente"):
     objetivos = cargar_objetivos()
 
@@ -1942,11 +2438,6 @@ def render_objetivos(cliente="", modo="cliente"):
                 else:
                     cliente_obj = st.selectbox("Cliente", clientes_lista)
 
-                servicio = st.selectbox(
-                    "Servicio",
-                    ["Consultoría", "Contabilidad / gestión", "Ecosistema digital", "General"],
-                )
-
                 fecha_mes_objetivo = st.date_input("Mes y año", value=date.today(), key=f"fecha_mes_objetivo_{modo}_{cliente_fijo}")
                 mes = fecha_mes_objetivo.strftime("%Y-%m")
 
@@ -1976,7 +2467,6 @@ def render_objetivos(cliente="", modo="cliente"):
                     nuevo = {
                         "id": next_prefixed_id(objetivos, "OBJ"),
                         "cliente": cliente_obj,
-                        "servicio": servicio,
                         "mes": mes,
                         "objetivo": objetivo.strip(),
                         "descripcion": descripcion,
@@ -2026,20 +2516,9 @@ def render_objetivos(cliente="", modo="cliente"):
     # --------------------------------------------------------
     st.markdown("### Filtros")
 
-    filtro_cols = st.columns(5)
+    filtro_cols = st.columns(4)
 
     with filtro_cols[0]:
-        servicios_disponibles = ["Todos"]
-        if "servicio" in vista.columns:
-            servicios_disponibles += sorted(vista["servicio"].dropna().astype(str).unique().tolist())
-
-        filtro_servicio = st.selectbox(
-            "Servicio",
-            servicios_disponibles,
-            key=f"objetivos_filtro_servicio_{modo}_{cliente_fijo}",
-        )
-
-    with filtro_cols[1]:
         meses_disponibles = []
         if "mes" in vista.columns:
             meses_disponibles = sorted(vista["mes"].dropna().astype(str).unique().tolist())
@@ -2054,7 +2533,7 @@ def render_objetivos(cliente="", modo="cliente"):
         else:
             mes_desde = ""
 
-    with filtro_cols[2]:
+    with filtro_cols[1]:
         if meses_disponibles:
             mes_hasta = st.selectbox(
                 "Mes hasta",
@@ -2065,7 +2544,7 @@ def render_objetivos(cliente="", modo="cliente"):
         else:
             mes_hasta = ""
 
-    with filtro_cols[3]:
+    with filtro_cols[2]:
         estados_disponibles = ["Todos"]
         if "estado" in vista.columns:
             estados_disponibles += sorted(vista["estado"].dropna().astype(str).unique().tolist())
@@ -2076,7 +2555,7 @@ def render_objetivos(cliente="", modo="cliente"):
             key=f"objetivos_filtro_estado_{modo}_{cliente_fijo}",
         )
 
-    with filtro_cols[4]:
+    with filtro_cols[3]:
         prioridades_disponibles = ["Todas"]
         if "prioridad" in vista.columns:
             prioridades_disponibles += sorted(vista["prioridad"].dropna().astype(str).unique().tolist())
@@ -2086,9 +2565,6 @@ def render_objetivos(cliente="", modo="cliente"):
             prioridades_disponibles,
             key=f"objetivos_filtro_prioridad_{modo}_{cliente_fijo}",
         )
-
-    if filtro_servicio != "Todos" and "servicio" in vista.columns:
-        vista = vista[vista["servicio"].astype(str) == filtro_servicio]
 
     if mes_desde and mes_hasta and "mes" in vista.columns:
         desde = min(mes_desde, mes_hasta)
@@ -2251,7 +2727,7 @@ def render_objetivos(cliente="", modo="cliente"):
     # --------------------------------------------------------
     with st.expander("Detalle en tabla"):
         columnas = [
-            "cliente", "servicio", "mes", "objetivo", "descripcion",
+            "cliente", "mes", "objetivo", "descripcion",
             "responsable_am", "responsable_cliente", "prioridad", "estado",
             "avance", "proxima_accion", "fecha_limite", "comentarios"
         ]
@@ -2374,10 +2850,10 @@ def render_indicadores(cliente="", modo="cliente"):
         return sorted(cats)
 
     if modo == "cliente":
-        header("Indicadores", f"Carga mensual y tablero de gestión | {cliente}")
+        header("Cash Flow", f"Carga mensual y tablero de gestión | {cliente}")
         cliente_fijo = cliente
     else:
-        header("Indicadores", "Carga mensual y tablero de gestión por cliente")
+        header("Cash Flow", "Carga mensual y tablero de gestión por cliente")
         cliente_fijo = ""
 
     clientes_df = read_csv(CLIENTES_PATH, ["cliente"])
@@ -3253,7 +3729,7 @@ def main():
         cliente = cliente_user
 
         if menu == "Inicio":
-            render_inicio_cliente(cliente, contenidos, materiales, campanias, reportes)
+            render_inicio_cliente_ejecutivo(cliente)
         elif menu == "Calendario":
             render_calendario(cliente, contenidos)
         elif menu == "Aprobaciones":
@@ -3268,7 +3744,7 @@ def main():
             render_objetivos(cliente, modo="cliente")
         elif menu == "Documentos":
             render_documentos(cliente, modo="cliente")
-        elif menu == "Indicadores":
+        elif menu == "Cash Flow":
             render_indicadores(cliente, modo="cliente")
 
     else:
@@ -3278,13 +3754,15 @@ def main():
             render_edicion_rapida(clientes, contenidos, materiales, campanias, reportes, tareas)
         elif menu == "Usuarios":
             render_usuarios(clientes)
+        elif menu == "Onboarding":
+            render_onboarding_cliente()
         elif menu == "Clientes":
             render_crud_table("Clientes", CLIENTES_PATH, clientes)
         elif menu == "Objetivos":
             render_objetivos("", modo="admin")
         elif menu == "Documentos":
             render_documentos("", modo="admin")
-        elif menu == "Indicadores":
+        elif menu == "Cash Flow":
             render_indicadores("", modo="admin")
         elif menu == "Contenidos":
             render_crud_table("Contenidos", CONTENIDOS_PATH, contenidos)
