@@ -2022,6 +2022,93 @@ def render_objetivos(cliente="", modo="cliente"):
             vista[col] = ""
 
     # --------------------------------------------------------
+    # Filtros de objetivos
+    # --------------------------------------------------------
+    st.markdown("### Filtros")
+
+    filtro_cols = st.columns(5)
+
+    with filtro_cols[0]:
+        servicios_disponibles = ["Todos"]
+        if "servicio" in vista.columns:
+            servicios_disponibles += sorted(vista["servicio"].dropna().astype(str).unique().tolist())
+
+        filtro_servicio = st.selectbox(
+            "Servicio",
+            servicios_disponibles,
+            key=f"objetivos_filtro_servicio_{modo}_{cliente_fijo}",
+        )
+
+    with filtro_cols[1]:
+        meses_disponibles = []
+        if "mes" in vista.columns:
+            meses_disponibles = sorted(vista["mes"].dropna().astype(str).unique().tolist())
+
+        if meses_disponibles:
+            mes_desde = st.selectbox(
+                "Mes desde",
+                meses_disponibles,
+                index=0,
+                key=f"objetivos_mes_desde_{modo}_{cliente_fijo}",
+            )
+        else:
+            mes_desde = ""
+
+    with filtro_cols[2]:
+        if meses_disponibles:
+            mes_hasta = st.selectbox(
+                "Mes hasta",
+                meses_disponibles,
+                index=len(meses_disponibles) - 1,
+                key=f"objetivos_mes_hasta_{modo}_{cliente_fijo}",
+            )
+        else:
+            mes_hasta = ""
+
+    with filtro_cols[3]:
+        estados_disponibles = ["Todos"]
+        if "estado" in vista.columns:
+            estados_disponibles += sorted(vista["estado"].dropna().astype(str).unique().tolist())
+
+        filtro_estado = st.selectbox(
+            "Estado",
+            estados_disponibles,
+            key=f"objetivos_filtro_estado_{modo}_{cliente_fijo}",
+        )
+
+    with filtro_cols[4]:
+        prioridades_disponibles = ["Todas"]
+        if "prioridad" in vista.columns:
+            prioridades_disponibles += sorted(vista["prioridad"].dropna().astype(str).unique().tolist())
+
+        filtro_prioridad = st.selectbox(
+            "Prioridad",
+            prioridades_disponibles,
+            key=f"objetivos_filtro_prioridad_{modo}_{cliente_fijo}",
+        )
+
+    if filtro_servicio != "Todos" and "servicio" in vista.columns:
+        vista = vista[vista["servicio"].astype(str) == filtro_servicio]
+
+    if mes_desde and mes_hasta and "mes" in vista.columns:
+        desde = min(mes_desde, mes_hasta)
+        hasta = max(mes_desde, mes_hasta)
+        vista = vista[
+            (vista["mes"].astype(str) >= desde)
+            & (vista["mes"].astype(str) <= hasta)
+        ]
+
+    if filtro_estado != "Todos" and "estado" in vista.columns:
+        vista = vista[vista["estado"].astype(str) == filtro_estado]
+
+    if filtro_prioridad != "Todas" and "prioridad" in vista.columns:
+        vista = vista[vista["prioridad"].astype(str) == filtro_prioridad]
+
+    if vista.empty:
+        st.info("No hay objetivos para los filtros seleccionados.")
+        return
+
+    # --------------------------------------------------------
     # KPIs
     # --------------------------------------------------------
     c1, c2, c3, c4 = st.columns(4)
