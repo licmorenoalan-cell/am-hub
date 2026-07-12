@@ -1638,60 +1638,84 @@ def render_calendario(cliente, contenidos):
 
     df = df.copy()
 
-    st.markdown(
-        """
-        <div style="
-            background: #FFFFFF;
-            border: 1px solid #E5E7EB;
-            border-radius: 22px;
-            padding: 22px 26px;
-            margin-bottom: 22px;
-            box-shadow: 0 12px 30px rgba(16, 24, 40, 0.05);
-        ">
-            <div style="font-size:1.25rem; font-weight:850; color:#172033; margin-bottom:6px;">
-                Vista de planificación
-            </div>
-            <div style="font-size:0.95rem; color:#667085; line-height:1.45;">
-                Acá podés consultar los contenidos planificados, sus objetivos y el estado de cada pieza.
-            </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
+    for col in ["fecha", "canal", "formato", "tema", "objetivo", "copy", "link_canva", "estado", "comentario_cliente"]:
+        if col not in df.columns:
+            df[col] = ""
 
-    total = len(df)
-    pendientes = df["estado"].astype(str).str.contains("Pendiente|revisión|aprobación|Correcciones|En diseño", case=False, na=False).sum()
-    aprobados = df["estado"].astype(str).str.contains("Aprobado|Programado|Publicado", case=False, na=False).sum()
+    df["fecha"] = df["fecha"].astype(str)
+    df["mes"] = df["fecha"].str.slice(0, 7)
 
-    c1, c2, c3 = st.columns(3)
-    c1.metric("Contenidos planificados", total)
-    c2.metric("Pendientes / revisión", int(pendientes))
-    c3.metric("Aprobados / programados", int(aprobados))
+    meses = sorted(df["mes"].dropna().astype(str).unique().tolist())
+    estados = ["Todos"] + sorted(df["estado"].dropna().astype(str).unique().tolist())
+    formatos = ["Todos"] + sorted(df["formato"].dropna().astype(str).unique().tolist())
 
-    st.markdown("<div style='height: 10px;'></div>", unsafe_allow_html=True)
+    st.markdown("### Filtros")
 
     f1, f2, f3 = st.columns(3)
 
     with f1:
-        estados = ["Todos"] + sorted(df["estado"].dropna().astype(str).unique().tolist())
-        estado = st.selectbox("Estado", estados, key="cal_estado_cliente")
+        mes_sel = st.selectbox(
+            "Mes",
+            ["Todos"] + meses,
+            index=0,
+            key=f"cal_mes_{cliente}",
+        )
 
     with f2:
-        formatos = ["Todos"] + sorted(df["formato"].dropna().astype(str).unique().tolist())
-        formato = st.selectbox("Formato", formatos, key="cal_formato_cliente")
+        estado_sel = st.selectbox(
+            "Estado",
+            estados,
+            key=f"cal_estado_cliente_{cliente}",
+        )
 
     with f3:
-        canales = ["Todos"] + sorted(df["canal"].dropna().astype(str).unique().tolist())
-        canal = st.selectbox("Canal", canales, key="cal_canal_cliente")
+        formato_sel = st.selectbox(
+            "Formato",
+            formatos,
+            key=f"cal_formato_cliente_{cliente}",
+        )
 
     vista = df.copy()
 
-    if estado != "Todos":
-        vista = vista[vista["estado"].astype(str) == estado]
-    if formato != "Todos":
-        vista = vista[vista["formato"].astype(str) == formato]
-    if canal != "Todos":
-        vista = vista[vista["canal"].astype(str) == canal]
+    if mes_sel != "Todos":
+        vista = vista[vista["mes"] == mes_sel]
+
+    if estado_sel != "Todos":
+        vista = vista[vista["estado"].astype(str) == estado_sel]
+
+    if formato_sel != "Todos":
+        vista = vista[vista["formato"].astype(str) == formato_sel]
+
+    if vista.empty:
+        st.info("No hay contenidos para los filtros seleccionados.")
+        return
+
+    pendientes = vista["estado"].astype(str).str.contains(
+        "Pendiente|revisión|aprobación|Correcciones|En diseño",
+        case=False,
+        na=False,
+    ).sum()
+
+    aprobados = vista["estado"].astype(str).str.contains(
+        "Aprobado|Programado|Publicado",
+        case=False,
+        na=False,
+    ).sum()
+
+    publicados = vista["estado"].astype(str).str.contains(
+        "Publicado",
+        case=False,
+        na=False,
+    ).sum()
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Total", len(vista))
+    c2.metric("Pendientes", int(pendientes))
+    c3.metric("Aprobados / programados", int(aprobados))
+    c4.metric("Publicados", int(publicados))
+
+    if "fecha" in vista.columns:
+        vista = vista.sort_values("fecha")
 
     st.markdown("### Calendario")
 
@@ -1706,25 +1730,18 @@ def render_calendario(cliente, contenidos):
 
     st.markdown("### Detalle de piezas")
 
-    for _, row in vista.head(10).iterrows():
+    for _, row in vista.iterrows():
+        estado = str(row.get("estado", ""))
+
         with st.container(border=True):
-            top_left, top_right = st.columns([0.76, 0.24])
+            top1, top2 = st.columns([0.72, 0.28])
 
-            with top_left:
-                st.markdown(
-                    f"""
-                    <div style="font-size:1.05rem; font-weight:800; color:#172033;">
-                        {row.get('formato', '')} — {row.get('tema', '')}
-                    </div>
-                    <div style="font-size:0.88rem; color:#667085; margin-top:3px;">
-                        {row.get('fecha', '')} | {row.get('canal', '')}
-                    </div>
-                    """,
-                    unsafe_allow_html=True,
-                )
+            with top1:
+                st.markdown(f"**{row.get('formato', '')} — {row.get('tema', '')}**")
+                st.caption(f"{row.get('fecha', '')} | {row.get('canal', '')}")
 
-            with top_right:
-                st.markdown(status_badge(row.get("estado", "")), unsafe_allow_html=True)
+            with top2:
+                st.markdown(status_badge(estado), unsafe_allow_html=True)
 
             objetivo = str(row.get("objetivo", "")).strip()
             if objetivo:
@@ -1736,9 +1753,15 @@ def render_calendario(cliente, contenidos):
                 with st.expander("Ver copy"):
                     st.write(copy_text)
 
+            comentario = str(row.get("comentario_cliente", "")).strip()
+            if comentario:
+                with st.expander("Comentario / correcciones"):
+                    st.write(comentario)
+
             link_canva = str(row.get("link_canva", "")).strip()
             if link_canva:
-                st.link_button("Ver diseño en Canva", link_canva)
+                st.link_button("Ver diseño", link_canva)
+
 
 def render_aprobaciones(cliente, contenidos):
     header("Aprobaciones", f"Revisión de contenidos y copies | {cliente}")
@@ -1748,6 +1771,12 @@ def render_aprobaciones(cliente, contenidos):
     if df.empty:
         st.info("No hay contenidos cargados para aprobar.")
         return
+
+    df = df.copy()
+
+    for col in ["id", "fecha", "canal", "formato", "tema", "objetivo", "copy", "link_canva", "estado", "comentario_cliente"]:
+        if col not in df.columns:
+            df[col] = ""
 
     pendientes = df[
         df["estado"].astype(str).str.contains(
@@ -1766,82 +1795,84 @@ def render_aprobaciones(cliente, contenidos):
     ].copy()
 
     c1, c2, c3 = st.columns(3)
-    c1.metric("Pendientes", len(pendientes))
+    c1.metric("Para revisar", len(pendientes))
     c2.metric("Aprobados / programados", len(aprobados))
     c3.metric("Total contenidos", len(df))
 
-    st.markdown("<div style='height: 12px;'></div>", unsafe_allow_html=True)
+    st.markdown("### Contenidos que requieren acción")
 
     if pendientes.empty:
         st.success("No hay contenidos pendientes de revisión.")
-        return
+    else:
+        contenidos_all = contenidos.copy()
 
-    st.markdown("### Contenidos para revisar")
+        for _, row in pendientes.sort_values("fecha").iterrows():
+            row_id = row.get("id", "")
+            estado_actual = str(row.get("estado", ""))
 
-    contenidos_all = contenidos.copy()
+            with st.container(border=True):
+                top_left, top_right = st.columns([0.72, 0.28])
 
-    for _, row in pendientes.iterrows():
-        estado_actual = str(row.get("estado", ""))
+                with top_left:
+                    st.markdown(f"**{row.get('formato', '')} — {row.get('tema', '')}**")
+                    st.caption(
+                        f"{row.get('fecha', '')} | {row.get('canal', '')} | Objetivo: {row.get('objetivo', '')}"
+                    )
 
-        with st.container(border=True):
-            top_left, top_right = st.columns([0.76, 0.24])
+                with top_right:
+                    st.markdown(status_badge(estado_actual), unsafe_allow_html=True)
 
-            with top_left:
-                st.markdown(
-                    f"""
-                    <div style="font-size:1.1rem; font-weight:800; color:#172033; margin-bottom:4px;">
-                        {row.get('formato', '')} — {row.get('tema', '')}
-                    </div>
-                    <div style="font-size:0.88rem; color:#667085; margin-bottom:10px;">
-                        {row.get('fecha', '')} | {row.get('canal', '')} | Objetivo: {row.get('objetivo', '')}
-                    </div>
-                    """,
-                    unsafe_allow_html=True,
+                copy_text = str(row.get("copy", "")).strip()
+                if copy_text:
+                    st.markdown("**Copy propuesto**")
+                    st.write(copy_text)
+
+                link_canva = str(row.get("link_canva", "")).strip()
+                if link_canva:
+                    st.link_button("Abrir diseño", link_canva)
+
+                comentario = st.text_area(
+                    "Comentario / correcciones",
+                    value=str(row.get("comentario_cliente", "")),
+                    key=f"comentario_cliente_{row_id}",
+                    placeholder="Escribí cambios o comentarios para el equipo AM...",
                 )
 
-            with top_right:
-                st.markdown(status_badge(estado_actual), unsafe_allow_html=True)
+                action_left, action_right = st.columns(2)
 
-            copy_text = str(row.get("copy", "")).strip()
-            if copy_text:
-                st.markdown("**Copy propuesto**")
-                st.write(copy_text)
+                with action_left:
+                    if st.button("Aprobar", key=f"aprobar_{row_id}", use_container_width=True):
+                        contenidos_all.loc[contenidos_all["id"] == row_id, "estado"] = "Aprobado"
+                        contenidos_all.loc[contenidos_all["id"] == row_id, "comentario_cliente"] = comentario
+                        save_csv(contenidos_all, CONTENIDOS_PATH)
+                        st.success("Contenido aprobado.")
+                        st.rerun()
 
-            link_canva = str(row.get("link_canva", "")).strip()
-            if link_canva:
-                st.link_button("Abrir diseño en Canva", link_canva)
+                with action_right:
+                    if st.button("Pedir cambios", key=f"corregir_{row_id}", use_container_width=True):
+                        if not comentario.strip():
+                            st.error("Para pedir cambios, agregá un comentario.")
+                        else:
+                            contenidos_all.loc[contenidos_all["id"] == row_id, "estado"] = "Correcciones"
+                            contenidos_all.loc[contenidos_all["id"] == row_id, "comentario_cliente"] = comentario
+                            save_csv(contenidos_all, CONTENIDOS_PATH)
+                            st.success("Pedido de cambios enviado.")
+                            st.rerun()
 
-            comentario = st.text_area(
-                "Comentario / correcciones",
-                value=str(row.get("comentario_cliente", "")),
-                key=f"comentario_cliente_{row.get('id', '')}",
-                placeholder="Escribí cambios o comentarios para el equipo AM...",
-            )
+    st.markdown("### Ya aprobados / programados")
 
-            action_left, action_right, _ = st.columns([0.28, 0.32, 0.40])
+    if aprobados.empty:
+        st.info("Todavía no hay contenidos aprobados.")
+    else:
+        cols = ["fecha", "canal", "formato", "tema", "estado"]
+        cols = [c for c in cols if c in aprobados.columns]
 
-            with action_left:
-                if st.button("Aprobar", key=f"aprobar_{row.get('id', '')}"):
-                    contenidos_all.loc[contenidos_all["id"] == row.get("id"), "estado"] = "Aprobado"
-                    contenidos_all.loc[contenidos_all["id"] == row.get("id"), "comentario_cliente"] = comentario
-                    save_csv(contenidos_all, CONTENIDOS_PATH)
-                    st.success("Contenido aprobado.")
-                    st.rerun()
+        st.dataframe(
+            aprobados.sort_values("fecha")[cols],
+            use_container_width=True,
+            hide_index=True,
+        )
 
-            with action_right:
-                if st.button("Pedir cambios", key=f"corregir_{row.get('id', '')}"):
-                    contenidos_all.loc[contenidos_all["id"] == row.get("id"), "estado"] = "Correcciones"
-                    contenidos_all.loc[contenidos_all["id"] == row.get("id"), "comentario_cliente"] = comentario
-                    save_csv(contenidos_all, CONTENIDOS_PATH)
-                    st.warning("Correcciones registradas.")
-                    st.rerun()
-
-    st.markdown("### Historial reciente")
-
-    cols = ["fecha", "canal", "formato", "tema", "estado"]
-    cols = [c for c in cols if c in df.columns]
-
-    st.dataframe(df[cols].tail(8), use_container_width=True, hide_index=True)
 
 def render_materiales(cliente, materiales):
     header("Materiales", f"Solicitudes de grabación y envío de material | {cliente}")
@@ -2121,6 +2152,197 @@ def render_reportes(cliente, reportes):
     cols = ["mes", "alcance", "interacciones", "consultas", "inversion", "estado"]
     cols = [c for c in cols if c in df.columns]
     st.dataframe(df[cols], use_container_width=True, hide_index=True)
+
+
+def render_gestion_clientes():
+    header("Clientes", "Gestión, edición y baja de clientes existentes.")
+
+    clientes_df = read_csv(
+        CLIENTES_PATH,
+        [
+            "cliente",
+            "rubro",
+            "estado",
+            "plan",
+            "responsable_am",
+            "fecha_inicio",
+            "servicio_digital",
+            "servicio_consultoria",
+            "servicio_contabilidad",
+            "notas",
+        ],
+    )
+
+    if clientes_df is None or clientes_df.empty:
+        st.info("No hay clientes cargados.")
+        return
+
+    for col in [
+        "cliente",
+        "rubro",
+        "estado",
+        "plan",
+        "responsable_am",
+        "fecha_inicio",
+        "servicio_digital",
+        "servicio_consultoria",
+        "servicio_contabilidad",
+        "notas",
+    ]:
+        if col not in clientes_df.columns:
+            clientes_df[col] = ""
+
+    st.markdown("### Resumen")
+
+    activos = clientes_df["estado"].astype(str).str.contains("Activo", case=False, na=False).sum() if "estado" in clientes_df.columns else 0
+    prospectos = clientes_df["estado"].astype(str).str.contains("Prospecto", case=False, na=False).sum() if "estado" in clientes_df.columns else 0
+    pausados = clientes_df["estado"].astype(str).str.contains("Pausado", case=False, na=False).sum() if "estado" in clientes_df.columns else 0
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Total clientes", len(clientes_df))
+    c2.metric("Activos", int(activos))
+    c3.metric("Prospectos", int(prospectos))
+    c4.metric("Pausados", int(pausados))
+
+    st.markdown("### Editar clientes")
+
+    st.caption(
+        "El alta principal se hace desde Onboarding. Acá podés corregir datos, cambiar servicios, pausar o eliminar clientes."
+    )
+
+    # Normalizar tipos para que Streamlit permita editar columnas de texto sin errores.
+    columnas_texto = [
+        "cliente",
+        "rubro",
+        "estado",
+        "plan",
+        "responsable_am",
+        "fecha_inicio",
+        "servicio_digital",
+        "servicio_consultoria",
+        "servicio_contabilidad",
+        "notas",
+    ]
+
+    for col in columnas_texto:
+        if col in clientes_df.columns:
+            clientes_df[col] = clientes_df[col].fillna("").astype(str)
+
+    edited = st.data_editor(
+        clientes_df,
+        use_container_width=True,
+        hide_index=True,
+        num_rows="dynamic",
+        column_config={
+            "cliente": st.column_config.TextColumn("Cliente", required=True),
+            "rubro": st.column_config.TextColumn("Rubro"),
+            "estado": st.column_config.SelectboxColumn(
+                "Estado",
+                options=["Activo", "Prospecto", "Pausado", "Finalizado"],
+                required=True,
+            ),
+            "plan": st.column_config.TextColumn("Plan / acuerdo"),
+            "responsable_am": st.column_config.TextColumn("Responsable AM"),
+            "fecha_inicio": st.column_config.TextColumn("Fecha inicio"),
+            "servicio_digital": st.column_config.SelectboxColumn(
+                "Ecosistema digital",
+                options=["Sí", "No"],
+                required=True,
+            ),
+            "servicio_consultoria": st.column_config.SelectboxColumn(
+                "Consultoría",
+                options=["Sí", "No"],
+                required=True,
+            ),
+            "servicio_contabilidad": st.column_config.SelectboxColumn(
+                "Cash Flow / gestión",
+                options=["Sí", "No"],
+                required=True,
+            ),
+            "notas": st.column_config.TextColumn("Notas"),
+        },
+        key="gestion_clientes_editor",
+    )
+
+    if st.button("Guardar cambios de clientes", use_container_width=True):
+        save_csv(edited, CLIENTES_PATH)
+        st.success("Clientes actualizados.")
+        st.rerun()
+
+    st.markdown("### Eliminar cliente")
+
+    clientes_lista = sorted(clientes_df["cliente"].dropna().astype(str).unique().tolist())
+
+    with st.form("form_eliminar_cliente"):
+        cliente_eliminar = st.selectbox("Cliente a eliminar", clientes_lista)
+        modo_baja = st.radio(
+            "Tipo de baja",
+            [
+                "Solo eliminar de Clientes",
+                "Eliminar cliente y datos vinculados",
+            ],
+            help="La segunda opción elimina también contenidos, materiales, campañas, reportes, objetivos, cash flow, asignaciones y usuarios cliente vinculados.",
+        )
+
+        confirmar = st.checkbox(f"Confirmo eliminar: {cliente_eliminar}")
+
+        eliminar = st.form_submit_button("Eliminar cliente", use_container_width=True)
+
+        if eliminar:
+            if not confirmar:
+                st.error("Marcá la confirmación antes de eliminar.")
+                return
+
+            cliente_eliminar = str(cliente_eliminar)
+
+            clientes_nuevo = clientes_df[
+                clientes_df["cliente"].astype(str) != cliente_eliminar
+            ].copy()
+
+            save_csv(clientes_nuevo, CLIENTES_PATH)
+
+            if modo_baja == "Eliminar cliente y datos vinculados":
+                archivos_cliente = [
+                    CONTENIDOS_PATH,
+                    MATERIALES_PATH,
+                    CAMPANIAS_PATH,
+                    REPORTES_PATH,
+                    OBJETIVOS_PATH,
+                    DOCUMENTOS_PATH,
+                    INDICADORES_PATH,
+                ]
+
+                if "INDICADORES_MOVIMIENTOS_PATH" in globals():
+                    archivos_cliente.append(INDICADORES_MOVIMIENTOS_PATH)
+
+                if "ASIGNACIONES_EQUIPO_PATH" in globals():
+                    archivos_cliente.append(ASIGNACIONES_EQUIPO_PATH)
+
+                for archivo in archivos_cliente:
+                    try:
+                        df_archivo = pd.read_csv(archivo)
+
+                        if "cliente" in df_archivo.columns:
+                            df_archivo = df_archivo[
+                                df_archivo["cliente"].astype(str) != cliente_eliminar
+                            ].copy()
+                            df_archivo.to_csv(archivo, index=False)
+                    except Exception:
+                        pass
+
+                try:
+                    usuarios_df = load_users_df()
+                    if "cliente" in usuarios_df.columns:
+                        usuarios_df = usuarios_df[
+                            usuarios_df["cliente"].astype(str) != cliente_eliminar
+                        ].copy()
+                        save_users_df(usuarios_df)
+                except Exception:
+                    pass
+
+            st.success("Cliente eliminado correctamente.")
+            st.rerun()
+
 
 
 def render_onboarding_cliente():
@@ -2459,6 +2681,55 @@ def render_usuarios(clientes):
                 save_users_df(df)
                 st.success("Usuario creado correctamente.")
                 st.rerun()
+
+    st.markdown("### Baja rápida de usuarios")
+
+    usuarios_eliminables = []
+    if df is not None and not df.empty and "username" in df.columns:
+        usuarios_eliminables = sorted(df["username"].dropna().astype(str).unique().tolist())
+
+    with st.form("form_baja_usuario"):
+        usuario_baja = st.selectbox("Usuario", usuarios_eliminables)
+        accion_usuario = st.radio(
+            "Acción",
+            ["Desactivar usuario", "Eliminar usuario definitivamente"],
+        )
+        confirmar_usuario = st.checkbox(f"Confirmo la acción sobre el usuario: {usuario_baja}")
+
+        ejecutar_baja = st.form_submit_button("Aplicar acción sobre usuario", use_container_width=True)
+
+        if ejecutar_baja:
+            if not confirmar_usuario:
+                st.error("Marcá la confirmación antes de aplicar la acción.")
+            elif usuario_baja == st.session_state.get("username", "") and accion_usuario == "Eliminar usuario definitivamente":
+                st.error("No podés eliminar tu propio usuario desde esta pantalla.")
+            else:
+                df_actualizado = df.copy()
+
+                if accion_usuario == "Desactivar usuario":
+                    df_actualizado.loc[
+                        df_actualizado["username"].astype(str) == str(usuario_baja),
+                        "activo"
+                    ] = "No"
+                else:
+                    df_actualizado = df_actualizado[
+                        df_actualizado["username"].astype(str) != str(usuario_baja)
+                    ].copy()
+
+                    if "ASIGNACIONES_EQUIPO_PATH" in globals():
+                        try:
+                            asignaciones = cargar_asignaciones_equipo()
+                            asignaciones = asignaciones[
+                                asignaciones["username"].astype(str) != str(usuario_baja)
+                            ].copy()
+                            save_csv(asignaciones, ASIGNACIONES_EQUIPO_PATH)
+                        except Exception:
+                            pass
+
+                save_users_df(df_actualizado)
+                st.success("Usuario actualizado correctamente.")
+                st.rerun()
+
 
     st.markdown("### Editar usuarios existentes")
 
@@ -3911,7 +4182,10 @@ def render_admin_dashboard(clientes, contenidos, materiales, campanias, reportes
     if contenidos.empty:
         st.info("No hay contenidos.")
     else:
-        st.dataframe(contenidos[["cliente", "fecha", "formato", "tema", "estado"]], use_container_width=True, hide_index=True)
+        vista_contenidos = contenidos[["cliente", "fecha", "formato", "tema", "estado"]].copy()
+        if "fecha" in vista_contenidos.columns:
+            vista_contenidos = vista_contenidos.sort_values("fecha").head(20)
+        st.dataframe(vista_contenidos, use_container_width=True, hide_index=True)
 
     st.markdown("### Tareas internas")
     if tareas.empty:
@@ -4389,7 +4663,7 @@ def main():
             elif menu == "Onboarding":
                 render_onboarding_cliente()
             elif menu == "Clientes":
-                render_crud_table("Clientes", CLIENTES_PATH, clientes)
+                render_gestion_clientes()
             elif menu == "Objetivos":
                 render_objetivos("", modo="admin")
             elif menu == "Documentos":
