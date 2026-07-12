@@ -1,9 +1,11 @@
-.venv/
+
 __pycache__/
-*.pyc
 .DS_Store
-app.py.save
+.env
 .streamlit/secrets.toml
-backups_locales/
+.venv/
+*.pyc
+# Local secrets
 app_backup_pre_*.py
-.DS_Store
+app.py.save
+backups_locales/
