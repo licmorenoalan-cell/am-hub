@@ -39,7 +39,7 @@ COLOR_MUTED = "#667085"
 USERS = {
     "alan": {
         "password": "alan_admin_2026",
-        "role": "admin",
+        "role": "admin_general",
         "name": "Alan Moreno",
         "cliente": "",
     },
@@ -62,31 +62,6 @@ USERS = {
         "cliente": "EZCA Premoldeados",
     },
 }
-
-
-def logo_sidebar_path():
-    candidatos = [
-        logo_sidebar_path(),
-        ASSETS_DIR / "isologo B.jpg",
-        ASSETS_DIR / "isologo B.jpeg",
-        ASSETS_DIR / "isologo B.webp",
-        ASSETS_DIR / "isologo B",
-        ASSETS_DIR / "Isologo B.png",
-        ASSETS_DIR / "Isologo B.jpg",
-        ASSETS_DIR / "Isologo B.jpeg",
-        ASSETS_DIR / "Isologo B.webp",
-        ASSETS_DIR / "Isologo B",
-    ]
-    for p in candidatos:
-        if p.exists():
-            return p
-    return None
-
-
-
-def logo_login_path():
-    p = ASSETS_DIR / "isologo A.png"
-    return p if p.exists() else None
 
 
 def logo_sidebar_path():
@@ -796,11 +771,12 @@ def sidebar():
             ],
             key="menu_cliente",
         )
-    else:
+    elif role in ["admin_general", "admin"]:
         menu = st.sidebar.radio(
             "Menú",
             [
                 "Dashboard AM",
+                "Edición rápida",
                 "Usuarios",
                 "Clientes",
                 "Contenidos",
@@ -811,6 +787,20 @@ def sidebar():
                 "Vista cliente",
             ],
             key="menu_admin",
+        )
+    else:
+        menu = st.sidebar.radio(
+            "Menú",
+            [
+                "Dashboard AM",
+                "Contenidos",
+                "Materiales",
+                "Campañas",
+                "Reportes",
+                "Tareas",
+                "Vista cliente",
+            ],
+            key="menu_equipo",
         )
 
     st.sidebar.markdown("<div style='height: 34px;'></div>", unsafe_allow_html=True)
@@ -1253,32 +1243,160 @@ def render_aprobaciones(cliente, contenidos):
     st.dataframe(df[cols].tail(8), use_container_width=True, hide_index=True)
 
 def render_materiales(cliente, materiales):
-    header("Materiales pendientes", f"Solicitudes de material | {cliente}")
+    header("Materiales", f"Solicitudes de grabación y envío de material | {cliente}")
 
-    df = filter_cliente(materiales, cliente)
-
-    if df.empty:
+    if materiales is None or materiales.empty:
         st.info("No hay materiales solicitados.")
         return
 
+    df_all = materiales.copy()
+
+    # Columnas nuevas para que el cliente pueda responder desde el portal.
+    columnas_extra = {
+        "link_entrega": "",
+        "medio_envio": "",
+        "comentario_cliente": "",
+        "fecha_envio_cliente": "",
+    }
+
+    for col, default in columnas_extra.items():
+        if col not in df_all.columns:
+            df_all[col] = default
+
+    df = filter_cliente(df_all, cliente)
+
+    if df.empty:
+        st.info("No hay materiales solicitados para este cliente.")
+        return
+
+    estados_cerrados = "Recibido|Enviado para publicar|Usado|Cancelado"
     pendientes = df[
-        ~df["estado"].astype(str).str.contains("Recibido|Publicado|Usado", case=False, na=False)
+        ~df["estado"].astype(str).str.contains(estados_cerrados, case=False, na=False)
     ].copy()
 
-    c1, c2 = st.columns(2)
-    c1.metric("Solicitudes totales", len(df))
-    c2.metric("Pendientes", len(pendientes))
+    enviados = df[
+        df["estado"].astype(str).str.contains("Enviado para publicar|Recibido|Usado", case=False, na=False)
+    ].copy()
 
-    st.markdown("### Solicitudes")
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Materiales solicitados", len(df))
+    c2.metric("Pendientes de envío", len(pendientes))
+    c3.metric("Enviados / recibidos", len(enviados))
 
-    for _, row in df.iterrows():
-        with st.container(border=True):
-            st.write(f"**{row.get('solicitud', '')}**")
-            st.caption(f"Responsable: {row.get('responsable_cliente', '')} | Fecha límite: {row.get('fecha_limite', '')}")
-            st.markdown(status_badge(row.get("estado", "")), unsafe_allow_html=True)
+    st.markdown("### Materiales pendientes")
 
-            if str(row.get("observacion", "")).strip():
-                st.write(row.get("observacion", ""))
+    if pendientes.empty:
+        st.success("No tenés materiales pendientes de envío.")
+    else:
+        st.caption(
+            "Revisá cada solicitud, cargá el link del material o indicá si lo enviás por WhatsApp. "
+            "Al enviarlo queda marcado para que AM lo pueda producir o publicar."
+        )
+
+        for idx, row in pendientes.iterrows():
+            material_id = str(row.get("id", idx))
+            titulo = str(row.get("titulo", "") or row.get("tipo", "") or row.get("material", "") or row.get("descripcion", "Material solicitado"))
+            estado = str(row.get("estado", "Solicitado"))
+            fecha_limite = str(row.get("fecha_limite", "") or row.get("fecha", "") or "")
+            descripcion = str(row.get("descripcion", "") or row.get("detalle", "") or row.get("pedido", ""))
+            objetivo = str(row.get("objetivo", "") or row.get("uso", "") or row.get("destino", ""))
+            referencia = str(row.get("link_referencia", "") or row.get("referencia", "") or "")
+
+            with st.expander(f"{titulo} · {estado}", expanded=True):
+                col_a, col_b = st.columns([2, 1])
+
+                with col_a:
+                    if descripcion:
+                        st.markdown("**Qué necesitamos:**")
+                        st.write(descripcion)
+
+                    if objetivo:
+                        st.markdown("**Uso previsto:**")
+                        st.write(objetivo)
+
+                    if referencia:
+                        st.markdown("**Referencia / guía:**")
+                        st.write(referencia)
+
+                with col_b:
+                    if fecha_limite:
+                        st.markdown("**Fecha límite:**")
+                        st.write(fecha_limite)
+
+                    st.markdown("**Estado actual:**")
+                    st.write(estado)
+
+                st.markdown("#### Enviar material")
+
+                medio = st.selectbox(
+                    "Cómo lo vas a enviar",
+                    [
+                        "Link cargado acá",
+                        "Lo mando por WhatsApp",
+                        "Lo subo a Drive",
+                        "Lo envío por mail",
+                        "Otro",
+                    ],
+                    key=f"medio_material_{material_id}_{idx}",
+                )
+
+                link_entrega = st.text_input(
+                    "Link del material",
+                    value=str(row.get("link_entrega", "") or ""),
+                    placeholder="Pegá link de Drive, Dropbox, WeTransfer, Canva, etc.",
+                    key=f"link_material_{material_id}_{idx}",
+                )
+
+                comentario = st.text_area(
+                    "Comentario para AM",
+                    value=str(row.get("comentario_cliente", "") or ""),
+                    placeholder="Ej: lo mando por WhatsApp, falta grabar una parte, está en tal carpeta, etc.",
+                    key=f"comentario_material_{material_id}_{idx}",
+                    height=90,
+                )
+
+                puede_enviar = bool(link_entrega.strip()) or medio != "Link cargado acá" or bool(comentario.strip())
+
+                if st.button(
+                    "Marcar como enviado para publicar",
+                    key=f"enviar_material_{material_id}_{idx}",
+                    use_container_width=True,
+                    disabled=not puede_enviar,
+                ):
+                    df_all.loc[idx, "estado"] = "Enviado para publicar"
+                    df_all.loc[idx, "medio_envio"] = medio
+                    df_all.loc[idx, "link_entrega"] = link_entrega.strip()
+                    df_all.loc[idx, "comentario_cliente"] = comentario.strip()
+                    df_all.loc[idx, "fecha_envio_cliente"] = date.today().strftime("%Y-%m-%d")
+
+                    save_csv(df_all, MATERIALES_PATH)
+                    st.success("Material enviado. Quedó marcado para revisión y publicación.")
+                    st.rerun()
+
+    st.markdown("### Materiales enviados")
+
+    if enviados.empty:
+        st.info("Todavía no hay materiales enviados.")
+    else:
+        columnas = [
+            "id",
+            "fecha",
+            "fecha_limite",
+            "tipo",
+            "material",
+            "descripcion",
+            "estado",
+            "medio_envio",
+            "link_entrega",
+            "comentario_cliente",
+            "fecha_envio_cliente",
+        ]
+        columnas = [c for c in columnas if c in enviados.columns]
+        st.dataframe(
+            enviados[columnas].sort_index(ascending=False),
+            use_container_width=True,
+            hide_index=True,
+        )
 
 
 def render_campanias(cliente, campanias):
@@ -1433,7 +1551,7 @@ def render_usuarios(clientes):
     c1, c2, c3 = st.columns(3)
     c1.metric("Usuarios activos", len(df[df["activo"].astype(str).str.lower().isin(["sí", "si", "activo", "true", "1"])]))
     c2.metric("Clientes", len(df[df["role"] == "cliente"]))
-    c3.metric("Equipo AM", len(df[df["role"].isin(["admin", "equipo"])]))
+    c3.metric("Equipo AM", len(df[df["role"].isin(["admin_general", "admin", "equipo"])]))
 
     st.markdown("### Crear nuevo usuario")
 
@@ -1450,7 +1568,7 @@ def render_usuarios(clientes):
 
         with col2:
             password = st.text_input("Contraseña")
-            role = st.selectbox("Rol", ["cliente", "equipo", "admin"])
+            role = st.selectbox("Rol", ["cliente", "equipo", "admin", "admin_general"])
 
         with col3:
             cliente = st.selectbox("Cliente asociado", clientes_lista)
@@ -1496,7 +1614,7 @@ def render_usuarios(clientes):
         column_config={
             "username": st.column_config.TextColumn("Usuario", required=True),
             "password": st.column_config.TextColumn("Contraseña"),
-            "role": st.column_config.SelectboxColumn("Rol", options=["admin", "equipo", "cliente"], required=True),
+            "role": st.column_config.SelectboxColumn("Rol", options=["admin_general", "admin", "equipo", "cliente"], required=True),
             "name": st.column_config.TextColumn("Nombre visible"),
             "cliente": st.column_config.SelectboxColumn("Cliente asociado", options=clientes_lista),
             "activo": st.column_config.SelectboxColumn("Activo", options=["Sí", "No"], required=True),
@@ -1510,6 +1628,154 @@ def render_usuarios(clientes):
         st.rerun()
 
 
+
+
+
+def render_edicion_rapida(clientes, contenidos, materiales, campanias, reportes, tareas):
+    header("Edición rápida", "Panel general para modificar datos operativos del portal.")
+
+    role = st.session_state.get("role", "")
+
+    if role not in ["admin_general", "admin"]:
+        st.error("No tenés permisos para acceder a edición rápida.")
+        return
+
+    st.warning(
+        "Este panel permite editar datos en tabla. Usalo para correcciones rápidas, altas masivas o ajustes operativos."
+    )
+
+    tabs = st.tabs([
+        "Usuarios",
+        "Clientes",
+        "Contenidos",
+        "Materiales",
+        "Campañas",
+        "Reportes",
+        "Tareas",
+    ])
+
+    with tabs[0]:
+        st.markdown("### Usuarios")
+        usuarios_df = load_users_df()
+
+        clientes_lista = [""]
+        if clientes is not None and not clientes.empty and "cliente" in clientes.columns:
+            clientes_lista += sorted(clientes["cliente"].dropna().astype(str).unique().tolist())
+
+        edited = st.data_editor(
+            usuarios_df,
+            use_container_width=True,
+            hide_index=True,
+            num_rows="dynamic",
+            column_config={
+                "username": st.column_config.TextColumn("Usuario", required=True),
+                "password": st.column_config.TextColumn("Contraseña"),
+                "role": st.column_config.SelectboxColumn(
+                    "Rol",
+                    options=["admin_general", "admin", "equipo", "cliente"],
+                    required=True,
+                ),
+                "name": st.column_config.TextColumn("Nombre visible"),
+                "cliente": st.column_config.SelectboxColumn("Cliente asociado", options=clientes_lista),
+                "activo": st.column_config.SelectboxColumn("Activo", options=["Sí", "No"], required=True),
+            },
+            key="editor_rapido_usuarios",
+        )
+
+        if st.button("Guardar usuarios", use_container_width=True, key="guardar_rapido_usuarios"):
+            save_users_df(edited)
+            st.success("Usuarios guardados.")
+            st.rerun()
+
+    with tabs[1]:
+        st.markdown("### Clientes")
+        edited = st.data_editor(
+            clientes,
+            use_container_width=True,
+            hide_index=True,
+            num_rows="dynamic",
+            key="editor_rapido_clientes",
+        )
+
+        if st.button("Guardar clientes", use_container_width=True, key="guardar_rapido_clientes"):
+            save_csv(edited, CLIENTES_PATH)
+            st.success("Clientes guardados.")
+            st.rerun()
+
+    with tabs[2]:
+        st.markdown("### Contenidos")
+        edited = st.data_editor(
+            contenidos,
+            use_container_width=True,
+            hide_index=True,
+            num_rows="dynamic",
+            key="editor_rapido_contenidos",
+        )
+
+        if st.button("Guardar contenidos", use_container_width=True, key="guardar_rapido_contenidos"):
+            save_csv(edited, CONTENIDOS_PATH)
+            st.success("Contenidos guardados.")
+            st.rerun()
+
+    with tabs[3]:
+        st.markdown("### Materiales")
+        edited = st.data_editor(
+            materiales,
+            use_container_width=True,
+            hide_index=True,
+            num_rows="dynamic",
+            key="editor_rapido_materiales",
+        )
+
+        if st.button("Guardar materiales", use_container_width=True, key="guardar_rapido_materiales"):
+            save_csv(edited, MATERIALES_PATH)
+            st.success("Materiales guardados.")
+            st.rerun()
+
+    with tabs[4]:
+        st.markdown("### Campañas")
+        edited = st.data_editor(
+            campanias,
+            use_container_width=True,
+            hide_index=True,
+            num_rows="dynamic",
+            key="editor_rapido_campanias",
+        )
+
+        if st.button("Guardar campañas", use_container_width=True, key="guardar_rapido_campanias"):
+            save_csv(edited, CAMPANIAS_PATH)
+            st.success("Campañas guardadas.")
+            st.rerun()
+
+    with tabs[5]:
+        st.markdown("### Reportes")
+        edited = st.data_editor(
+            reportes,
+            use_container_width=True,
+            hide_index=True,
+            num_rows="dynamic",
+            key="editor_rapido_reportes",
+        )
+
+        if st.button("Guardar reportes", use_container_width=True, key="guardar_rapido_reportes"):
+            save_csv(edited, REPORTES_PATH)
+            st.success("Reportes guardados.")
+            st.rerun()
+
+    with tabs[6]:
+        st.markdown("### Tareas")
+        edited = st.data_editor(
+            tareas,
+            use_container_width=True,
+            hide_index=True,
+            num_rows="dynamic",
+            key="editor_rapido_tareas",
+        )
+
+        if st.button("Guardar tareas", use_container_width=True, key="guardar_rapido_tareas"):
+            save_csv(edited, TAREAS_PATH)
+            st.success("Tareas guardadas.")
+            st.rerun()
 
 
 def render_admin_dashboard(clientes, contenidos, materiales, campanias, reportes, tareas):
@@ -1947,6 +2213,8 @@ def main():
     else:
         if menu == "Dashboard AM":
             render_admin_dashboard(clientes, contenidos, materiales, campanias, reportes, tareas)
+        elif menu == "Edición rápida":
+            render_edicion_rapida(clientes, contenidos, materiales, campanias, reportes, tareas)
         elif menu == "Usuarios":
             render_usuarios(clientes)
         elif menu == "Clientes":
