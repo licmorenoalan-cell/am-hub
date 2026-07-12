@@ -1,10 +1,12 @@
 from pathlib import Path
+import os
 import base64
 from PIL import Image
 from datetime import date
 import pandas as pd
 import altair as alt
 import streamlit as st
+from sqlalchemy import create_engine, text as sql_text
 
 # ============================================================
 # Configuración general
@@ -32,6 +34,134 @@ OBJETIVOS_PATH = DATA_DIR / "objetivos.csv"
 DOCUMENTOS_PATH = DATA_DIR / "documentos.csv"
 INDICADORES_PATH = DATA_DIR / "indicadores.csv"
 INDICADORES_MOVIMIENTOS_PATH = DATA_DIR / "indicadores_movimientos.csv"
+
+# ============================================================
+# Base de datos opcional PostgreSQL / Supabase
+# ============================================================
+
+POSTGRES_TABLE_MAP = {
+    "clientes.csv": "clientes",
+    "contenidos.csv": "contenidos",
+    "materiales.csv": "materiales",
+    "campanias.csv": "campanias",
+    "reportes.csv": "reportes",
+    "tareas.csv": "tareas",
+    "usuarios.csv": "usuarios",
+    "asignaciones_equipo.csv": "asignaciones_equipo",
+    "objetivos.csv": "objetivos",
+    "documentos.csv": "documentos",
+    "indicadores.csv": "indicadores",
+    "indicadores_movimientos.csv": "indicadores_movimientos",
+}
+
+_POSTGRES_ENGINE = None
+
+
+def get_database_url():
+    # Primero variable de entorno: no dispara errores visuales en Streamlit.
+    env_url = os.getenv("DATABASE_URL")
+    if env_url:
+        return env_url
+
+    # Solo intentamos leer st.secrets si existe un archivo secrets.toml.
+    posibles_secrets = [
+        BASE_DIR / ".streamlit" / "secrets.toml",
+        Path.home() / ".streamlit" / "secrets.toml",
+    ]
+
+    if not any(p.exists() for p in posibles_secrets):
+        return ""
+
+    try:
+        return st.secrets.get("DATABASE_URL", "")
+    except Exception:
+        return ""
+
+
+def normalizar_database_url(database_url: str) -> str:
+    if not database_url:
+        return ""
+
+    # Supabase suele entregar postgresql://...
+    # Para psycopg v3 usamos explícitamente postgresql+psycopg://...
+    if database_url.startswith("postgresql://"):
+        return database_url.replace("postgresql://", "postgresql+psycopg://", 1)
+
+    if database_url.startswith("postgres://"):
+        return database_url.replace("postgres://", "postgresql+psycopg://", 1)
+
+    return database_url
+
+
+def usar_postgres():
+    return bool(get_database_url())
+
+
+def get_postgres_engine():
+    global _POSTGRES_ENGINE
+
+    if _POSTGRES_ENGINE is None:
+        database_url = normalizar_database_url(get_database_url())
+
+        if not database_url:
+            raise ValueError("DATABASE_URL no está configurada.")
+
+        _POSTGRES_ENGINE = create_engine(
+            database_url,
+            pool_pre_ping=True,
+            pool_recycle=1800,
+        )
+
+    return _POSTGRES_ENGINE
+
+
+def tabla_postgres_para_path(path):
+    try:
+        filename = Path(path).name
+    except Exception:
+        filename = str(path)
+
+    return POSTGRES_TABLE_MAP.get(filename)
+
+
+def normalizar_df_para_columnas(df: pd.DataFrame, columns: list[str]) -> pd.DataFrame:
+    df = df.copy()
+
+    if columns is None:
+        columns = []
+
+    for col in columns:
+        if col not in df.columns:
+            df[col] = ""
+
+    if columns:
+        extras = [c for c in df.columns if c not in columns]
+        return df[list(columns) + extras]
+
+    return df
+
+
+def leer_postgres(tabla: str, columns: list[str]) -> pd.DataFrame:
+    engine = get_postgres_engine()
+
+    try:
+        with engine.connect() as conn:
+            df = pd.read_sql(sql_text(f'SELECT * FROM "{tabla}"'), conn)
+    except Exception:
+        return pd.DataFrame(columns=columns)
+
+    return normalizar_df_para_columnas(df, columns)
+
+
+def guardar_postgres(df: pd.DataFrame, tabla: str):
+    engine = get_postgres_engine()
+
+    clean = df.copy().fillna("")
+
+    # Escritura simple y segura para MVP: reemplaza la tabla por la versión editada.
+    # Más adelante podemos pasar a upsert por ID cuando el volumen crezca.
+    clean.to_sql(tabla, engine, if_exists="replace", index=False)
+
 
 COLOR_NAVY = "#244777"
 COLOR_BLUE = "#234579"
@@ -228,22 +358,34 @@ def ensure_data_dir():
 
 def read_csv(path: Path, columns: list[str]) -> pd.DataFrame:
     ensure_data_dir()
+
+    tabla = tabla_postgres_para_path(path)
+
+    if usar_postgres() and tabla:
+        return leer_postgres(tabla, columns)
+
     if not path.exists():
         return pd.DataFrame(columns=columns)
+
     try:
-        df = pd.read_csv(path)
+        df = pd.read_csv(path, dtype=str).fillna("")
     except Exception:
         return pd.DataFrame(columns=columns)
 
-    for c in columns:
-        if c not in df.columns:
-            df[c] = ""
-    return df[columns]
+    return normalizar_df_para_columnas(df, columns)
 
 
 def save_csv(df: pd.DataFrame, path: Path):
     ensure_data_dir()
-    df.to_csv(path, index=False)
+
+    tabla = tabla_postgres_para_path(path)
+
+    if usar_postgres() and tabla:
+        guardar_postgres(df, tabla)
+        return
+
+    clean = df.copy().fillna("")
+    clean.to_csv(path, index=False)
 
 
 def seed_data():
@@ -531,9 +673,9 @@ def ensure_users_file():
 def load_users_df():
     ensure_users_file()
 
-    df = pd.read_csv(USUARIOS_PATH, dtype=str).fillna("")
-
     required_cols = ["username", "password", "role", "name", "cliente", "activo"]
+    df = read_csv(USUARIOS_PATH, required_cols).fillna("")
+
     for col in required_cols:
         if col not in df.columns:
             df[col] = ""
@@ -560,7 +702,7 @@ def save_users_df(df):
     clean = clean[clean["username"] != ""]
     clean = clean.drop_duplicates(subset=["username"], keep="last")
 
-    clean.to_csv(USUARIOS_PATH, index=False)
+    save_csv(clean, USUARIOS_PATH)
 
 
 def load_users():
