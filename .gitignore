@@ -4,3 +4,6 @@ __pycache__/
 .DS_Store
 app.py.save
 .streamlit/secrets.toml
+backups_locales/
+app_backup_pre_*.py
+.DS_Store
