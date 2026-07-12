@@ -27,6 +27,7 @@ CAMPANIAS_PATH = DATA_DIR / "campanias.csv"
 REPORTES_PATH = DATA_DIR / "reportes.csv"
 TAREAS_PATH = DATA_DIR / "tareas.csv"
 USUARIOS_PATH = DATA_DIR / "usuarios.csv"
+ASIGNACIONES_EQUIPO_PATH = DATA_DIR / "asignaciones_equipo.csv"
 OBJETIVOS_PATH = DATA_DIR / "objetivos.csv"
 DOCUMENTOS_PATH = DATA_DIR / "documentos.csv"
 INDICADORES_PATH = DATA_DIR / "indicadores.csv"
@@ -810,6 +811,177 @@ def menu_cliente_por_servicios(cliente_nombre):
 
     return limpio
 
+
+def usuarios_equipo_disponibles():
+    usuarios_df = load_users_df()
+
+    if usuarios_df is None or usuarios_df.empty or "role" not in usuarios_df.columns:
+        return []
+
+    equipos = usuarios_df[
+        usuarios_df["role"].astype(str).isin(["equipo", "admin", "admin_general"])
+    ].copy()
+
+    if "activo" in equipos.columns:
+        equipos = equipos[equipos["activo"].astype(str).str.lower().isin(["sí", "si", "true", "1", "activo"])]
+
+    if "username" not in equipos.columns:
+        return []
+
+    return sorted(equipos["username"].dropna().astype(str).unique().tolist())
+
+
+def cargar_asignaciones_equipo():
+    return read_csv(
+        ASIGNACIONES_EQUIPO_PATH,
+        ["id", "username", "cliente", "activo"],
+    )
+
+
+def siguiente_id_asignacion(df):
+    if df is None or df.empty or "id" not in df.columns:
+        return 1
+
+    ids = pd.to_numeric(df["id"], errors="coerce").fillna(0)
+    return int(ids.max()) + 1
+
+
+def clientes_visibles_para_usuario():
+    role = st.session_state.get("role", "")
+    username = st.session_state.get("username", "")
+
+    clientes_df = read_csv(
+        CLIENTES_PATH,
+        [
+            "cliente",
+            "estado",
+            "servicio_digital",
+            "servicio_consultoria",
+            "servicio_contabilidad",
+        ],
+    )
+
+    if clientes_df is None or clientes_df.empty or "cliente" not in clientes_df.columns:
+        return []
+
+    if role in ["admin_general", "admin"]:
+        return sorted(clientes_df["cliente"].dropna().astype(str).unique().tolist())
+
+    if role == "cliente":
+        cliente_actual = st.session_state.get("cliente", "")
+        return [cliente_actual] if cliente_actual else []
+
+    asignaciones = cargar_asignaciones_equipo()
+
+    if asignaciones is None or asignaciones.empty:
+        return []
+
+    visibles = asignaciones[
+        (asignaciones["username"].astype(str) == str(username))
+        & (asignaciones["activo"].astype(str).str.lower().isin(["sí", "si", "true", "1", "activo"]))
+    ]["cliente"].dropna().astype(str).unique().tolist()
+
+    clientes_existentes = set(clientes_df["cliente"].dropna().astype(str).tolist())
+
+    visibles = [c for c in visibles if c in clientes_existentes]
+
+    return sorted(visibles)
+
+
+def servicios_habilitados_para_equipo():
+    role = st.session_state.get("role", "")
+
+    if role in ["admin_general", "admin"]:
+        return {
+            "digital": True,
+            "consultoria": True,
+            "contabilidad": True,
+        }
+
+    clientes_visibles = clientes_visibles_para_usuario()
+
+    clientes_df = read_csv(
+        CLIENTES_PATH,
+        [
+            "cliente",
+            "servicio_digital",
+            "servicio_consultoria",
+            "servicio_contabilidad",
+        ],
+    )
+
+    servicios = {
+        "digital": False,
+        "consultoria": False,
+        "contabilidad": False,
+    }
+
+    if clientes_df is None or clientes_df.empty or not clientes_visibles:
+        return servicios
+
+    base = clientes_df[clientes_df["cliente"].astype(str).isin(clientes_visibles)]
+
+    if "servicio_digital" in base.columns:
+        servicios["digital"] = base["servicio_digital"].apply(valor_si).any()
+
+    if "servicio_consultoria" in base.columns:
+        servicios["consultoria"] = base["servicio_consultoria"].apply(valor_si).any()
+
+    if "servicio_contabilidad" in base.columns:
+        servicios["contabilidad"] = base["servicio_contabilidad"].apply(valor_si).any()
+
+    return servicios
+
+
+def menu_equipo_por_permisos():
+    servicios = servicios_habilitados_para_equipo()
+
+    opciones = ["Dashboard AM"]
+
+    if servicios.get("consultoria"):
+        opciones += ["Objetivos", "Documentos"]
+
+    if servicios.get("contabilidad"):
+        opciones += ["Cash Flow", "Objetivos", "Documentos"]
+
+    if servicios.get("digital"):
+        opciones += ["Contenidos", "Materiales", "Campañas", "Reportes"]
+
+    opciones += ["Tareas"]
+
+    limpio = []
+    for opcion in opciones:
+        if opcion not in limpio:
+            limpio.append(opcion)
+
+    return limpio
+
+
+
+def menu_por_servicios_cliente_para_equipo(cliente_nombre):
+    servicios = servicios_activos_cliente(cliente_nombre)
+
+    opciones = ["Portal cliente"]
+
+    if servicios.get("digital"):
+        opciones += ["Contenidos", "Materiales", "Campañas", "Reportes"]
+
+    if servicios.get("consultoria"):
+        opciones += ["Objetivos", "Documentos"]
+
+    if servicios.get("contabilidad"):
+        opciones += ["Cash Flow", "Objetivos", "Documentos"]
+
+    opciones += ["Tareas"]
+
+    limpio = []
+    for opcion in opciones:
+        if opcion not in limpio:
+            limpio.append(opcion)
+
+    return limpio
+
+
 def sidebar():
     logo_path = ASSETS_DIR / "isologo_sidebar_limpio.png"
     if not logo_path.exists():
@@ -867,23 +1039,23 @@ def sidebar():
             key="menu_admin",
         )
     else:
-        menu = st.sidebar.radio(
-            "Menú",
-            [
-                "Dashboard AM",
-                "Onboarding",
-                "Objetivos",
-                "Documentos",
-                "Cash Flow",
-                "Contenidos",
-                "Materiales",
-                "Campañas",
-                "Reportes",
-                "Tareas",
-                "Vista cliente",
-            ],
-            key="menu_equipo",
-        )
+        clientes_asignados = clientes_visibles_para_usuario()
+
+        if not clientes_asignados:
+            st.sidebar.warning("No tenés clientes asignados.")
+            menu = "Sin clientes asignados"
+        else:
+            cliente_equipo = st.sidebar.selectbox(
+                "Cliente asignado",
+                clientes_asignados,
+                key="cliente_equipo_activo",
+            )
+
+            menu = st.sidebar.radio(
+                "Portal del cliente",
+                menu_por_servicios_cliente_para_equipo(cliente_equipo),
+                key="menu_equipo_cliente",
+            )
 
     st.sidebar.markdown("<div style='height: 34px;'></div>", unsafe_allow_html=True)
     st.sidebar.markdown("---")
@@ -1672,6 +1844,15 @@ def render_onboarding_cliente():
 
         notas = st.text_area("Notas internas")
 
+        st.markdown("#### Equipo AM asignado")
+
+        equipos_disponibles = usuarios_equipo_disponibles()
+        equipo_asignado = st.multiselect(
+            "Asignar este cliente a usuarios internos",
+            equipos_disponibles,
+            default=[st.session_state.get("username", "")] if st.session_state.get("username", "") in equipos_disponibles else [],
+        )
+
         st.markdown("#### Acceso del cliente")
 
         crear_usuario = st.checkbox("Crear usuario de acceso para este cliente", value=True)
@@ -1775,7 +1956,27 @@ def render_onboarding_cliente():
 
                 save_csv(usuarios_actualizado, USUARIOS_PATH)
 
-            st.success("Cliente creado correctamente y acceso vinculado automáticamente.")
+            asignaciones_df = cargar_asignaciones_equipo()
+            nuevas_asignaciones = []
+            next_id = siguiente_id_asignacion(asignaciones_df)
+
+            for usuario_equipo in equipo_asignado:
+                nuevas_asignaciones.append({
+                    "id": next_id,
+                    "username": usuario_equipo,
+                    "cliente": cliente_limpio,
+                    "activo": "Sí",
+                })
+                next_id += 1
+
+            if nuevas_asignaciones:
+                asignaciones_actualizado = pd.concat(
+                    [asignaciones_df, pd.DataFrame(nuevas_asignaciones)],
+                    ignore_index=True,
+                )
+                save_csv(asignaciones_actualizado, ASIGNACIONES_EQUIPO_PATH)
+
+            st.success("Cliente creado correctamente, acceso vinculado y equipo asignado.")
             st.rerun()
 
     st.markdown("### Últimos clientes cargados")
@@ -1870,8 +2071,15 @@ def render_usuarios(clientes):
             role = st.selectbox("Rol", ["cliente", "equipo", "admin", "admin_general"])
 
         with col3:
-            cliente = st.selectbox("Cliente asociado", clientes_lista)
+            cliente = st.selectbox("Cliente asociado solo si el rol es cliente", clientes_lista)
             activo = st.selectbox("Activo", ["Sí", "No"])
+
+        st.markdown("#### Permisos para equipo interno")
+        st.info("Los permisos del equipo se calculan según los clientes asignados. La asignación se gestiona más abajo.")
+        permiso_todos = False
+        permiso_digital = False
+        permiso_consultoria = False
+        permiso_contabilidad = False
 
         crear = st.form_submit_button("Crear usuario")
 
@@ -1893,6 +2101,10 @@ def render_usuarios(clientes):
                         "name": name,
                         "cliente": cliente,
                         "activo": activo,
+                        "permiso_todos": "Sí" if permiso_todos else "No",
+                        "permiso_digital": "Sí" if permiso_digital else "No",
+                        "permiso_consultoria": "Sí" if permiso_consultoria else "No",
+                        "permiso_contabilidad": "Sí" if permiso_contabilidad else "No",
                     }
                 ])
 
@@ -1915,8 +2127,12 @@ def render_usuarios(clientes):
             "password": st.column_config.TextColumn("Contraseña"),
             "role": st.column_config.SelectboxColumn("Rol", options=["admin_general", "admin", "equipo", "cliente"], required=True),
             "name": st.column_config.TextColumn("Nombre visible"),
-            "cliente": st.column_config.SelectboxColumn("Cliente asociado", options=clientes_lista),
+            "cliente": st.column_config.SelectboxColumn("Cliente asociado solo para rol cliente", options=clientes_lista),
             "activo": st.column_config.SelectboxColumn("Activo", options=["Sí", "No"], required=True),
+            "permiso_todos": st.column_config.SelectboxColumn("Todos los servicios", options=["Sí", "No"], required=True),
+            "permiso_digital": st.column_config.SelectboxColumn("Ecosistema digital", options=["Sí", "No"], required=True),
+            "permiso_consultoria": st.column_config.SelectboxColumn("Consultoría", options=["Sí", "No"], required=True),
+            "permiso_contabilidad": st.column_config.SelectboxColumn("Contabilidad / gestión", options=["Sí", "No"], required=True),
         },
         key="usuarios_editor",
     )
@@ -1925,6 +2141,86 @@ def render_usuarios(clientes):
         save_users_df(edited)
         st.success("Usuarios actualizados.")
         st.rerun()
+
+    st.markdown("### Asignaciones de equipo por cliente")
+
+    asignaciones_df = cargar_asignaciones_equipo()
+
+    equipos_lista = usuarios_equipo_disponibles()
+
+    clientes_activos = clientes.copy()
+    if clientes_activos is not None and not clientes_activos.empty and "estado" in clientes_activos.columns:
+        clientes_activos = clientes_activos[clientes_activos["estado"].astype(str).isin(["Activo", "Prospecto"])]
+
+    clientes_asignables = []
+    if clientes_activos is not None and not clientes_activos.empty and "cliente" in clientes_activos.columns:
+        clientes_asignables = sorted(clientes_activos["cliente"].dropna().astype(str).unique().tolist())
+
+    with st.form("form_asignar_clientes_equipo"):
+        a1, a2 = st.columns(2)
+
+        with a1:
+            usuario_equipo = st.selectbox("Usuario interno", equipos_lista)
+
+        with a2:
+            clientes_seleccionados = st.multiselect("Clientes asignados", clientes_asignables)
+
+        guardar_asignacion = st.form_submit_button("Guardar asignaciones", use_container_width=True)
+
+        if guardar_asignacion:
+            if not usuario_equipo:
+                st.error("Seleccioná un usuario interno.")
+            else:
+                base = asignaciones_df.copy()
+
+                # Desactivar asignaciones previas de ese usuario.
+                if not base.empty:
+                    base.loc[base["username"].astype(str) == str(usuario_equipo), "activo"] = "No"
+
+                next_id = siguiente_id_asignacion(base)
+                nuevas = []
+
+                existentes = set(
+                    zip(
+                        base["username"].astype(str),
+                        base["cliente"].astype(str),
+                    )
+                ) if not base.empty else set()
+
+                for cliente_sel in clientes_seleccionados:
+                    par = (usuario_equipo, cliente_sel)
+
+                    if par in existentes:
+                        base.loc[
+                            (base["username"].astype(str) == str(usuario_equipo))
+                            & (base["cliente"].astype(str) == str(cliente_sel)),
+                            "activo"
+                        ] = "Sí"
+                    else:
+                        nuevas.append({
+                            "id": next_id,
+                            "username": usuario_equipo,
+                            "cliente": cliente_sel,
+                            "activo": "Sí",
+                        })
+                        next_id += 1
+
+                if nuevas:
+                    base = pd.concat([base, pd.DataFrame(nuevas)], ignore_index=True)
+
+                save_csv(base, ASIGNACIONES_EQUIPO_PATH)
+                st.success("Asignaciones actualizadas.")
+                st.rerun()
+
+    if asignaciones_df is None or asignaciones_df.empty:
+        st.info("Todavía no hay asignaciones de equipo.")
+    else:
+        st.dataframe(
+            asignaciones_df.sort_values(["username", "cliente"]),
+            use_container_width=True,
+            hide_index=True,
+        )
+
 
 
 
@@ -2416,9 +2712,7 @@ def render_objetivos(cliente="", modo="cliente"):
         cliente_fijo = ""
 
     clientes_df = read_csv(CLIENTES_PATH, ["cliente"])
-    clientes_lista = []
-    if clientes_df is not None and not clientes_df.empty and "cliente" in clientes_df.columns:
-        clientes_lista = sorted(clientes_df["cliente"].dropna().astype(str).unique().tolist())
+    clientes_lista = clientes_visibles_para_usuario()
 
     # --------------------------------------------------------
     # Alta de objetivo: admin y cliente
@@ -2497,6 +2791,11 @@ def render_objetivos(cliente="", modo="cliente"):
     if modo == "cliente":
         vista = vista[vista["cliente"].astype(str) == str(cliente)]
     else:
+        clientes_permitidos = clientes_visibles_para_usuario()
+
+        if st.session_state.get("role") == "equipo":
+            vista = vista[vista["cliente"].astype(str).isin(clientes_permitidos)]
+
         clientes_disponibles = ["Todos"] + sorted(vista["cliente"].dropna().astype(str).unique().tolist()) if "cliente" in vista.columns else ["Todos"]
         filtro_cliente = st.selectbox("Filtrar cliente", clientes_disponibles, key="objetivos_filtro_cliente_admin")
 
@@ -2857,9 +3156,7 @@ def render_indicadores(cliente="", modo="cliente"):
         cliente_fijo = ""
 
     clientes_df = read_csv(CLIENTES_PATH, ["cliente"])
-    clientes_lista = []
-    if clientes_df is not None and not clientes_df.empty and "cliente" in clientes_df.columns:
-        clientes_lista = sorted(clientes_df["cliente"].dropna().astype(str).unique().tolist())
+    clientes_lista = clientes_visibles_para_usuario()
 
     # --------------------------------------------------------
     # Carga de movimientos
@@ -3073,6 +3370,11 @@ def render_indicadores(cliente="", modo="cliente"):
     if modo == "cliente":
         vista = vista[vista["cliente"].astype(str) == str(cliente)]
     else:
+        clientes_permitidos = clientes_visibles_para_usuario()
+
+        if st.session_state.get("role") == "equipo":
+            vista = vista[vista["cliente"].astype(str).isin(clientes_permitidos)]
+
         clientes_disponibles = ["Todos"] + sorted(vista["cliente"].dropna().astype(str).unique().tolist()) if "cliente" in vista.columns else ["Todos"]
         filtro_cliente = st.selectbox("Filtrar cliente", clientes_disponibles, key="indicadores_mov_filtro_cliente_admin")
 
@@ -3748,34 +4050,61 @@ def main():
             render_indicadores(cliente, modo="cliente")
 
     else:
-        if menu == "Dashboard AM":
-            render_admin_dashboard(clientes, contenidos, materiales, campanias, reportes, tareas)
-        elif menu == "Edición rápida":
-            render_edicion_rapida(clientes, contenidos, materiales, campanias, reportes, tareas)
-        elif menu == "Usuarios":
-            render_usuarios(clientes)
-        elif menu == "Onboarding":
-            render_onboarding_cliente()
-        elif menu == "Clientes":
-            render_crud_table("Clientes", CLIENTES_PATH, clientes)
-        elif menu == "Objetivos":
-            render_objetivos("", modo="admin")
-        elif menu == "Documentos":
-            render_documentos("", modo="admin")
-        elif menu == "Cash Flow":
-            render_indicadores("", modo="admin")
-        elif menu == "Contenidos":
-            render_crud_table("Contenidos", CONTENIDOS_PATH, contenidos)
-        elif menu == "Materiales":
-            render_crud_table("Materiales", MATERIALES_PATH, materiales)
-        elif menu == "Campañas":
-            render_crud_table("Campañas", CAMPANIAS_PATH, campanias)
-        elif menu == "Reportes":
-            render_crud_table("Reportes", REPORTES_PATH, reportes)
-        elif menu == "Tareas":
-            render_crud_table("Tareas", TAREAS_PATH, tareas)
-        elif menu == "Vista cliente":
-            render_vista_cliente_admin(clientes, contenidos, materiales, campanias, reportes)
+        role_actual = st.session_state.get("role", "")
+
+        if role_actual == "equipo":
+            cliente_equipo = st.session_state.get("cliente_equipo_activo", "")
+
+            if menu == "Sin clientes asignados":
+                header("Sin clientes asignados", "Pedile a un administrador que te asigne clientes desde Usuarios.")
+                st.info("Todavía no tenés clientes asignados para operar.")
+            elif menu == "Portal cliente":
+                render_inicio_cliente_ejecutivo(cliente_equipo)
+            elif menu == "Objetivos":
+                render_objetivos(cliente_equipo, modo="cliente")
+            elif menu == "Documentos":
+                render_documentos(cliente_equipo, modo="cliente")
+            elif menu == "Cash Flow":
+                render_indicadores(cliente_equipo, modo="cliente")
+            elif menu == "Contenidos":
+                render_crud_table("Contenidos", CONTENIDOS_PATH, filter_cliente(contenidos, cliente_equipo))
+            elif menu == "Materiales":
+                render_crud_table("Materiales", MATERIALES_PATH, filter_cliente(materiales, cliente_equipo))
+            elif menu == "Campañas":
+                render_crud_table("Campañas", CAMPANIAS_PATH, filter_cliente(campanias, cliente_equipo))
+            elif menu == "Reportes":
+                render_crud_table("Reportes", REPORTES_PATH, filter_cliente(reportes, cliente_equipo))
+            elif menu == "Tareas":
+                render_crud_table("Tareas", TAREAS_PATH, tareas)
+        else:
+            if menu == "Dashboard AM":
+                render_admin_dashboard(clientes, contenidos, materiales, campanias, reportes, tareas)
+            elif menu == "Edición rápida":
+                render_edicion_rapida(clientes, contenidos, materiales, campanias, reportes, tareas)
+            elif menu == "Usuarios":
+                render_usuarios(clientes)
+            elif menu == "Onboarding":
+                render_onboarding_cliente()
+            elif menu == "Clientes":
+                render_crud_table("Clientes", CLIENTES_PATH, clientes)
+            elif menu == "Objetivos":
+                render_objetivos("", modo="admin")
+            elif menu == "Documentos":
+                render_documentos("", modo="admin")
+            elif menu == "Cash Flow":
+                render_indicadores("", modo="admin")
+            elif menu == "Contenidos":
+                render_crud_table("Contenidos", CONTENIDOS_PATH, contenidos)
+            elif menu == "Materiales":
+                render_crud_table("Materiales", MATERIALES_PATH, materiales)
+            elif menu == "Campañas":
+                render_crud_table("Campañas", CAMPANIAS_PATH, campanias)
+            elif menu == "Reportes":
+                render_crud_table("Reportes", REPORTES_PATH, reportes)
+            elif menu == "Tareas":
+                render_crud_table("Tareas", TAREAS_PATH, tareas)
+            elif menu == "Vista cliente":
+                render_vista_cliente_admin(clientes, contenidos, materiales, campanias, reportes)
 
 
 if __name__ == "__main__":
