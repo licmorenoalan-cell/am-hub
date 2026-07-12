@@ -1280,6 +1280,353 @@ def render_inicio_cliente(cliente, contenidos, materiales, campanias, reportes):
 
 
 
+def render_contenidos_equipo(cliente):
+    header("Contenidos", f"Planificación digital | {cliente}")
+
+    contenidos_all = read_csv(
+        CONTENIDOS_PATH,
+        [
+            "id",
+            "cliente",
+            "fecha",
+            "canal",
+            "formato",
+            "tema",
+            "objetivo",
+            "copy",
+            "link_canva",
+            "estado",
+            "comentario_cliente",
+        ],
+    )
+
+    def next_contenido_id(df):
+        if df is None or df.empty or "id" not in df.columns:
+            return "CON-001"
+
+        nums = []
+
+        for value in df["id"].dropna().astype(str).tolist():
+            value = value.strip()
+
+            if value.upper().startswith("CON-"):
+                try:
+                    nums.append(int(value.split("-")[-1]))
+                except Exception:
+                    pass
+            else:
+                try:
+                    nums.append(int(value))
+                except Exception:
+                    pass
+
+        siguiente = max(nums) + 1 if nums else 1
+        return f"CON-{siguiente:03d}"
+
+    if contenidos_all is None:
+        contenidos_all = pd.DataFrame(columns=[
+            "id",
+            "cliente",
+            "fecha",
+            "canal",
+            "formato",
+            "tema",
+            "objetivo",
+            "copy",
+            "link_canva",
+            "estado",
+            "comentario_cliente",
+        ])
+
+    for col in [
+        "id",
+        "cliente",
+        "fecha",
+        "canal",
+        "formato",
+        "tema",
+        "objetivo",
+        "copy",
+        "link_canva",
+        "estado",
+        "comentario_cliente",
+    ]:
+        if col not in contenidos_all.columns:
+            contenidos_all[col] = ""
+
+    df = filter_cliente(contenidos_all, cliente)
+
+    # --------------------------------------------------------
+    # Alta de contenido
+    # --------------------------------------------------------
+    st.markdown("### Nuevo contenido")
+
+    with st.form(f"form_contenido_equipo_{cliente}"):
+        c1, c2, c3 = st.columns(3)
+
+        with c1:
+            st.text_input("Cliente", value=cliente, disabled=True)
+            fecha = st.date_input("Fecha propuesta")
+
+        with c2:
+            canal = st.selectbox(
+                "Canal",
+                ["Instagram", "Facebook", "LinkedIn", "TikTok", "YouTube", "Email", "Web", "Otro"],
+            )
+            formato = st.selectbox(
+                "Formato",
+                ["Post", "Carrusel", "Reel", "Historia", "Video", "Newsletter", "Landing", "Otro"],
+            )
+
+        with c3:
+            estado = st.selectbox(
+                "Estado",
+                [
+                    "En diseño",
+                    "Pendiente de aprobación",
+                    "Correcciones",
+                    "Aprobado",
+                    "Programado",
+                    "Publicado",
+                ],
+                index=1,
+            )
+            link_canva = st.text_input("Link Canva / diseño")
+
+        tema = st.text_input("Tema")
+        objetivo = st.text_input("Objetivo")
+        copy_text = st.text_area("Copy propuesto")
+
+        guardar = st.form_submit_button("Guardar contenido", use_container_width=True)
+
+        if guardar:
+            if not tema.strip():
+                st.error("El tema es obligatorio.")
+            else:
+                nuevo = {
+                    "id": next_contenido_id(contenidos_all),
+                    "cliente": cliente,
+                    "fecha": fecha.strftime("%Y-%m-%d"),
+                    "canal": canal,
+                    "formato": formato,
+                    "tema": tema.strip(),
+                    "objetivo": objetivo,
+                    "copy": copy_text,
+                    "link_canva": link_canva,
+                    "estado": estado,
+                    "comentario_cliente": "",
+                }
+
+                actualizado = pd.concat(
+                    [contenidos_all, pd.DataFrame([nuevo])],
+                    ignore_index=True,
+                )
+
+                save_csv(actualizado, CONTENIDOS_PATH)
+                st.success("Contenido cargado correctamente.")
+                st.rerun()
+
+    # --------------------------------------------------------
+    # Resumen
+    # --------------------------------------------------------
+    df = filter_cliente(read_csv(
+        CONTENIDOS_PATH,
+        [
+            "id",
+            "cliente",
+            "fecha",
+            "canal",
+            "formato",
+            "tema",
+            "objetivo",
+            "copy",
+            "link_canva",
+            "estado",
+            "comentario_cliente",
+        ],
+    ), cliente)
+
+    if df.empty:
+        st.info("Todavía no hay contenidos cargados para este cliente.")
+        return
+
+    df = df.copy()
+
+    pendientes = df["estado"].astype(str).str.contains(
+        "Pendiente|revisión|aprobación|Correcciones|En diseño",
+        case=False,
+        na=False,
+    ).sum()
+
+    aprobados = df["estado"].astype(str).str.contains(
+        "Aprobado|Programado|Publicado",
+        case=False,
+        na=False,
+    ).sum()
+
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Total contenidos", len(df))
+    c2.metric("Pendientes / revisión", int(pendientes))
+    c3.metric("Aprobados / programados", int(aprobados))
+
+    # --------------------------------------------------------
+    # Filtros
+    # --------------------------------------------------------
+    st.markdown("### Calendario de contenidos")
+
+    f1, f2, f3 = st.columns(3)
+
+    with f1:
+        estados = ["Todos"] + sorted(df["estado"].dropna().astype(str).unique().tolist())
+        filtro_estado = st.selectbox("Estado", estados, key=f"cont_equipo_estado_{cliente}")
+
+    with f2:
+        formatos = ["Todos"] + sorted(df["formato"].dropna().astype(str).unique().tolist())
+        filtro_formato = st.selectbox("Formato", formatos, key=f"cont_equipo_formato_{cliente}")
+
+    with f3:
+        canales = ["Todos"] + sorted(df["canal"].dropna().astype(str).unique().tolist())
+        filtro_canal = st.selectbox("Canal", canales, key=f"cont_equipo_canal_{cliente}")
+
+    vista = df.copy()
+
+    if filtro_estado != "Todos":
+        vista = vista[vista["estado"].astype(str) == filtro_estado]
+
+    if filtro_formato != "Todos":
+        vista = vista[vista["formato"].astype(str) == filtro_formato]
+
+    if filtro_canal != "Todos":
+        vista = vista[vista["canal"].astype(str) == filtro_canal]
+
+    if "fecha" in vista.columns:
+        vista = vista.sort_values("fecha")
+
+    cols = ["fecha", "canal", "formato", "tema", "objetivo", "estado", "comentario_cliente"]
+    cols = [c for c in cols if c in vista.columns]
+
+    st.dataframe(
+        vista[cols],
+        use_container_width=True,
+        hide_index=True,
+    )
+
+    # --------------------------------------------------------
+    # Tarjetas pendientes
+    # --------------------------------------------------------
+    st.markdown("### Pendientes de aprobación / revisión")
+
+    pendientes_df = vista[
+        vista["estado"].astype(str).str.contains(
+            "Pendiente|revisión|aprobación|Correcciones|En diseño",
+            case=False,
+            na=False,
+        )
+    ].copy()
+
+    if pendientes_df.empty:
+        st.success("No hay contenidos pendientes.")
+    else:
+        for _, row in pendientes_df.head(8).iterrows():
+            with st.container(border=True):
+                st.markdown(f"**{row.get('formato', '')} — {row.get('tema', '')}**")
+                st.caption(f"{row.get('fecha', '')} | {row.get('canal', '')} | Estado: {row.get('estado', '')}")
+
+                if str(row.get("objetivo", "")).strip():
+                    st.write(row.get("objetivo", ""))
+
+                if str(row.get("comentario_cliente", "")).strip():
+                    st.markdown("**Comentario cliente:**")
+                    st.write(row.get("comentario_cliente", ""))
+
+                link = str(row.get("link_canva", "")).strip()
+                if link:
+                    st.link_button("Abrir diseño", link)
+
+    # --------------------------------------------------------
+    # Edición segura
+    # --------------------------------------------------------
+    with st.expander("Edición segura de contenidos del cliente"):
+        st.caption(
+            "Esta edición actualiza solo las filas de este cliente dentro del archivo completo, "
+            "sin pisar contenidos de otros clientes."
+        )
+
+        editable_cols = [
+            "id",
+            "fecha",
+            "canal",
+            "formato",
+            "tema",
+            "objetivo",
+            "copy",
+            "link_canva",
+            "estado",
+            "comentario_cliente",
+        ]
+
+        editable_cols = [c for c in editable_cols if c in df.columns]
+
+        edited = st.data_editor(
+            df[editable_cols],
+            use_container_width=True,
+            hide_index=True,
+            num_rows="fixed",
+            key=f"editor_contenidos_equipo_{cliente}",
+            column_config={
+                "id": st.column_config.TextColumn("ID", disabled=True),
+                "estado": st.column_config.SelectboxColumn(
+                    "Estado",
+                    options=[
+                        "En diseño",
+                        "Pendiente de aprobación",
+                        "Correcciones",
+                        "Aprobado",
+                        "Programado",
+                        "Publicado",
+                    ],
+                ),
+            },
+        )
+
+        if st.button("Guardar cambios de contenidos", use_container_width=True, key=f"guardar_contenidos_equipo_{cliente}"):
+            full = read_csv(
+                CONTENIDOS_PATH,
+                [
+                    "id",
+                    "cliente",
+                    "fecha",
+                    "canal",
+                    "formato",
+                    "tema",
+                    "objetivo",
+                    "copy",
+                    "link_canva",
+                    "estado",
+                    "comentario_cliente",
+                ],
+            )
+
+            for _, row in edited.iterrows():
+                row_id = str(row.get("id", ""))
+
+                if not row_id:
+                    continue
+
+                mask = full["id"].astype(str) == row_id
+
+                for col in editable_cols:
+                    if col == "id":
+                        continue
+
+                    full.loc[mask, col] = row.get(col, "")
+
+            save_csv(full, CONTENIDOS_PATH)
+            st.success("Contenidos actualizados correctamente.")
+            st.rerun()
+
+
+
 def render_calendario(cliente, contenidos):
     header("Calendario de contenidos", f"Planificación mensual | {cliente}")
 
@@ -2637,50 +2984,6 @@ def render_inicio_cliente_ejecutivo(cliente):
         else:
             st.markdown("### Estado general")
             st.info("Usá Objetivos para crear, actualizar y seguir el plan de trabajo.")
-
-    # --------------------------------------------------------
-    # Accesos rápidos
-    # --------------------------------------------------------
-    st.markdown("### Accesos rápidos")
-
-    accesos = ["Objetivos"]
-
-    if servicios.get("digital"):
-        accesos += ["Calendario", "Aprobaciones", "Materiales", "Campañas", "Reportes"]
-
-    if servicios.get("contabilidad"):
-        accesos += ["Cash Flow"]
-
-    if servicios.get("consultoria") or servicios.get("contabilidad"):
-        accesos += ["Documentos"]
-
-    accesos_limpios = []
-    for acceso in accesos:
-        if acceso not in accesos_limpios:
-            accesos_limpios.append(acceso)
-
-    cols = st.columns(min(len(accesos_limpios), 4))
-
-    for i, acceso in enumerate(accesos_limpios):
-        with cols[i % len(cols)]:
-            st.markdown(
-                f"""
-                <div style="
-                    background:#F8FAFC;
-                    border:1px solid #E5E7EB;
-                    border-radius:15px;
-                    padding:13px 14px;
-                    margin-bottom:10px;
-                    text-align:center;
-                    font-weight:800;
-                    color:#244777;
-                ">
-                    {acceso}
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
-
 
 
 def render_objetivos(cliente="", modo="cliente"):
@@ -4067,7 +4370,7 @@ def main():
             elif menu == "Cash Flow":
                 render_indicadores(cliente_equipo, modo="cliente")
             elif menu == "Contenidos":
-                render_crud_table("Contenidos", CONTENIDOS_PATH, filter_cliente(contenidos, cliente_equipo))
+                render_contenidos_equipo(cliente_equipo)
             elif menu == "Materiales":
                 render_crud_table("Materiales", MATERIALES_PATH, filter_cliente(materiales, cliente_equipo))
             elif menu == "Campañas":
