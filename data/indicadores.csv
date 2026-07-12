@@ -1,0 +1,2 @@
+id,cliente,mes,facturacion,gastos,inversiones,resultado_estimado,objetivo_facturacion,objetivo_gastos,objetivos_mes,observacion_am,observacion_cliente,estado
+IND-001,Cliente ejemplo contable,2026-08,0,0,0,0,0,0,,,,Borrador

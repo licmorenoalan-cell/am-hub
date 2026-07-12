@@ -1913,96 +1913,45 @@ def render_objetivos(cliente="", modo="cliente"):
     estados_orden = ["Pendiente", "En curso", "En revisión", "Finalizado", "Pausado"]
 
     if modo == "cliente":
-        header("Objetivos", f"Seguimiento de objetivos | {cliente}")
-        df = filter_cliente(objetivos, cliente)
-
-        if df is None or df.empty:
-            st.info("No hay objetivos cargados.")
-            return
-
-        c1, c2, c3 = st.columns(3)
-        c1.metric("Total", len(df))
-        c2.metric("En curso", df["estado"].astype(str).str.contains("En curso", case=False, na=False).sum())
-        c3.metric("Finalizados", df["estado"].astype(str).str.contains("Finalizado", case=False, na=False).sum())
-
-        st.markdown("### Tablero de objetivos")
-
-        cols = st.columns(len(estados_orden))
-
-        for i, estado_col in enumerate(estados_orden):
-            with cols[i]:
-                st.markdown(f"#### {estado_col}")
-                subset = df[df["estado"].astype(str) == estado_col].copy() if "estado" in df.columns else df.iloc[0:0].copy()
-
-                if subset.empty:
-                    st.caption("Sin objetivos.")
-                else:
-                    for _, row in subset.iterrows():
-                        avance = row.get("avance", 0)
-                        try:
-                            avance_int = int(float(avance))
-                        except Exception:
-                            avance_int = 0
-
-                        st.markdown(
-                            f"""
-                            <div style="
-                                background:white;
-                                border:1px solid #E5E7EB;
-                                border-radius:16px;
-                                padding:14px 15px;
-                                margin-bottom:12px;
-                                box-shadow:0 6px 16px rgba(16,24,40,0.05);
-                            ">
-                                <div style="font-weight:800; color:#172033; margin-bottom:6px;">
-                                    {row.get('objetivo', '')}
-                                </div>
-                                <div style="font-size:0.85rem; color:#667085; margin-bottom:8px;">
-                                    {row.get('proxima_accion', '')}
-                                </div>
-                                <div style="font-size:0.8rem; color:#244777;">
-                                    Avance: {avance_int}%
-                                </div>
-                            </div>
-                            """,
-                            unsafe_allow_html=True,
-                        )
-
-        st.markdown("### Detalle")
-        columnas = [
-            "servicio", "mes", "objetivo", "descripcion",
-            "responsable_am", "responsable_cliente", "prioridad", "estado",
-            "avance", "proxima_accion", "fecha_limite", "comentarios"
-        ]
-        columnas = [c for c in columnas if c in df.columns]
-        st.dataframe(df[columnas], use_container_width=True, hide_index=True)
-        return
-
-    # --------------------------------------------------------
-    # ADMIN
-    # --------------------------------------------------------
-    header("Objetivos", "Carga y seguimiento de objetivos por cliente")
+        header("Objetivos", f"Creación y seguimiento de objetivos | {cliente}")
+        cliente_fijo = cliente
+    else:
+        header("Objetivos", "Creación y seguimiento de objetivos por cliente")
+        cliente_fijo = ""
 
     clientes_df = read_csv(CLIENTES_PATH, ["cliente"])
     clientes_lista = []
     if clientes_df is not None and not clientes_df.empty and "cliente" in clientes_df.columns:
         clientes_lista = sorted(clientes_df["cliente"].dropna().astype(str).unique().tolist())
 
-    st.markdown("### Nuevo objetivo")
+    # --------------------------------------------------------
+    # Alta de objetivo: admin y cliente
+    # --------------------------------------------------------
+    st.markdown("### Crear objetivo")
 
-    if not clientes_lista:
+    if modo != "cliente" and not clientes_lista:
         st.warning("Primero cargá clientes en el menú Clientes.")
     else:
-        with st.form("form_nuevo_objetivo"):
+        with st.form(f"form_nuevo_objetivo_{modo}_{cliente_fijo}"):
             c1, c2, c3 = st.columns(3)
 
             with c1:
-                cliente_obj = st.selectbox("Cliente", clientes_lista)
-                servicio = st.selectbox("Servicio", ["Consultoría", "Contabilidad / gestión", "Ecosistema digital", "General"])
-                mes = st.text_input("Mes", value=date.today().strftime("%Y-%m"))
+                if modo == "cliente":
+                    cliente_obj = cliente_fijo
+                    st.text_input("Cliente", value=cliente_obj, disabled=True)
+                else:
+                    cliente_obj = st.selectbox("Cliente", clientes_lista)
+
+                servicio = st.selectbox(
+                    "Servicio",
+                    ["Consultoría", "Contabilidad / gestión", "Ecosistema digital", "General"],
+                )
+
+                fecha_mes_objetivo = st.date_input("Mes y año", value=date.today(), key=f"fecha_mes_objetivo_{modo}_{cliente_fijo}")
+                mes = fecha_mes_objetivo.strftime("%Y-%m")
 
             with c2:
-                responsable_am = st.text_input("Responsable AM", value=st.session_state.get("name", "AM Consultora"))
+                responsable_am = st.text_input("Responsable AM", value="AM Consultora")
                 responsable_cliente = st.text_input("Responsable cliente")
                 prioridad = st.selectbox("Prioridad", ["Alta", "Media", "Baja"])
 
@@ -2014,12 +1963,14 @@ def render_objetivos(cliente="", modo="cliente"):
             objetivo = st.text_input("Objetivo")
             descripcion = st.text_area("Descripción / alcance")
             proxima_accion = st.text_input("Próxima acción")
-            comentarios = st.text_area("Comentarios internos")
+            comentarios = st.text_area("Comentarios")
 
             guardar = st.form_submit_button("Guardar objetivo", use_container_width=True)
 
             if guardar:
-                if not objetivo.strip():
+                if not cliente_obj:
+                    st.error("No se pudo identificar el cliente.")
+                elif not objetivo.strip():
                     st.error("El objetivo es obligatorio.")
                 else:
                     nuevo = {
@@ -2044,90 +1995,196 @@ def render_objetivos(cliente="", modo="cliente"):
                     st.success("Objetivo creado correctamente.")
                     st.rerun()
 
-    st.markdown("### Tablero kanban")
-
+    # --------------------------------------------------------
+    # Vista filtrada
+    # --------------------------------------------------------
     if objetivos is None or objetivos.empty:
         st.info("Todavía no hay objetivos cargados.")
-    else:
-        filtro_cliente = st.selectbox("Filtrar cliente", ["Todos"] + clientes_lista, key="objetivos_filtro_cliente_admin")
+        return
 
-        vista = objetivos.copy()
+    vista = objetivos.copy()
+
+    if modo == "cliente":
+        vista = vista[vista["cliente"].astype(str) == str(cliente)]
+    else:
+        clientes_disponibles = ["Todos"] + sorted(vista["cliente"].dropna().astype(str).unique().tolist()) if "cliente" in vista.columns else ["Todos"]
+        filtro_cliente = st.selectbox("Filtrar cliente", clientes_disponibles, key="objetivos_filtro_cliente_admin")
+
         if filtro_cliente != "Todos":
             vista = vista[vista["cliente"].astype(str) == filtro_cliente]
 
-        cols = st.columns(len(estados_orden))
+    if vista.empty:
+        st.info("No hay objetivos para este filtro.")
+        return
 
-        for i, estado_col in enumerate(estados_orden):
-            with cols[i]:
-                subset = vista[vista["estado"].astype(str) == estado_col].copy() if "estado" in vista.columns else vista.iloc[0:0].copy()
+    for col in ["estado", "prioridad", "avance"]:
+        if col not in vista.columns:
+            vista[col] = ""
 
-                st.markdown(f"#### {estado_col}")
-                st.caption(f"{len(subset)} objetivo(s)")
+    # --------------------------------------------------------
+    # KPIs
+    # --------------------------------------------------------
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Total", len(vista))
+    c2.metric("En curso", vista["estado"].astype(str).str.contains("En curso", case=False, na=False).sum())
+    c3.metric("Finalizados", vista["estado"].astype(str).str.contains("Finalizado", case=False, na=False).sum())
 
-                if subset.empty:
+    try:
+        avance_promedio = pd.to_numeric(vista["avance"], errors="coerce").fillna(0).mean()
+    except Exception:
+        avance_promedio = 0
+
+    c4.metric("Avance promedio", f"{avance_promedio:.0f}%")
+
+    # --------------------------------------------------------
+    # Kanban
+    # --------------------------------------------------------
+    st.markdown("### Tablero de objetivos")
+
+    cols = st.columns(len(estados_orden))
+
+    for i, estado_col in enumerate(estados_orden):
+        with cols[i]:
+            subset = vista[vista["estado"].astype(str) == estado_col].copy() if "estado" in vista.columns else vista.iloc[0:0].copy()
+
+            st.markdown(f"#### {estado_col}")
+            st.caption(f"{len(subset)} objetivo(s)")
+
+            if subset.empty:
+                st.markdown(
+                    """
+                    <div style="
+                        border:1px dashed #CBD5E1;
+                        border-radius:14px;
+                        padding:16px;
+                        color:#667085;
+                        background:#F8FAFC;
+                        text-align:center;
+                        margin-bottom:12px;
+                    ">
+                        Sin tarjetas
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+            else:
+                for _, row in subset.iterrows():
+                    avance = row.get("avance", 0)
+                    try:
+                        avance_int = int(float(avance))
+                    except Exception:
+                        avance_int = 0
+
                     st.markdown(
-                        """
+                        f"""
                         <div style="
-                            border:1px dashed #CBD5E1;
-                            border-radius:14px;
-                            padding:16px;
-                            color:#667085;
-                            background:#F8FAFC;
-                            text-align:center;
+                            background:white;
+                            border:1px solid #E5E7EB;
+                            border-radius:16px;
+                            padding:14px 15px;
+                            margin-bottom:12px;
+                            box-shadow:0 6px 16px rgba(16,24,40,0.05);
                         ">
-                            Sin tarjetas
+                            <div style="font-size:0.78rem; color:#244777; font-weight:800; margin-bottom:4px;">
+                                {row.get('cliente', '')}
+                            </div>
+                            <div style="font-weight:850; color:#172033; margin-bottom:6px;">
+                                {row.get('objetivo', '')}
+                            </div>
+                            <div style="font-size:0.84rem; color:#667085; margin-bottom:8px;">
+                                {row.get('proxima_accion', '')}
+                            </div>
+                            <div style="font-size:0.8rem; color:#0788A6;">
+                                {row.get('prioridad', '')} · {avance_int}%
+                            </div>
                         </div>
                         """,
                         unsafe_allow_html=True,
                     )
+
+    # --------------------------------------------------------
+    # Actualización rápida
+    # --------------------------------------------------------
+    st.markdown("### Actualizar objetivo")
+
+    opciones_objetivos = []
+    mapa_objetivos = {}
+
+    for _, row in vista.iterrows():
+        etiqueta = f"{row.get('id', '')} · {row.get('objetivo', '')}"
+        opciones_objetivos.append(etiqueta)
+        mapa_objetivos[etiqueta] = row.get("id", "")
+
+    if opciones_objetivos:
+        with st.form(f"form_actualizar_objetivo_{modo}_{cliente_fijo}"):
+            objetivo_sel = st.selectbox("Objetivo", opciones_objetivos)
+
+            a1, a2, a3 = st.columns(3)
+
+            with a1:
+                nuevo_estado = st.selectbox("Nuevo estado", estados_orden)
+
+            with a2:
+                nuevo_avance = st.slider("Nuevo avance", min_value=0, max_value=100, value=0, step=5, key=f"avance_update_{modo}_{cliente_fijo}")
+
+            with a3:
+                nueva_prioridad = st.selectbox("Prioridad", ["Alta", "Media", "Baja"])
+
+            nueva_accion = st.text_input("Próxima acción actualizada")
+            nuevo_comentario = st.text_area("Comentario / actualización")
+
+            actualizar = st.form_submit_button("Actualizar objetivo", use_container_width=True)
+
+            if actualizar:
+                obj_id = mapa_objetivos.get(objetivo_sel)
+
+                if not obj_id:
+                    st.error("No se pudo identificar el objetivo.")
                 else:
-                    for _, row in subset.iterrows():
-                        avance = row.get("avance", 0)
-                        try:
-                            avance_int = int(float(avance))
-                        except Exception:
-                            avance_int = 0
+                    objetivos_actualizado = objetivos.copy()
+                    mask = objetivos_actualizado["id"].astype(str) == str(obj_id)
 
-                        st.markdown(
-                            f"""
-                            <div style="
-                                background:white;
-                                border:1px solid #E5E7EB;
-                                border-radius:16px;
-                                padding:14px 15px;
-                                margin-bottom:12px;
-                                box-shadow:0 6px 16px rgba(16,24,40,0.05);
-                            ">
-                                <div style="font-size:0.78rem; color:#244777; font-weight:800; margin-bottom:4px;">
-                                    {row.get('cliente', '')}
-                                </div>
-                                <div style="font-weight:850; color:#172033; margin-bottom:6px;">
-                                    {row.get('objetivo', '')}
-                                </div>
-                                <div style="font-size:0.84rem; color:#667085; margin-bottom:8px;">
-                                    {row.get('proxima_accion', '')}
-                                </div>
-                                <div style="font-size:0.8rem; color:#0788A6;">
-                                    {row.get('prioridad', '')} · {avance_int}%
-                                </div>
-                            </div>
-                            """,
-                            unsafe_allow_html=True,
-                        )
+                    objetivos_actualizado.loc[mask, "estado"] = nuevo_estado
+                    objetivos_actualizado.loc[mask, "avance"] = nuevo_avance
+                    objetivos_actualizado.loc[mask, "prioridad"] = nueva_prioridad
 
-    with st.expander("Edición avanzada en tabla"):
-        edited = st.data_editor(
-            objetivos,
-            use_container_width=True,
-            hide_index=True,
-            num_rows="dynamic",
-            key="editor_objetivos_admin",
-        )
+                    if nueva_accion.strip():
+                        objetivos_actualizado.loc[mask, "proxima_accion"] = nueva_accion.strip()
 
-        if st.button("Guardar edición avanzada de objetivos", use_container_width=True, key="guardar_objetivos_admin"):
-            save_csv(edited, OBJETIVOS_PATH)
-            st.success("Objetivos guardados.")
-            st.rerun()
+                    if nuevo_comentario.strip():
+                        comentario_anterior = objetivos_actualizado.loc[mask, "comentarios"].astype(str).fillna("")
+                        objetivos_actualizado.loc[mask, "comentarios"] = comentario_anterior + "\n" + date.today().strftime("%Y-%m-%d") + " - " + nuevo_comentario.strip()
+
+                    save_csv(objetivos_actualizado, OBJETIVOS_PATH)
+                    st.success("Objetivo actualizado correctamente.")
+                    st.rerun()
+
+    # --------------------------------------------------------
+    # Detalle
+    # --------------------------------------------------------
+    with st.expander("Detalle en tabla"):
+        columnas = [
+            "cliente", "servicio", "mes", "objetivo", "descripcion",
+            "responsable_am", "responsable_cliente", "prioridad", "estado",
+            "avance", "proxima_accion", "fecha_limite", "comentarios"
+        ]
+        columnas = [c for c in columnas if c in vista.columns]
+        st.dataframe(vista[columnas], use_container_width=True, hide_index=True)
+
+    if modo != "cliente":
+        with st.expander("Edición avanzada en tabla"):
+            edited = st.data_editor(
+                objetivos,
+                use_container_width=True,
+                hide_index=True,
+                num_rows="dynamic",
+                key="editor_objetivos_admin",
+            )
+
+            if st.button("Guardar edición avanzada de objetivos", use_container_width=True, key="guardar_objetivos_admin"):
+                save_csv(edited, OBJETIVOS_PATH)
+                st.success("Objetivos guardados.")
+                st.rerun()
 
 
 def render_documentos(cliente="", modo="cliente"):
@@ -2307,6 +2364,139 @@ def render_indicadores(cliente="", modo="cliente"):
                     save_csv(actualizado, INDICADORES_MOVIMIENTOS_PATH)
                     st.success("Movimiento cargado correctamente.")
                     st.rerun()
+
+    # --------------------------------------------------------
+    # Carga rápida mensual por varias categorías
+    # --------------------------------------------------------
+    st.markdown("### Carga rápida mensual")
+
+    if modo != "cliente" and not clientes_lista:
+        st.warning("Primero cargá clientes en el menú Clientes.")
+    else:
+        with st.expander("Cargar varias categorías del mismo mes", expanded=False):
+            with st.form(f"form_carga_rapida_indicadores_{modo}_{cliente_fijo}"):
+                r1, r2 = st.columns(2)
+
+                with r1:
+                    if modo == "cliente":
+                        cliente_rapido = cliente_fijo
+                        st.text_input("Cliente", value=cliente_rapido, disabled=True, key=f"cliente_rapido_{modo}_{cliente_fijo}")
+                    else:
+                        cliente_rapido = st.selectbox("Cliente", clientes_lista, key="cliente_rapido_admin")
+
+                with r2:
+                    fecha_mes_rapido = st.date_input("Mes y año", value=date.today(), key=f"fecha_rapida_{modo}_{cliente_fijo}")
+                    mes_rapido = mes_label(fecha_mes_rapido)
+
+                st.markdown("#### Ingresos")
+
+                ingresos_previos = categorias_previas(movimientos, cliente_rapido, "Ingreso")
+                ingresos_base = ingresos_previos[:5] if ingresos_previos else ["Ventas", "Honorarios", "Cuotas", "Otros"]
+
+                ingresos_data = []
+                for i in range(6):
+                    c1, c2, c3 = st.columns([2, 1, 2])
+
+                    categoria_default = ingresos_base[i] if i < len(ingresos_base) else ""
+
+                    with c1:
+                        cat = st.text_input(
+                            f"Categoría ingreso {i + 1}",
+                            value=categoria_default,
+                            key=f"ing_cat_{modo}_{cliente_fijo}_{i}",
+                        )
+
+                    with c2:
+                        imp = st.number_input(
+                            f"Importe ingreso {i + 1}",
+                            min_value=0.0,
+                            step=10000.0,
+                            key=f"ing_imp_{modo}_{cliente_fijo}_{i}",
+                        )
+
+                    with c3:
+                        obs = st.text_input(
+                            f"Observación ingreso {i + 1}",
+                            key=f"ing_obs_{modo}_{cliente_fijo}_{i}",
+                        )
+
+                    ingresos_data.append((cat, imp, obs))
+
+                st.markdown("#### Gastos")
+
+                gastos_previos = categorias_previas(movimientos, cliente_rapido, "Gasto")
+                gastos_base = gastos_previos[:7] if gastos_previos else ["Sueldos", "Alquiler", "Servicios", "Publicidad", "Honorarios", "Impuestos", "Otros"]
+
+                gastos_data = []
+                for i in range(8):
+                    c1, c2, c3 = st.columns([2, 1, 2])
+
+                    categoria_default = gastos_base[i] if i < len(gastos_base) else ""
+
+                    with c1:
+                        cat = st.text_input(
+                            f"Categoría gasto {i + 1}",
+                            value=categoria_default,
+                            key=f"gas_cat_{modo}_{cliente_fijo}_{i}",
+                        )
+
+                    with c2:
+                        imp = st.number_input(
+                            f"Importe gasto {i + 1}",
+                            min_value=0.0,
+                            step=10000.0,
+                            key=f"gas_imp_{modo}_{cliente_fijo}_{i}",
+                        )
+
+                    with c3:
+                        obs = st.text_input(
+                            f"Observación gasto {i + 1}",
+                            key=f"gas_obs_{modo}_{cliente_fijo}_{i}",
+                        )
+
+                    gastos_data.append((cat, imp, obs))
+
+                guardar_rapido = st.form_submit_button("Guardar carga rápida mensual", use_container_width=True)
+
+                if guardar_rapido:
+                    nuevos = []
+
+                    for cat, imp, obs in ingresos_data:
+                        if str(cat).strip() and imp > 0:
+                            nuevos.append({
+                                "id": next_prefixed_id(pd.concat([movimientos, pd.DataFrame(nuevos)], ignore_index=True), "MOV"),
+                                "cliente": cliente_rapido,
+                                "mes": mes_rapido,
+                                "tipo": "Ingreso",
+                                "categoria": str(cat).strip(),
+                                "importe": imp,
+                                "observacion": obs,
+                                "fecha_carga": date.today().strftime("%Y-%m-%d"),
+                                "cargado_por": st.session_state.get("username", ""),
+                            })
+
+                    for cat, imp, obs in gastos_data:
+                        if str(cat).strip() and imp > 0:
+                            nuevos.append({
+                                "id": next_prefixed_id(pd.concat([movimientos, pd.DataFrame(nuevos)], ignore_index=True), "MOV"),
+                                "cliente": cliente_rapido,
+                                "mes": mes_rapido,
+                                "tipo": "Gasto",
+                                "categoria": str(cat).strip(),
+                                "importe": imp,
+                                "observacion": obs,
+                                "fecha_carga": date.today().strftime("%Y-%m-%d"),
+                                "cargado_por": st.session_state.get("username", ""),
+                            })
+
+                    if not nuevos:
+                        st.error("No cargaste ningún importe mayor a cero.")
+                    else:
+                        actualizado = pd.concat([movimientos, pd.DataFrame(nuevos)], ignore_index=True)
+                        save_csv(actualizado, INDICADORES_MOVIMIENTOS_PATH)
+                        st.success(f"Se cargaron {len(nuevos)} movimiento(s) correctamente.")
+                        st.rerun()
+
 
     # --------------------------------------------------------
     # Filtrado para tablero

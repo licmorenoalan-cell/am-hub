@@ -1,3 +1,3 @@
-cliente,rubro,estado,plan,responsable_am,fecha_inicio,notas
-Ritual Medicina Estética,Medicina estética,Activo,Gestión digital + pauta,Alan,2026-07-01,"Foco en cosmiatría, tratamientos, jornadas y contenido humano."
-EZCA Premoldeados,Construcción / premoldeados,Activo,Contenido + branding,Alan,2026-07-01,"Foco en autoridad técnica, escaleras premoldeadas y humanización."
+cliente,rubro,estado,plan,responsable_am,fecha_inicio,notas,servicio_digital,servicio_consultoria,servicio_contabilidad
+Ritual Medicina Estética,Medicina estética,Activo,Gestión digital + pauta,Alan,2026-07-01,"Foco en cosmiatría, tratamientos, jornadas y contenido humano.",Sí,No,No
+EZCA Premoldeados,Construcción / premoldeados,Activo,Contenido + branding,Alan,2026-07-01,"Foco en autoridad técnica, escaleras premoldeadas y humanización.",Sí,No,No
