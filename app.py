@@ -3,6 +3,7 @@ import base64
 from PIL import Image
 from datetime import date
 import pandas as pd
+import altair as alt
 import streamlit as st
 
 # ============================================================
@@ -26,6 +27,10 @@ CAMPANIAS_PATH = DATA_DIR / "campanias.csv"
 REPORTES_PATH = DATA_DIR / "reportes.csv"
 TAREAS_PATH = DATA_DIR / "tareas.csv"
 USUARIOS_PATH = DATA_DIR / "usuarios.csv"
+OBJETIVOS_PATH = DATA_DIR / "objetivos.csv"
+DOCUMENTOS_PATH = DATA_DIR / "documentos.csv"
+INDICADORES_PATH = DATA_DIR / "indicadores.csv"
+INDICADORES_MOVIMIENTOS_PATH = DATA_DIR / "indicadores_movimientos.csv"
 
 COLOR_NAVY = "#244777"
 COLOR_BLUE = "#234579"
@@ -730,6 +735,81 @@ def preparar_logo_sidebar(ruta_logo):
     except Exception:
         return None
 
+
+def valor_si(valor):
+    return str(valor).strip().lower() in ["sí", "si", "true", "1", "activo", "x"]
+
+
+def servicios_activos_cliente(cliente_nombre):
+    clientes_df = read_csv(
+        CLIENTES_PATH,
+        [
+            "cliente",
+            "servicio_digital",
+            "servicio_consultoria",
+            "servicio_contabilidad",
+        ],
+    )
+
+    servicios = {
+        "digital": False,
+        "consultoria": False,
+        "contabilidad": False,
+    }
+
+    if clientes_df is None or clientes_df.empty or "cliente" not in clientes_df.columns:
+        return servicios
+
+    fila = clientes_df[
+        clientes_df["cliente"].astype(str).str.strip() == str(cliente_nombre).strip()
+    ]
+
+    if fila.empty:
+        return servicios
+
+    row = fila.iloc[0]
+
+    servicios["digital"] = valor_si(row.get("servicio_digital", "No"))
+    servicios["consultoria"] = valor_si(row.get("servicio_consultoria", "No"))
+    servicios["contabilidad"] = valor_si(row.get("servicio_contabilidad", "No"))
+
+    return servicios
+
+
+def menu_cliente_por_servicios(cliente_nombre):
+    servicios = servicios_activos_cliente(cliente_nombre)
+
+    opciones = ["Inicio"]
+
+    if servicios["digital"]:
+        opciones += [
+            "Calendario",
+            "Aprobaciones",
+            "Materiales",
+            "Campañas",
+            "Reportes",
+        ]
+
+    if servicios["consultoria"]:
+        opciones += [
+            "Objetivos",
+            "Documentos",
+        ]
+
+    if servicios["contabilidad"]:
+        opciones += [
+            "Indicadores",
+            "Objetivos",
+            "Documentos",
+        ]
+
+    limpio = []
+    for opcion in opciones:
+        if opcion not in limpio:
+            limpio.append(opcion)
+
+    return limpio
+
 def sidebar():
     logo_path = ASSETS_DIR / "isologo_sidebar_limpio.png"
     if not logo_path.exists():
@@ -759,16 +839,10 @@ def sidebar():
     role = st.session_state.get("role")
 
     if role == "cliente":
+        cliente_actual = st.session_state.get("cliente", "")
         menu = st.sidebar.radio(
             "Menú",
-            [
-                "Inicio",
-                "Calendario",
-                "Aprobaciones",
-                "Materiales",
-                "Campañas",
-                "Reportes",
-            ],
+            menu_cliente_por_servicios(cliente_actual),
             key="menu_cliente",
         )
     elif role in ["admin_general", "admin"]:
@@ -779,6 +853,9 @@ def sidebar():
                 "Edición rápida",
                 "Usuarios",
                 "Clientes",
+                "Objetivos",
+                "Documentos",
+                "Indicadores",
                 "Contenidos",
                 "Materiales",
                 "Campañas",
@@ -793,6 +870,9 @@ def sidebar():
             "Menú",
             [
                 "Dashboard AM",
+                "Objetivos",
+                "Documentos",
+                "Indicadores",
                 "Contenidos",
                 "Materiales",
                 "Campañas",
@@ -1778,6 +1858,683 @@ def render_edicion_rapida(clientes, contenidos, materiales, campanias, reportes,
             st.rerun()
 
 
+
+def cargar_objetivos():
+    return read_csv(
+        OBJETIVOS_PATH,
+        [
+            "id", "cliente", "servicio", "mes", "objetivo", "descripcion",
+            "responsable_am", "responsable_cliente", "prioridad", "estado",
+            "avance", "proxima_accion", "fecha_limite", "comentarios"
+        ],
+    )
+
+
+def cargar_documentos():
+    return read_csv(
+        DOCUMENTOS_PATH,
+        [
+            "id", "cliente", "servicio", "categoria", "nombre", "link",
+            "estado", "fecha", "observacion"
+        ],
+    )
+
+
+def cargar_indicadores():
+    return read_csv(
+        INDICADORES_PATH,
+        [
+            "id", "cliente", "mes", "facturacion", "gastos", "inversiones",
+            "resultado_estimado", "objetivo_facturacion", "objetivo_gastos",
+            "objetivos_mes", "observacion_am", "observacion_cliente", "estado"
+        ],
+    )
+
+
+def render_objetivos(cliente="", modo="cliente"):
+    objetivos = cargar_objetivos()
+
+    def next_prefixed_id(df, prefix):
+        if df is None or df.empty or "id" not in df.columns:
+            return f"{prefix}-001"
+
+        nums = []
+        for value in df["id"].dropna().astype(str).tolist():
+            value = value.strip()
+            if value.upper().startswith(prefix.upper() + "-"):
+                try:
+                    nums.append(int(value.split("-")[-1]))
+                except Exception:
+                    pass
+
+        siguiente = max(nums) + 1 if nums else 1
+        return f"{prefix}-{siguiente:03d}"
+
+    estados_orden = ["Pendiente", "En curso", "En revisión", "Finalizado", "Pausado"]
+
+    if modo == "cliente":
+        header("Objetivos", f"Seguimiento de objetivos | {cliente}")
+        df = filter_cliente(objetivos, cliente)
+
+        if df is None or df.empty:
+            st.info("No hay objetivos cargados.")
+            return
+
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Total", len(df))
+        c2.metric("En curso", df["estado"].astype(str).str.contains("En curso", case=False, na=False).sum())
+        c3.metric("Finalizados", df["estado"].astype(str).str.contains("Finalizado", case=False, na=False).sum())
+
+        st.markdown("### Tablero de objetivos")
+
+        cols = st.columns(len(estados_orden))
+
+        for i, estado_col in enumerate(estados_orden):
+            with cols[i]:
+                st.markdown(f"#### {estado_col}")
+                subset = df[df["estado"].astype(str) == estado_col].copy() if "estado" in df.columns else df.iloc[0:0].copy()
+
+                if subset.empty:
+                    st.caption("Sin objetivos.")
+                else:
+                    for _, row in subset.iterrows():
+                        avance = row.get("avance", 0)
+                        try:
+                            avance_int = int(float(avance))
+                        except Exception:
+                            avance_int = 0
+
+                        st.markdown(
+                            f"""
+                            <div style="
+                                background:white;
+                                border:1px solid #E5E7EB;
+                                border-radius:16px;
+                                padding:14px 15px;
+                                margin-bottom:12px;
+                                box-shadow:0 6px 16px rgba(16,24,40,0.05);
+                            ">
+                                <div style="font-weight:800; color:#172033; margin-bottom:6px;">
+                                    {row.get('objetivo', '')}
+                                </div>
+                                <div style="font-size:0.85rem; color:#667085; margin-bottom:8px;">
+                                    {row.get('proxima_accion', '')}
+                                </div>
+                                <div style="font-size:0.8rem; color:#244777;">
+                                    Avance: {avance_int}%
+                                </div>
+                            </div>
+                            """,
+                            unsafe_allow_html=True,
+                        )
+
+        st.markdown("### Detalle")
+        columnas = [
+            "servicio", "mes", "objetivo", "descripcion",
+            "responsable_am", "responsable_cliente", "prioridad", "estado",
+            "avance", "proxima_accion", "fecha_limite", "comentarios"
+        ]
+        columnas = [c for c in columnas if c in df.columns]
+        st.dataframe(df[columnas], use_container_width=True, hide_index=True)
+        return
+
+    # --------------------------------------------------------
+    # ADMIN
+    # --------------------------------------------------------
+    header("Objetivos", "Carga y seguimiento de objetivos por cliente")
+
+    clientes_df = read_csv(CLIENTES_PATH, ["cliente"])
+    clientes_lista = []
+    if clientes_df is not None and not clientes_df.empty and "cliente" in clientes_df.columns:
+        clientes_lista = sorted(clientes_df["cliente"].dropna().astype(str).unique().tolist())
+
+    st.markdown("### Nuevo objetivo")
+
+    if not clientes_lista:
+        st.warning("Primero cargá clientes en el menú Clientes.")
+    else:
+        with st.form("form_nuevo_objetivo"):
+            c1, c2, c3 = st.columns(3)
+
+            with c1:
+                cliente_obj = st.selectbox("Cliente", clientes_lista)
+                servicio = st.selectbox("Servicio", ["Consultoría", "Contabilidad / gestión", "Ecosistema digital", "General"])
+                mes = st.text_input("Mes", value=date.today().strftime("%Y-%m"))
+
+            with c2:
+                responsable_am = st.text_input("Responsable AM", value=st.session_state.get("name", "AM Consultora"))
+                responsable_cliente = st.text_input("Responsable cliente")
+                prioridad = st.selectbox("Prioridad", ["Alta", "Media", "Baja"])
+
+            with c3:
+                estado = st.selectbox("Estado", estados_orden, index=1)
+                avance = st.slider("Avance", min_value=0, max_value=100, value=0, step=5)
+                fecha_limite = st.date_input("Fecha límite")
+
+            objetivo = st.text_input("Objetivo")
+            descripcion = st.text_area("Descripción / alcance")
+            proxima_accion = st.text_input("Próxima acción")
+            comentarios = st.text_area("Comentarios internos")
+
+            guardar = st.form_submit_button("Guardar objetivo", use_container_width=True)
+
+            if guardar:
+                if not objetivo.strip():
+                    st.error("El objetivo es obligatorio.")
+                else:
+                    nuevo = {
+                        "id": next_prefixed_id(objetivos, "OBJ"),
+                        "cliente": cliente_obj,
+                        "servicio": servicio,
+                        "mes": mes,
+                        "objetivo": objetivo.strip(),
+                        "descripcion": descripcion,
+                        "responsable_am": responsable_am,
+                        "responsable_cliente": responsable_cliente,
+                        "prioridad": prioridad,
+                        "estado": estado,
+                        "avance": avance,
+                        "proxima_accion": proxima_accion,
+                        "fecha_limite": fecha_limite.strftime("%Y-%m-%d"),
+                        "comentarios": comentarios,
+                    }
+
+                    objetivos_actualizado = pd.concat([objetivos, pd.DataFrame([nuevo])], ignore_index=True)
+                    save_csv(objetivos_actualizado, OBJETIVOS_PATH)
+                    st.success("Objetivo creado correctamente.")
+                    st.rerun()
+
+    st.markdown("### Tablero kanban")
+
+    if objetivos is None or objetivos.empty:
+        st.info("Todavía no hay objetivos cargados.")
+    else:
+        filtro_cliente = st.selectbox("Filtrar cliente", ["Todos"] + clientes_lista, key="objetivos_filtro_cliente_admin")
+
+        vista = objetivos.copy()
+        if filtro_cliente != "Todos":
+            vista = vista[vista["cliente"].astype(str) == filtro_cliente]
+
+        cols = st.columns(len(estados_orden))
+
+        for i, estado_col in enumerate(estados_orden):
+            with cols[i]:
+                subset = vista[vista["estado"].astype(str) == estado_col].copy() if "estado" in vista.columns else vista.iloc[0:0].copy()
+
+                st.markdown(f"#### {estado_col}")
+                st.caption(f"{len(subset)} objetivo(s)")
+
+                if subset.empty:
+                    st.markdown(
+                        """
+                        <div style="
+                            border:1px dashed #CBD5E1;
+                            border-radius:14px;
+                            padding:16px;
+                            color:#667085;
+                            background:#F8FAFC;
+                            text-align:center;
+                        ">
+                            Sin tarjetas
+                        </div>
+                        """,
+                        unsafe_allow_html=True,
+                    )
+                else:
+                    for _, row in subset.iterrows():
+                        avance = row.get("avance", 0)
+                        try:
+                            avance_int = int(float(avance))
+                        except Exception:
+                            avance_int = 0
+
+                        st.markdown(
+                            f"""
+                            <div style="
+                                background:white;
+                                border:1px solid #E5E7EB;
+                                border-radius:16px;
+                                padding:14px 15px;
+                                margin-bottom:12px;
+                                box-shadow:0 6px 16px rgba(16,24,40,0.05);
+                            ">
+                                <div style="font-size:0.78rem; color:#244777; font-weight:800; margin-bottom:4px;">
+                                    {row.get('cliente', '')}
+                                </div>
+                                <div style="font-weight:850; color:#172033; margin-bottom:6px;">
+                                    {row.get('objetivo', '')}
+                                </div>
+                                <div style="font-size:0.84rem; color:#667085; margin-bottom:8px;">
+                                    {row.get('proxima_accion', '')}
+                                </div>
+                                <div style="font-size:0.8rem; color:#0788A6;">
+                                    {row.get('prioridad', '')} · {avance_int}%
+                                </div>
+                            </div>
+                            """,
+                            unsafe_allow_html=True,
+                        )
+
+    with st.expander("Edición avanzada en tabla"):
+        edited = st.data_editor(
+            objetivos,
+            use_container_width=True,
+            hide_index=True,
+            num_rows="dynamic",
+            key="editor_objetivos_admin",
+        )
+
+        if st.button("Guardar edición avanzada de objetivos", use_container_width=True, key="guardar_objetivos_admin"):
+            save_csv(edited, OBJETIVOS_PATH)
+            st.success("Objetivos guardados.")
+            st.rerun()
+
+
+def render_documentos(cliente="", modo="cliente"):
+    documentos = cargar_documentos()
+
+    if modo == "cliente":
+        header("Documentos", f"Documentación y links útiles | {cliente}")
+        df = filter_cliente(documentos, cliente)
+    else:
+        header("Documentos", "Repositorio general de documentación")
+        df = documentos.copy()
+
+    if df is None or df.empty:
+        st.info("No hay documentos cargados.")
+    else:
+        columnas = [
+            "cliente", "servicio", "categoria", "nombre",
+            "link", "estado", "fecha", "observacion"
+        ]
+        columnas = [c for c in columnas if c in df.columns]
+        st.dataframe(df[columnas], use_container_width=True, hide_index=True)
+
+    if modo != "cliente":
+        st.markdown("### Edición rápida de documentos")
+        edited = st.data_editor(
+            documentos,
+            use_container_width=True,
+            hide_index=True,
+            num_rows="dynamic",
+            key="editor_documentos_admin",
+        )
+
+        if st.button("Guardar documentos", use_container_width=True, key="guardar_documentos_admin"):
+            save_csv(edited, DOCUMENTOS_PATH)
+            st.success("Documentos guardados.")
+            st.rerun()
+
+
+def render_indicadores(cliente="", modo="cliente"):
+    movimientos = read_csv(
+        INDICADORES_MOVIMIENTOS_PATH,
+        [
+            "id",
+            "cliente",
+            "mes",
+            "tipo",
+            "categoria",
+            "importe",
+            "observacion",
+            "fecha_carga",
+            "cargado_por",
+        ],
+    )
+
+    def next_prefixed_id(df, prefix):
+        if df is None or df.empty or "id" not in df.columns:
+            return f"{prefix}-001"
+
+        nums = []
+        for value in df["id"].dropna().astype(str).tolist():
+            value = value.strip()
+            if value.upper().startswith(prefix.upper() + "-"):
+                try:
+                    nums.append(int(value.split("-")[-1]))
+                except Exception:
+                    pass
+
+        siguiente = max(nums) + 1 if nums else 1
+        return f"{prefix}-{siguiente:03d}"
+
+    def formato_pesos(valor):
+        try:
+            return f"$ {float(valor):,.0f}".replace(",", ".")
+        except Exception:
+            return "$ 0"
+
+    def mes_label(fecha):
+        try:
+            return fecha.strftime("%Y-%m")
+        except Exception:
+            return date.today().strftime("%Y-%m")
+
+    def categorias_previas(df, cliente_actual, tipo_actual):
+        if df is None or df.empty:
+            return []
+
+        base = df.copy()
+
+        if "cliente" in base.columns and cliente_actual:
+            base = base[base["cliente"].astype(str) == str(cliente_actual)]
+
+        if "tipo" in base.columns:
+            base = base[base["tipo"].astype(str) == str(tipo_actual)]
+
+        if "categoria" not in base.columns or base.empty:
+            return []
+
+        cats = base["categoria"].dropna().astype(str).str.strip()
+        cats = cats[cats != ""].unique().tolist()
+        return sorted(cats)
+
+    if modo == "cliente":
+        header("Indicadores", f"Carga mensual y tablero de gestión | {cliente}")
+        cliente_fijo = cliente
+    else:
+        header("Indicadores", "Carga mensual y tablero de gestión por cliente")
+        cliente_fijo = ""
+
+    clientes_df = read_csv(CLIENTES_PATH, ["cliente"])
+    clientes_lista = []
+    if clientes_df is not None and not clientes_df.empty and "cliente" in clientes_df.columns:
+        clientes_lista = sorted(clientes_df["cliente"].dropna().astype(str).unique().tolist())
+
+    # --------------------------------------------------------
+    # Carga de movimientos
+    # --------------------------------------------------------
+    st.markdown("### Cargar ingreso o gasto")
+
+    if modo != "cliente" and not clientes_lista:
+        st.warning("Primero cargá clientes en el menú Clientes.")
+    else:
+        with st.form(f"form_movimiento_indicador_{modo}_{cliente_fijo}"):
+            c1, c2, c3 = st.columns(3)
+
+            with c1:
+                if modo == "cliente":
+                    cliente_mov = cliente_fijo
+                    st.text_input("Cliente", value=cliente_mov, disabled=True)
+                else:
+                    cliente_mov = st.selectbox("Cliente", clientes_lista)
+
+                fecha_mes = st.date_input("Mes y año", value=date.today())
+                mes = mes_label(fecha_mes)
+
+            with c2:
+                tipo = st.selectbox("Tipo", ["Ingreso", "Gasto"])
+
+                cats = categorias_previas(movimientos, cliente_mov if modo == "cliente" else "", tipo)
+                opciones_categoria = ["Nueva categoría"] + cats
+
+                categoria_opcion = st.selectbox("Categoría", opciones_categoria)
+
+                if categoria_opcion == "Nueva categoría":
+                    categoria = st.text_input("Nombre de nueva categoría")
+                else:
+                    categoria = categoria_opcion
+
+            with c3:
+                importe = st.number_input("Importe", min_value=0.0, step=10000.0)
+                st.metric("Importe a cargar", formato_pesos(importe))
+
+            observacion = st.text_area("Observación")
+
+            guardar = st.form_submit_button("Guardar movimiento", use_container_width=True)
+
+            if guardar:
+                if not cliente_mov:
+                    st.error("No se pudo identificar el cliente.")
+                elif not categoria or not str(categoria).strip():
+                    st.error("La categoría es obligatoria.")
+                elif importe <= 0:
+                    st.error("El importe debe ser mayor a cero.")
+                else:
+                    nuevo = {
+                        "id": next_prefixed_id(movimientos, "MOV"),
+                        "cliente": cliente_mov,
+                        "mes": mes,
+                        "tipo": tipo,
+                        "categoria": str(categoria).strip(),
+                        "importe": importe,
+                        "observacion": observacion,
+                        "fecha_carga": date.today().strftime("%Y-%m-%d"),
+                        "cargado_por": st.session_state.get("username", ""),
+                    }
+
+                    actualizado = pd.concat([movimientos, pd.DataFrame([nuevo])], ignore_index=True)
+                    save_csv(actualizado, INDICADORES_MOVIMIENTOS_PATH)
+                    st.success("Movimiento cargado correctamente.")
+                    st.rerun()
+
+    # --------------------------------------------------------
+    # Filtrado para tablero
+    # --------------------------------------------------------
+    if movimientos is None or movimientos.empty:
+        st.info("Todavía no hay ingresos ni gastos cargados.")
+        return
+
+    vista = movimientos.copy()
+
+    if modo == "cliente":
+        vista = vista[vista["cliente"].astype(str) == str(cliente)]
+    else:
+        clientes_disponibles = ["Todos"] + sorted(vista["cliente"].dropna().astype(str).unique().tolist()) if "cliente" in vista.columns else ["Todos"]
+        filtro_cliente = st.selectbox("Filtrar cliente", clientes_disponibles, key="indicadores_mov_filtro_cliente_admin")
+
+        if filtro_cliente != "Todos":
+            vista = vista[vista["cliente"].astype(str) == filtro_cliente]
+
+    if vista.empty:
+        st.info("No hay movimientos cargados para este cliente.")
+        return
+
+    vista["importe"] = pd.to_numeric(vista["importe"], errors="coerce").fillna(0)
+    vista["mes"] = vista["mes"].astype(str)
+
+    meses_disponibles = sorted(vista["mes"].dropna().astype(str).unique().tolist())
+
+    st.markdown("### Filtros del tablero")
+
+    f1, f2, f3 = st.columns(3)
+
+    with f1:
+        mes_desde = st.selectbox("Mes desde", meses_disponibles, index=0)
+
+    with f2:
+        mes_hasta = st.selectbox("Mes hasta", meses_disponibles, index=len(meses_disponibles) - 1)
+
+    with f3:
+        anios_disponibles = sorted({m[:4] for m in meses_disponibles if len(m) >= 4})
+        modo_vista = st.selectbox("Vista rápida", ["Rango seleccionado", "Año completo"])
+
+    if modo_vista == "Año completo":
+        anio = st.selectbox("Año", anios_disponibles, key="indicadores_anio")
+        vista_filtrada = vista[vista["mes"].str.startswith(anio)]
+    else:
+        desde = min(mes_desde, mes_hasta)
+        hasta = max(mes_desde, mes_hasta)
+        vista_filtrada = vista[(vista["mes"] >= desde) & (vista["mes"] <= hasta)]
+
+    if vista_filtrada.empty:
+        st.info("No hay movimientos para el período seleccionado.")
+        return
+
+    # --------------------------------------------------------
+    # Sumatorias
+    # --------------------------------------------------------
+    ingresos_total = vista_filtrada.loc[vista_filtrada["tipo"] == "Ingreso", "importe"].sum()
+    gastos_total = vista_filtrada.loc[vista_filtrada["tipo"] == "Gasto", "importe"].sum()
+    resultado_total = ingresos_total - gastos_total
+
+    st.markdown("### Tablero de control")
+
+    k1, k2, k3 = st.columns(3)
+    k1.metric("Ingresos", formato_pesos(ingresos_total))
+    k2.metric("Gastos", formato_pesos(gastos_total))
+    k3.metric("Resultado", formato_pesos(resultado_total))
+
+    if ingresos_total > 0:
+        margen = resultado_total / ingresos_total * 100
+        st.progress(max(0, min(int(margen), 100)))
+        st.caption(f"Margen estimado sobre ingresos: {margen:.1f}%")
+
+    # --------------------------------------------------------
+    # Agrupaciones
+    # --------------------------------------------------------
+    mensual = (
+        vista_filtrada
+        .groupby(["mes", "tipo"], as_index=False)["importe"]
+        .sum()
+    )
+
+    mensual_pivot = (
+        mensual
+        .pivot(index="mes", columns="tipo", values="importe")
+        .fillna(0)
+        .reset_index()
+    )
+
+    if "Ingreso" not in mensual_pivot.columns:
+        mensual_pivot["Ingreso"] = 0
+
+    if "Gasto" not in mensual_pivot.columns:
+        mensual_pivot["Gasto"] = 0
+
+    mensual_pivot["Resultado"] = mensual_pivot["Ingreso"] - mensual_pivot["Gasto"]
+
+    por_categoria = (
+        vista_filtrada
+        .groupby(["tipo", "categoria"], as_index=False)["importe"]
+        .sum()
+        .sort_values("importe", ascending=False)
+    )
+
+    # --------------------------------------------------------
+    # Gráficos
+    # --------------------------------------------------------
+    st.markdown("### Gráficos")
+
+    g1, g2 = st.columns(2)
+
+    with g1:
+        st.markdown("#### Ingresos vs gastos por mes")
+
+        chart_mensual = (
+            alt.Chart(mensual)
+            .mark_bar()
+            .encode(
+                x=alt.X("mes:N", title="Mes"),
+                y=alt.Y("importe:Q", title="Importe"),
+                color=alt.Color("tipo:N", title="Tipo"),
+                tooltip=["mes:N", "tipo:N", alt.Tooltip("importe:Q", format=",.0f")],
+            )
+            .properties(height=320)
+        )
+
+        st.altair_chart(chart_mensual, use_container_width=True)
+
+    with g2:
+        st.markdown("#### Resultado mensual")
+
+        chart_resultado = (
+            alt.Chart(mensual_pivot)
+            .mark_line(point=True)
+            .encode(
+                x=alt.X("mes:N", title="Mes"),
+                y=alt.Y("Resultado:Q", title="Resultado"),
+                tooltip=["mes:N", alt.Tooltip("Resultado:Q", format=",.0f")],
+            )
+            .properties(height=320)
+        )
+
+        st.altair_chart(chart_resultado, use_container_width=True)
+
+    g3, g4 = st.columns(2)
+
+    with g3:
+        st.markdown("#### Ingresos por categoría")
+
+        ingresos_cat = por_categoria[por_categoria["tipo"] == "Ingreso"]
+
+        if ingresos_cat.empty:
+            st.info("No hay ingresos cargados en el período.")
+        else:
+            chart_ingresos = (
+                alt.Chart(ingresos_cat)
+                .mark_bar()
+                .encode(
+                    x=alt.X("importe:Q", title="Importe"),
+                    y=alt.Y("categoria:N", title="Categoría", sort="-x"),
+                    tooltip=["categoria:N", alt.Tooltip("importe:Q", format=",.0f")],
+                )
+                .properties(height=320)
+            )
+
+            st.altair_chart(chart_ingresos, use_container_width=True)
+
+    with g4:
+        st.markdown("#### Gastos por categoría")
+
+        gastos_cat = por_categoria[por_categoria["tipo"] == "Gasto"]
+
+        if gastos_cat.empty:
+            st.info("No hay gastos cargados en el período.")
+        else:
+            chart_gastos = (
+                alt.Chart(gastos_cat)
+                .mark_bar()
+                .encode(
+                    x=alt.X("importe:Q", title="Importe"),
+                    y=alt.Y("categoria:N", title="Categoría", sort="-x"),
+                    tooltip=["categoria:N", alt.Tooltip("importe:Q", format=",.0f")],
+                )
+                .properties(height=320)
+            )
+
+            st.altair_chart(chart_gastos, use_container_width=True)
+
+    # --------------------------------------------------------
+    # Detalle
+    # --------------------------------------------------------
+    st.markdown("### Detalle del período")
+
+    columnas = [
+        "cliente",
+        "mes",
+        "tipo",
+        "categoria",
+        "importe",
+        "observacion",
+        "fecha_carga",
+        "cargado_por",
+    ]
+
+    columnas = [c for c in columnas if c in vista_filtrada.columns]
+
+    st.dataframe(
+        vista_filtrada[columnas].sort_values(["mes", "tipo", "categoria"]),
+        use_container_width=True,
+        hide_index=True,
+    )
+
+    if modo != "cliente":
+        with st.expander("Edición avanzada en tabla"):
+            edited = st.data_editor(
+                movimientos,
+                use_container_width=True,
+                hide_index=True,
+                num_rows="dynamic",
+                key="editor_indicadores_movimientos_admin",
+            )
+
+            if st.button("Guardar edición avanzada de movimientos", use_container_width=True, key="guardar_indicadores_movimientos_admin"):
+                save_csv(edited, INDICADORES_MOVIMIENTOS_PATH)
+                st.success("Movimientos guardados.")
+                st.rerun()
+
+
 def render_admin_dashboard(clientes, contenidos, materiales, campanias, reportes, tareas):
     header("Dashboard AM", "Vista interna de gestión de clientes, contenidos y campañas.")
 
@@ -1864,6 +2621,10 @@ def render_crud_table(title, path, df):
     if archivo == "clientes.csv":
         st.markdown("### Nuevo cliente")
 
+        for col in ["servicio_digital", "servicio_consultoria", "servicio_contabilidad"]:
+            if col not in df.columns:
+                df[col] = "No"
+
         with st.form("form_clientes"):
             col1, col2, col3 = st.columns(3)
 
@@ -1879,6 +2640,18 @@ def render_crud_table(title, path, df):
                 responsable_am = st.text_input("Responsable AM")
                 fecha_inicio = st.date_input("Fecha de inicio")
 
+            st.markdown("#### Servicios contratados")
+            s1, s2, s3 = st.columns(3)
+
+            with s1:
+                servicio_digital = st.checkbox("Ecosistema digital", value=True)
+
+            with s2:
+                servicio_consultoria = st.checkbox("Consultoría")
+
+            with s3:
+                servicio_contabilidad = st.checkbox("Contabilidad / gestión")
+
             notas = st.text_area("Notas internas")
 
             submitted = st.form_submit_button("Guardar cliente", use_container_width=True)
@@ -1886,6 +2659,8 @@ def render_crud_table(title, path, df):
             if submitted:
                 if not cliente.strip():
                     st.error("El nombre del cliente es obligatorio.")
+                elif not servicio_digital and not servicio_consultoria and not servicio_contabilidad:
+                    st.error("Seleccioná al menos un servicio contratado.")
                 else:
                     nuevo = {
                         "cliente": cliente.strip(),
@@ -1894,6 +2669,9 @@ def render_crud_table(title, path, df):
                         "plan": plan,
                         "responsable_am": responsable_am,
                         "fecha_inicio": fecha_inicio.strftime("%Y-%m-%d"),
+                        "servicio_digital": "Sí" if servicio_digital else "No",
+                        "servicio_consultoria": "Sí" if servicio_consultoria else "No",
+                        "servicio_contabilidad": "Sí" if servicio_contabilidad else "No",
                         "notas": notas,
                     }
                     append_and_save(nuevo)
@@ -2209,6 +2987,12 @@ def main():
             render_campanias(cliente, campanias)
         elif menu == "Reportes":
             render_reportes(cliente, reportes)
+        elif menu == "Objetivos":
+            render_objetivos(cliente, modo="cliente")
+        elif menu == "Documentos":
+            render_documentos(cliente, modo="cliente")
+        elif menu == "Indicadores":
+            render_indicadores(cliente, modo="cliente")
 
     else:
         if menu == "Dashboard AM":
@@ -2219,6 +3003,12 @@ def main():
             render_usuarios(clientes)
         elif menu == "Clientes":
             render_crud_table("Clientes", CLIENTES_PATH, clientes)
+        elif menu == "Objetivos":
+            render_objetivos("", modo="admin")
+        elif menu == "Documentos":
+            render_documentos("", modo="admin")
+        elif menu == "Indicadores":
+            render_indicadores("", modo="admin")
         elif menu == "Contenidos":
             render_crud_table("Contenidos", CONTENIDOS_PATH, contenidos)
         elif menu == "Materiales":
