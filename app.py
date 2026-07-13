@@ -34,6 +34,7 @@ OBJETIVOS_PATH = DATA_DIR / "objetivos.csv"
 DOCUMENTOS_PATH = DATA_DIR / "documentos.csv"
 INDICADORES_PATH = DATA_DIR / "indicadores.csv"
 INDICADORES_MOVIMIENTOS_PATH = DATA_DIR / "indicadores_movimientos.csv"
+CUENTA_CORRIENTE_PATH = DATA_DIR / "cuenta_corriente.csv"
 
 # ============================================================
 # Base de datos opcional PostgreSQL / Supabase
@@ -52,6 +53,7 @@ POSTGRES_TABLE_MAP = {
     "documentos.csv": "documentos",
     "indicadores.csv": "indicadores",
     "indicadores_movimientos.csv": "indicadores_movimientos",
+    "cuenta_corriente.csv": "cuenta_corriente",
 }
 
 POSTGRES_KEY_MAP = {
@@ -67,6 +69,7 @@ POSTGRES_KEY_MAP = {
     "documentos": "id",
     "indicadores": "id",
     "indicadores_movimientos": "id",
+    "cuenta_corriente": "id",
 }
 
 _POSTGRES_ENGINE = None
@@ -1534,10 +1537,21 @@ def sidebar():
 
     if role == "cliente":
         cliente_actual = st.session_state.get("cliente", "")
+        opciones_cliente = menu_cliente_por_servicios(cliente_actual)
+
+        # Cuenta corriente debe estar disponible para todos los usuarios cliente,
+        # actuales y nuevos, independientemente de los servicios contratados.
+        if "Cuenta corriente" not in opciones_cliente:
+            opciones_cliente = ["Inicio", "Cuenta corriente"] + [
+                op for op in opciones_cliente if op not in ["Inicio", "Cuenta corriente", "Documentos"]
+            ]
+        else:
+            opciones_cliente = [op for op in opciones_cliente if op != "Documentos"]
+
         menu = st.sidebar.radio(
             "Menú",
-            menu_cliente_por_servicios(cliente_actual),
-            key="menu_cliente",
+            opciones_cliente,
+            key="menu_cliente_v2",
         )
     elif role in ["admin_general", "admin"]:
         menu = st.sidebar.radio(
@@ -1550,6 +1564,7 @@ def sidebar():
                 "Clientes",
                 "Objetivos",
                         "Cash Flow",
+                "Cuenta corriente",
                 "Contenidos",
                 "Materiales",
                 "Campañas",
@@ -4748,9 +4763,423 @@ def columnas_por_path(path):
             "id", "cliente", "mes", "tipo", "categoria", "importe",
             "observacion", "fecha_carga", "cargado_por",
         ],
+        "cuenta_corriente.csv": [
+            "id", "cliente", "mes", "concepto", "importe", "estado",
+            "fecha_factura", "fecha_pago", "observacion", "comprobante_nombre",
+            "comprobante_tipo", "comprobante_base64", "fecha_carga",
+            "cargado_por",
+        ],
     }
 
     return mapa.get(filename, [])
+
+
+
+def cargar_cuenta_corriente(cliente=""):
+    columns = [
+        "id",
+        "cliente",
+        "mes",
+        "concepto",
+        "importe",
+        "estado",
+        "fecha_factura",
+        "fecha_pago",
+        "observacion",
+        "comprobante_nombre",
+        "comprobante_tipo",
+        "comprobante_base64",
+        "fecha_carga",
+        "cargado_por",
+    ]
+
+    if cliente:
+        return read_csv_cliente(CUENTA_CORRIENTE_PATH, columns, cliente)
+
+    return read_csv(CUENTA_CORRIENTE_PATH, columns)
+
+
+def render_cuenta_corriente_admin():
+    if st.session_state.get("role") != "admin_general":
+        header("Cuenta corriente", "Acceso restringido")
+        st.error("Este módulo solo está disponible para el administrador general.")
+        return
+
+    header("Cuenta corriente", "Honorarios, facturación, pagos y deuda por cliente")
+
+    columnas = [
+        "id",
+        "cliente",
+        "mes",
+        "concepto",
+        "importe",
+        "estado",
+        "fecha_factura",
+        "fecha_pago",
+        "observacion",
+        "comprobante_nombre",
+        "comprobante_tipo",
+        "comprobante_base64",
+        "fecha_carga",
+        "cargado_por",
+    ]
+
+    cuenta = cargar_cuenta_corriente()
+    clientes_df = load_clientes()
+
+    clientes_lista = []
+    if clientes_df is not None and not clientes_df.empty and "cliente" in clientes_df.columns:
+        clientes_lista = sorted(
+            clientes_df["cliente"]
+            .dropna()
+            .astype(str)
+            .str.strip()
+            .replace("", pd.NA)
+            .dropna()
+            .unique()
+            .tolist()
+        )
+
+    def next_prefixed_id(df, prefix):
+        if df is None or df.empty or "id" not in df.columns:
+            return f"{prefix}-001"
+
+        nums = []
+        for value in df["id"].dropna().astype(str).tolist():
+            value = value.strip()
+            if value.upper().startswith(prefix.upper() + "-"):
+                try:
+                    nums.append(int(value.split("-")[-1]))
+                except Exception:
+                    pass
+
+        siguiente = max(nums) + 1 if nums else 1
+        return f"{prefix}-{siguiente:03d}"
+
+    def mes_label(fecha):
+        try:
+            return fecha.strftime("%Y-%m")
+        except Exception:
+            return date.today().strftime("%Y-%m")
+
+    def formato_pesos(valor):
+        try:
+            return f"$ {float(valor):,.0f}".replace(",", ".")
+        except Exception:
+            return "$ 0"
+
+    estados_pago = [
+        "Pendiente de facturar",
+        "Facturado",
+        "Pagado",
+        "No pagado",
+        "Vencido",
+        "Bonificado",
+    ]
+
+    # --------------------------------------------------------
+    # Alta rápida
+    # --------------------------------------------------------
+    with st.expander("Cargar honorario mensual", expanded=True):
+        if not clientes_lista:
+            st.warning("Primero cargá clientes.")
+        else:
+            with st.form("form_cuenta_corriente_alta"):
+                c1, c2, c3 = st.columns(3)
+
+                with c1:
+                    cliente_sel = st.selectbox("Cliente", clientes_lista)
+                    fecha_mes = st.date_input("Mes", value=date.today())
+                    mes = mes_label(fecha_mes)
+
+                with c2:
+                    concepto = st.text_input("Concepto", value="Honorarios mensuales")
+                    importe = st.number_input("Importe", min_value=0.0, step=10000.0)
+
+                with c3:
+                    estado = st.selectbox("Estado", estados_pago, index=0)
+                    fecha_factura = st.date_input("Fecha factura / emisión", value=date.today())
+
+                observacion = st.text_area("Observación")
+
+                guardar = st.form_submit_button("Guardar movimiento de cuenta corriente", use_container_width=True)
+
+                if guardar:
+                    if not cliente_sel:
+                        st.error("Seleccioná un cliente.")
+                    elif importe <= 0:
+                        st.error("El importe debe ser mayor a cero.")
+                    else:
+                        cuenta_full = cargar_cuenta_corriente()
+
+                        nuevo = {
+                            "id": next_prefixed_id(cuenta_full, "CC"),
+                            "cliente": cliente_sel,
+                            "mes": mes,
+                            "concepto": concepto.strip() or "Honorarios mensuales",
+                            "importe": importe,
+                            "estado": estado,
+                            "fecha_factura": fecha_factura.strftime("%Y-%m-%d"),
+                            "fecha_pago": date.today().strftime("%Y-%m-%d") if estado == "Pagado" else "",
+                            "observacion": observacion,
+                            "comprobante_nombre": "",
+                            "comprobante_tipo": "",
+                            "comprobante_base64": "",
+                            "fecha_carga": date.today().strftime("%Y-%m-%d"),
+                            "cargado_por": st.session_state.get("username", ""),
+                        }
+
+                        actualizado = pd.concat([cuenta_full, pd.DataFrame([nuevo])], ignore_index=True)
+                        save_csv(actualizado, CUENTA_CORRIENTE_PATH)
+                        st.success("Movimiento cargado correctamente.")
+                        st.rerun()
+
+    # --------------------------------------------------------
+    # Resumen
+    # --------------------------------------------------------
+    if cuenta is None or cuenta.empty:
+        st.info("Todavía no hay movimientos de cuenta corriente cargados.")
+        return
+
+    cuenta = cuenta.copy().fillna("")
+    cuenta["importe"] = pd.to_numeric(cuenta["importe"], errors="coerce").fillna(0)
+    cuenta["mes"] = cuenta["mes"].astype(str)
+
+    st.markdown("### Resumen")
+
+    f1, f2, f3 = st.columns(3)
+
+    clientes_filtro = ["Todos"]
+    if "cliente" in cuenta.columns:
+        clientes_filtro += sorted(cuenta["cliente"].dropna().astype(str).unique().tolist())
+
+    with f1:
+        filtro_cliente = st.selectbox("Cliente", clientes_filtro, key="cc_filtro_cliente")
+
+    with f2:
+        estados_filtro = ["Todos"] + estados_pago
+        filtro_estado = st.selectbox("Estado", estados_filtro, key="cc_filtro_estado")
+
+    with f3:
+        meses = sorted(cuenta["mes"].dropna().astype(str).unique().tolist())
+        filtro_mes = st.selectbox("Mes", ["Todos"] + meses, key="cc_filtro_mes")
+
+    vista = cuenta.copy()
+
+    if filtro_cliente != "Todos":
+        vista = vista[vista["cliente"].astype(str) == filtro_cliente]
+
+    if filtro_estado != "Todos":
+        vista = vista[vista["estado"].astype(str) == filtro_estado]
+
+    if filtro_mes != "Todos":
+        vista = vista[vista["mes"].astype(str) == filtro_mes]
+
+    if vista.empty:
+        st.info("No hay movimientos para los filtros seleccionados.")
+        return
+
+    estados_sin_deuda = ["Pagado", "Bonificado"]
+    deuda = vista[~vista["estado"].astype(str).isin(estados_sin_deuda)]["importe"].sum()
+    pagado = vista[vista["estado"].astype(str) == "Pagado"]["importe"].sum()
+    total = vista["importe"].sum()
+
+    k1, k2, k3, k4 = st.columns(4)
+    k1.metric("Total cargado", formato_pesos(total))
+    k2.metric("Pagado", formato_pesos(pagado))
+    k3.metric("Deuda / pendiente", formato_pesos(deuda))
+    k4.metric("Movimientos", len(vista))
+
+    st.markdown("### Detalle de cuenta corriente")
+
+    columnas_vista = [
+        "cliente",
+        "mes",
+        "concepto",
+        "importe",
+        "estado",
+        "fecha_factura",
+        "fecha_pago",
+        "observacion",
+    ]
+    columnas_vista = [c for c in columnas_vista if c in vista.columns]
+
+    st.dataframe(vista[columnas_vista], use_container_width=True, hide_index=True)
+
+    with st.expander("Edición avanzada"):
+        st.warning("Solo admin general. Acá podés modificar estados, importes, fechas u observaciones.")
+
+        edited = st.data_editor(
+            cuenta,
+            use_container_width=True,
+            hide_index=True,
+            num_rows="dynamic",
+            key="editor_cuenta_corriente_admin",
+        )
+
+        if st.button("Guardar edición de cuenta corriente", use_container_width=True, key="guardar_cuenta_corriente_admin"):
+            save_csv(edited, CUENTA_CORRIENTE_PATH)
+            st.success("Cuenta corriente actualizada.")
+            st.rerun()
+
+
+
+def render_cuenta_corriente_cliente(cliente):
+    header("Cuenta corriente", f"Estado de honorarios y pagos | {cliente}")
+
+    columnas = [
+        "id",
+        "cliente",
+        "mes",
+        "concepto",
+        "importe",
+        "estado",
+        "fecha_factura",
+        "fecha_pago",
+        "observacion",
+        "comprobante_nombre",
+        "comprobante_tipo",
+        "comprobante_base64",
+        "fecha_carga",
+        "cargado_por",
+    ]
+
+    cuenta = read_csv_cliente(CUENTA_CORRIENTE_PATH, columnas, cliente)
+
+    if cuenta is None or cuenta.empty:
+        st.info("Todavía no hay movimientos de cuenta corriente cargados.")
+        return
+
+    cuenta = cuenta.copy().fillna("")
+    cuenta["importe"] = pd.to_numeric(cuenta["importe"], errors="coerce").fillna(0)
+    cuenta["mes"] = cuenta["mes"].astype(str)
+
+    estados_sin_deuda = ["Pagado", "Bonificado"]
+    deuda = cuenta[~cuenta["estado"].astype(str).isin(estados_sin_deuda)]["importe"].sum()
+    pagado = cuenta[cuenta["estado"].astype(str) == "Pagado"]["importe"].sum()
+    total = cuenta["importe"].sum()
+
+    def formato_pesos(valor):
+        try:
+            return f"$ {float(valor):,.0f}".replace(",", ".")
+        except Exception:
+            return "$ 0"
+
+    k1, k2, k3 = st.columns(3)
+    k1.metric("Total cargado", formato_pesos(total))
+    k2.metric("Pagado", formato_pesos(pagado))
+    k3.metric("Pendiente / deuda", formato_pesos(deuda))
+
+    st.markdown("### Detalle")
+
+    columnas_vista = [
+        "mes",
+        "concepto",
+        "importe",
+        "estado",
+        "fecha_factura",
+        "fecha_pago",
+        "observacion",
+    ]
+    columnas_vista = [c for c in columnas_vista if c in cuenta.columns]
+
+    st.dataframe(cuenta[columnas_vista], use_container_width=True, hide_index=True)
+
+    pendientes = cuenta[
+        ~cuenta["estado"].astype(str).isin(["Pagado", "Bonificado"])
+    ].copy()
+
+    if pendientes.empty:
+        st.success("No hay honorarios pendientes de pago.")
+        return
+
+    st.markdown("### Informar pago")
+
+    opciones = []
+    mapa = {}
+
+    for _, row in pendientes.iterrows():
+        etiqueta = f"{row.get('id', '')} · {row.get('mes', '')} · {row.get('concepto', '')} · {formato_pesos(row.get('importe', 0))}"
+        opciones.append(etiqueta)
+        mapa[etiqueta] = row.get("id", "")
+
+    with st.form(f"form_informar_pago_{cliente}"):
+        seleccion = st.selectbox("Movimiento a informar como pagado", opciones)
+        observacion_pago = st.text_area(
+            "Observación / detalle del comprobante",
+            placeholder="Ejemplo: Transferencia realizada el día..., banco..., número de operación..."
+        )
+        archivo = st.file_uploader(
+            "Adjuntar comprobante",
+            type=["pdf", "png", "jpg", "jpeg", "webp"],
+            key=f"comprobante_pago_{cliente}",
+        )
+
+        confirmar = st.form_submit_button("Marcar como pagado", use_container_width=True)
+
+        if confirmar:
+            mov_id = mapa.get(seleccion)
+
+            if not mov_id:
+                st.error("No se pudo identificar el movimiento.")
+            elif not observacion_pago.strip() and archivo is None:
+                st.error("Agregá una observación o adjuntá un comprobante.")
+            else:
+                cuenta_full = cargar_cuenta_corriente()
+                mask = cuenta_full["id"].astype(str) == str(mov_id)
+
+                if not mask.any():
+                    st.error("No se encontró el movimiento en la base.")
+                else:
+                    cuenta_full.loc[mask, "estado"] = "Pagado"
+                    cuenta_full.loc[mask, "fecha_pago"] = date.today().strftime("%Y-%m-%d")
+
+                    obs_anterior = cuenta_full.loc[mask, "observacion"].astype(str).fillna("")
+                    nuevo_texto = observacion_pago.strip()
+
+                    if nuevo_texto:
+                        cuenta_full.loc[mask, "observacion"] = (
+                            obs_anterior
+                            + "\n"
+                            + date.today().strftime("%Y-%m-%d")
+                            + " - Cliente informó pago: "
+                            + nuevo_texto
+                        )
+
+                    if archivo is not None:
+                        contenido = archivo.read()
+                        cuenta_full.loc[mask, "comprobante_nombre"] = archivo.name
+                        cuenta_full.loc[mask, "comprobante_tipo"] = archivo.type or ""
+                        cuenta_full.loc[mask, "comprobante_base64"] = base64.b64encode(contenido).decode("utf-8")
+
+                    save_csv(cuenta_full, CUENTA_CORRIENTE_PATH)
+                    st.success("Pago informado correctamente.")
+                    st.rerun()
+
+    with st.expander("Comprobantes cargados"):
+        con_comprobante = cuenta[
+            cuenta.get("comprobante_base64", "").astype(str).str.strip() != ""
+        ].copy() if "comprobante_base64" in cuenta.columns else pd.DataFrame()
+
+        if con_comprobante.empty:
+            st.info("No hay comprobantes adjuntos.")
+        else:
+            for _, row in con_comprobante.iterrows():
+                nombre = row.get("comprobante_nombre", "comprobante")
+                tipo = row.get("comprobante_tipo", "application/octet-stream")
+                data_b64 = row.get("comprobante_base64", "")
+
+                try:
+                    data = base64.b64decode(data_b64)
+                    st.download_button(
+                        label=f"Descargar {nombre} · {row.get('mes', '')}",
+                        data=data,
+                        file_name=nombre,
+                        mime=tipo,
+                        key=f"download_cc_{row.get('id', '')}",
+                    )
+                except Exception:
+                    st.caption(f"No se pudo preparar el comprobante de {row.get('mes', '')}.")
 
 
 
@@ -5028,6 +5457,8 @@ def main():
 
         if menu == "Inicio":
             render_inicio_cliente_ejecutivo(cliente)
+        elif menu == "Cuenta corriente":
+            render_cuenta_corriente_cliente(cliente)
         elif menu == "Calendario":
             render_calendario(cliente, load_contenidos(cliente))
         elif menu == "Aprobaciones":
@@ -5133,6 +5564,8 @@ def main():
                 render_objetivos("", modo="admin")
             elif menu == "Cash Flow":
                 render_indicadores("", modo="admin")
+            elif menu == "Cuenta corriente":
+                render_cuenta_corriente_admin()
             elif menu == "Contenidos":
                 render_crud_table("Contenidos", CONTENIDOS_PATH)
             elif menu == "Materiales":
