@@ -110,6 +110,9 @@ def get_postgres_engine():
             database_url,
             pool_pre_ping=True,
             pool_recycle=1800,
+            pool_size=2,
+            max_overflow=3,
+            connect_args={"connect_timeout": 10},
         )
 
     return _POSTGRES_ENGINE
@@ -141,16 +144,49 @@ def normalizar_df_para_columnas(df: pd.DataFrame, columns: list[str]) -> pd.Data
     return df
 
 
-def leer_postgres(tabla: str, columns: list[str]) -> pd.DataFrame:
+@st.cache_data(ttl=600, show_spinner=False)
+def leer_postgres_cacheada(tabla: str, columns_tuple: tuple) -> pd.DataFrame:
     engine = get_postgres_engine()
 
+    with engine.connect() as conn:
+        df = pd.read_sql(sql_text(f'SELECT * FROM "{tabla}"'), conn)
+
+    columns = list(columns_tuple) if columns_tuple else []
+    return normalizar_df_para_columnas(df, columns)
+
+
+def leer_postgres(tabla: str, columns: list[str]) -> pd.DataFrame:
     try:
-        with engine.connect() as conn:
-            df = pd.read_sql(sql_text(f'SELECT * FROM "{tabla}"'), conn)
+        columns_tuple = tuple(columns) if columns is not None else tuple()
+        return leer_postgres_cacheada(tabla, columns_tuple)
     except Exception:
         return pd.DataFrame(columns=columns)
 
+
+@st.cache_data(ttl=600, show_spinner=False)
+def leer_postgres_cliente_cacheada(tabla: str, columns_tuple: tuple, cliente: str) -> pd.DataFrame:
+    engine = get_postgres_engine()
+
+    with engine.connect() as conn:
+        df = pd.read_sql(
+            sql_text(f'SELECT * FROM "{tabla}" WHERE cliente = :cliente'),
+            conn,
+            params={"cliente": cliente},
+        )
+
+    columns = list(columns_tuple) if columns_tuple else []
     return normalizar_df_para_columnas(df, columns)
+
+
+def leer_postgres_cliente(tabla: str, columns: list[str], cliente: str) -> pd.DataFrame:
+    if not cliente:
+        return leer_postgres(tabla, columns)
+
+    try:
+        columns_tuple = tuple(columns) if columns is not None else tuple()
+        return leer_postgres_cliente_cacheada(tabla, columns_tuple, str(cliente))
+    except Exception:
+        return pd.DataFrame(columns=columns)
 
 
 def guardar_postgres(df: pd.DataFrame, tabla: str):
@@ -161,6 +197,11 @@ def guardar_postgres(df: pd.DataFrame, tabla: str):
     # Escritura simple y segura para MVP: reemplaza la tabla por la versión editada.
     # Más adelante podemos pasar a upsert por ID cuando el volumen crezca.
     clean.to_sql(tabla, engine, if_exists="replace", index=False)
+
+    try:
+        st.cache_data.clear()
+    except Exception:
+        pass
 
 
 COLOR_NAVY = "#244777"
@@ -375,6 +416,25 @@ def read_csv(path: Path, columns: list[str]) -> pd.DataFrame:
     return normalizar_df_para_columnas(df, columns)
 
 
+def read_csv_cliente(path: Path, columns: list[str], cliente: str) -> pd.DataFrame:
+    ensure_data_dir()
+
+    if not cliente:
+        return read_csv(path, columns)
+
+    tabla = tabla_postgres_para_path(path)
+
+    if usar_postgres() and tabla:
+        return leer_postgres_cliente(tabla, columns, cliente)
+
+    df = read_csv(path, columns)
+
+    if df.empty or "cliente" not in df.columns:
+        return df
+
+    return df[df["cliente"].astype(str) == str(cliente)].copy()
+
+
 def save_csv(df: pd.DataFrame, path: Path):
     ensure_data_dir()
 
@@ -563,32 +623,132 @@ def seed_data():
         save_csv(tareas, TAREAS_PATH)
 
 
-def load_data():
-    clientes = read_csv(
+def load_clientes():
+    return read_csv(
         CLIENTES_PATH,
-        ["cliente", "rubro", "estado", "plan", "responsable_am", "fecha_inicio", "notas"],
+        [
+            "cliente",
+            "rubro",
+            "estado",
+            "plan",
+            "responsable_am",
+            "fecha_inicio",
+            "servicio_digital",
+            "servicio_consultoria",
+            "servicio_contabilidad",
+            "notas",
+        ],
     )
-    contenidos = read_csv(
-        CONTENIDOS_PATH,
-        ["id", "cliente", "fecha", "canal", "formato", "tema", "objetivo", "copy", "link_canva", "estado", "comentario_cliente"],
+
+
+def load_contenidos(cliente=""):
+    columns = [
+        "id",
+        "cliente",
+        "fecha",
+        "canal",
+        "formato",
+        "tema",
+        "objetivo",
+        "copy",
+        "link_canva",
+        "estado",
+        "comentario_cliente",
+    ]
+
+    if cliente:
+        return read_csv_cliente(CONTENIDOS_PATH, columns, cliente)
+
+    return read_csv(CONTENIDOS_PATH, columns)
+
+
+def load_materiales(cliente=""):
+    columns = [
+        "id",
+        "cliente",
+        "solicitud",
+        "responsable_cliente",
+        "fecha_limite",
+        "estado",
+        "observacion",
+        "link_entrega",
+        "medio_envio",
+        "comentario_cliente",
+        "fecha_envio_cliente",
+    ]
+
+    if cliente:
+        return read_csv_cliente(MATERIALES_PATH, columns, cliente)
+
+    return read_csv(MATERIALES_PATH, columns)
+
+
+def load_campanias(cliente=""):
+    columns = [
+        "id",
+        "cliente",
+        "campania",
+        "plataforma",
+        "objetivo",
+        "presupuesto",
+        "estado",
+        "leads",
+        "costo_por_lead",
+        "observacion",
+    ]
+
+    if cliente:
+        return read_csv_cliente(CAMPANIAS_PATH, columns, cliente)
+
+    return read_csv(CAMPANIAS_PATH, columns)
+
+
+def load_reportes(cliente=""):
+    columns = [
+        "id",
+        "cliente",
+        "mes",
+        "alcance",
+        "interacciones",
+        "consultas",
+        "inversion",
+        "estado",
+        "que_funciono",
+        "proximo_foco",
+    ]
+
+    if cliente:
+        return read_csv_cliente(REPORTES_PATH, columns, cliente)
+
+    return read_csv(REPORTES_PATH, columns)
+
+
+def load_tareas(cliente=""):
+    columns = [
+        "id",
+        "cliente",
+        "tarea",
+        "responsable_am",
+        "prioridad",
+        "estado",
+        "fecha_limite",
+    ]
+
+    if cliente:
+        return read_csv_cliente(TAREAS_PATH, columns, cliente)
+
+    return read_csv(TAREAS_PATH, columns)
+
+
+def load_data():
+    return (
+        load_clientes(),
+        load_contenidos(),
+        load_materiales(),
+        load_campanias(),
+        load_reportes(),
+        load_tareas(),
     )
-    materiales = read_csv(
-        MATERIALES_PATH,
-        ["id", "cliente", "solicitud", "responsable_cliente", "fecha_limite", "estado", "observacion"],
-    )
-    campanias = read_csv(
-        CAMPANIAS_PATH,
-        ["id", "cliente", "campania", "plataforma", "objetivo", "presupuesto", "estado", "leads", "costo_por_lead", "observacion"],
-    )
-    reportes = read_csv(
-        REPORTES_PATH,
-        ["id", "cliente", "mes", "alcance", "interacciones", "consultas", "inversion", "estado", "que_funciono", "proximo_foco"],
-    )
-    tareas = read_csv(
-        TAREAS_PATH,
-        ["id", "cliente", "tarea", "responsable_am", "prioridad", "estado", "fecha_limite"],
-    )
-    return clientes, contenidos, materiales, campanias, reportes, tareas
 
 
 def filter_cliente(df: pd.DataFrame, cliente: str) -> pd.DataFrame:
@@ -4338,6 +4498,50 @@ def render_admin_dashboard(clientes, contenidos, materiales, campanias, reportes
 
 
 
+def render_crud_table_cliente_seguro(title, path, columns, cliente):
+    header(title, f"Gestión segura por cliente | {cliente}")
+
+    vista = read_csv_cliente(path, columns, cliente)
+
+    if vista.empty:
+        st.info("No hay registros cargados para este cliente.")
+        return
+
+    if "cliente" not in vista.columns:
+        st.error("Esta tabla no tiene columna cliente.")
+        return
+
+    st.caption("Esta edición preserva los datos de otros clientes.")
+
+    edited = st.data_editor(
+        vista,
+        use_container_width=True,
+        hide_index=True,
+        num_rows="dynamic",
+        key=f"editor_seguro_{title}_{cliente}",
+    )
+
+    if st.button(f"Guardar cambios en {title}", use_container_width=True, key=f"guardar_seguro_{title}_{cliente}"):
+        edited = edited.copy().fillna("")
+        edited["cliente"] = cliente
+
+        # Recién al guardar cargamos la tabla completa para preservar otros clientes.
+        full = read_csv(path, columns)
+
+        if "id" in full.columns and "id" in edited.columns:
+            ids_editados = edited["id"].astype(str).tolist()
+            restante = full[~full["id"].astype(str).isin(ids_editados)].copy()
+            nuevo = pd.concat([restante, edited], ignore_index=True)
+        else:
+            restante = full[full["cliente"].astype(str) != cliente].copy()
+            nuevo = pd.concat([restante, edited], ignore_index=True)
+
+        save_csv(nuevo, path)
+        st.success("Cambios guardados.")
+        st.rerun()
+
+
+
 def render_crud_table(title, path, df):
     header(title, "Carga y gestión de información del portal")
 
@@ -4740,7 +4944,6 @@ def main():
         login()
         return
 
-    clientes, contenidos, materiales, campanias, reportes, tareas = load_data()
     menu = sidebar()
 
     role = st.session_state.get("role")
@@ -4752,15 +4955,15 @@ def main():
         if menu == "Inicio":
             render_inicio_cliente_ejecutivo(cliente)
         elif menu == "Calendario":
-            render_calendario(cliente, contenidos)
+            render_calendario(cliente, load_contenidos(cliente))
         elif menu == "Aprobaciones":
-            render_aprobaciones(cliente, contenidos)
+            render_aprobaciones(cliente, load_contenidos(cliente))
         elif menu == "Materiales":
-            render_materiales(cliente, materiales)
+            render_materiales(cliente, load_materiales(cliente))
         elif menu == "Campañas":
-            render_campanias(cliente, campanias)
+            render_campanias(cliente, load_campanias(cliente))
         elif menu == "Reportes":
-            render_reportes(cliente, reportes)
+            render_reportes(cliente, load_reportes(cliente))
         elif menu == "Objetivos":
             render_objetivos(cliente, modo="cliente")
         elif menu == "Documentos":
@@ -4788,20 +4991,72 @@ def main():
             elif menu == "Contenidos":
                 render_contenidos_equipo(cliente_equipo)
             elif menu == "Materiales":
-                render_crud_table("Materiales", MATERIALES_PATH, filter_cliente(materiales, cliente_equipo))
+                render_crud_table_cliente_seguro(
+                    "Materiales",
+                    MATERIALES_PATH,
+                    [
+                        "id",
+                        "cliente",
+                        "solicitud",
+                        "responsable_cliente",
+                        "fecha_limite",
+                        "estado",
+                        "observacion",
+                        "link_entrega",
+                        "medio_envio",
+                        "comentario_cliente",
+                        "fecha_envio_cliente",
+                    ],
+                    cliente_equipo,
+                )
             elif menu == "Campañas":
-                render_crud_table("Campañas", CAMPANIAS_PATH, filter_cliente(campanias, cliente_equipo))
+                render_crud_table_cliente_seguro(
+                    "Campañas",
+                    CAMPANIAS_PATH,
+                    [
+                        "id",
+                        "cliente",
+                        "campania",
+                        "plataforma",
+                        "objetivo",
+                        "presupuesto",
+                        "estado",
+                        "leads",
+                        "costo_por_lead",
+                        "observacion",
+                    ],
+                    cliente_equipo,
+                )
             elif menu == "Reportes":
-                render_crud_table("Reportes", REPORTES_PATH, filter_cliente(reportes, cliente_equipo))
+                render_crud_table_cliente_seguro(
+                    "Reportes",
+                    REPORTES_PATH,
+                    [
+                        "id",
+                        "cliente",
+                        "mes",
+                        "alcance",
+                        "interacciones",
+                        "consultas",
+                        "inversion",
+                        "estado",
+                        "que_funciono",
+                        "proximo_foco",
+                    ],
+                    cliente_equipo,
+                )
             elif menu == "Tareas":
-                render_crud_table("Tareas", TAREAS_PATH, tareas)
+                render_crud_table("Tareas", TAREAS_PATH, load_tareas())
+
         else:
             if menu == "Dashboard AM":
+                clientes, contenidos, materiales, campanias, reportes, tareas = load_data()
                 render_admin_dashboard(clientes, contenidos, materiales, campanias, reportes, tareas)
             elif menu == "Edición rápida":
+                clientes, contenidos, materiales, campanias, reportes, tareas = load_data()
                 render_edicion_rapida(clientes, contenidos, materiales, campanias, reportes, tareas)
             elif menu == "Usuarios":
-                render_usuarios(clientes)
+                render_usuarios(load_clientes())
             elif menu == "Onboarding":
                 render_onboarding_cliente()
             elif menu == "Clientes":
@@ -4813,16 +5068,17 @@ def main():
             elif menu == "Cash Flow":
                 render_indicadores("", modo="admin")
             elif menu == "Contenidos":
-                render_crud_table("Contenidos", CONTENIDOS_PATH, contenidos)
+                render_crud_table("Contenidos", CONTENIDOS_PATH, load_contenidos())
             elif menu == "Materiales":
-                render_crud_table("Materiales", MATERIALES_PATH, materiales)
+                render_crud_table("Materiales", MATERIALES_PATH, load_materiales())
             elif menu == "Campañas":
-                render_crud_table("Campañas", CAMPANIAS_PATH, campanias)
+                render_crud_table("Campañas", CAMPANIAS_PATH, load_campanias())
             elif menu == "Reportes":
-                render_crud_table("Reportes", REPORTES_PATH, reportes)
+                render_crud_table("Reportes", REPORTES_PATH, load_reportes())
             elif menu == "Tareas":
-                render_crud_table("Tareas", TAREAS_PATH, tareas)
+                render_crud_table("Tareas", TAREAS_PATH, load_tareas())
             elif menu == "Vista cliente":
+                clientes, contenidos, materiales, campanias, reportes, _ = load_data()
                 render_vista_cliente_admin(clientes, contenidos, materiales, campanias, reportes)
 
 
