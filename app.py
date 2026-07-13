@@ -1686,6 +1686,29 @@ def sidebar():
                 key="cliente_equipo_activo",
             )
 
+            st.session_state["cliente_equipo_visible"] = cliente_equipo
+
+            st.sidebar.markdown(
+                f"""
+                <div style="
+                    margin-top: 12px;
+                    margin-bottom: 14px;
+                    padding: 12px 14px;
+                    border-radius: 14px;
+                    background: rgba(255,255,255,0.10);
+                    border: 1px solid rgba(255,255,255,0.18);
+                ">
+                    <div style="font-size: 0.72rem; text-transform: uppercase; letter-spacing: .08em; color: rgba(255,255,255,0.72);">
+                        Cliente activo
+                    </div>
+                    <div style="font-size: 1.02rem; font-weight: 800; color: white; margin-top: 3px; line-height: 1.2;">
+                        {cliente_equipo}
+                    </div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+
             menu = st.sidebar.radio(
                 "Portal del cliente",
                 menu_por_servicios_cliente_para_equipo(cliente_equipo),
@@ -5527,6 +5550,36 @@ def render_vista_cliente_admin(clientes, contenidos, materiales, campanias, repo
 # Main
 # ============================================================
 
+def banner_cliente_equipo():
+    if st.session_state.get("role") != "equipo":
+        return
+
+    cliente = st.session_state.get("cliente_equipo_visible") or st.session_state.get("cliente_equipo_activo", "")
+
+    if not cliente:
+        return
+
+    st.markdown(
+        f"""
+        <div style="
+            margin: 0 0 18px 0;
+            padding: 14px 18px;
+            border-radius: 16px;
+            background: linear-gradient(135deg, rgba(28,73,128,0.10), rgba(28,73,128,0.04));
+            border: 1px solid rgba(28,73,128,0.18);
+        ">
+            <div style="font-size: 0.75rem; text-transform: uppercase; letter-spacing: .08em; color: #31506f; font-weight: 700;">
+                Cliente activo
+            </div>
+            <div style="font-size: 1.35rem; font-weight: 850; color: #17324d; margin-top: 2px;">
+                {cliente}
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 def main():
     ensure_data_dir()
     seed_data()
@@ -5542,6 +5595,7 @@ def main():
         return
 
     menu = sidebar()
+    banner_cliente_equipo()
     inicio_menu_perf = perf_start()
     if os.getenv("PERF_DEBUG", "0") == "1":
         print(f"[PERF] MENU START role={st.session_state.get('role')} menu={menu}")
