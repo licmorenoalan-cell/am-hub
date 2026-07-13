@@ -1096,15 +1096,13 @@ def menu_cliente_por_servicios(cliente_nombre):
     if servicios["consultoria"]:
         opciones += [
             "Objetivos",
-            "Documentos",
-        ]
+            ]
 
     if servicios["contabilidad"]:
         opciones += [
             "Cash Flow",
             "Objetivos",
-            "Documentos",
-        ]
+            ]
 
     limpio = []
     for opcion in opciones:
@@ -1329,8 +1327,7 @@ def sidebar():
                 "Onboarding",
                 "Clientes",
                 "Objetivos",
-                "Documentos",
-                "Cash Flow",
+                        "Cash Flow",
                 "Contenidos",
                 "Materiales",
                 "Campañas",
@@ -3587,7 +3584,6 @@ def render_objetivos(cliente="", modo="cliente"):
         header("Objetivos", "Creación y seguimiento de objetivos por cliente")
         cliente_fijo = ""
 
-    clientes_df = read_csv(CLIENTES_PATH, ["cliente"])
     clientes_lista = clientes_visibles_para_usuario()
 
     # --------------------------------------------------------
@@ -3926,13 +3922,25 @@ def render_objetivos(cliente="", modo="cliente"):
 
 
 def render_documentos(cliente="", modo="cliente"):
-    documentos = cargar_documentos()
+    columns = [
+        "id",
+        "cliente",
+        "servicio",
+        "categoria",
+        "nombre",
+        "link",
+        "estado",
+        "fecha",
+        "observacion",
+    ]
 
     if modo == "cliente":
         header("Documentos", f"Documentación y links útiles | {cliente}")
-        df = filter_cliente(documentos, cliente)
+        documentos = read_csv_cliente(DOCUMENTOS_PATH, columns, cliente)
+        df = documentos.copy()
     else:
         header("Documentos", "Repositorio general de documentación")
+        documentos = read_csv(DOCUMENTOS_PATH, columns)
         df = documentos.copy()
 
     if df is None or df.empty:
@@ -3961,21 +3969,31 @@ def render_documentos(cliente="", modo="cliente"):
             st.rerun()
 
 
+
 def render_indicadores(cliente="", modo="cliente"):
-    movimientos = read_csv(
-        INDICADORES_MOVIMIENTOS_PATH,
-        [
-            "id",
-            "cliente",
-            "mes",
-            "tipo",
-            "categoria",
-            "importe",
-            "observacion",
-            "fecha_carga",
-            "cargado_por",
-        ],
-    )
+    columnas_movimientos = [
+        "id",
+        "cliente",
+        "mes",
+        "tipo",
+        "categoria",
+        "importe",
+        "observacion",
+        "fecha_carga",
+        "cargado_por",
+    ]
+
+    if modo == "cliente" and cliente:
+        movimientos = read_csv_cliente(
+            INDICADORES_MOVIMIENTOS_PATH,
+            columnas_movimientos,
+            cliente,
+        )
+    else:
+        movimientos = read_csv(
+            INDICADORES_MOVIMIENTOS_PATH,
+            columnas_movimientos,
+        )
 
     def next_prefixed_id(df, prefix):
         if df is None or df.empty or "id" not in df.columns:
@@ -4004,6 +4022,12 @@ def render_indicadores(cliente="", modo="cliente"):
             return fecha.strftime("%Y-%m")
         except Exception:
             return date.today().strftime("%Y-%m")
+
+    def cargar_movimientos_para_guardar():
+        return read_csv(
+            INDICADORES_MOVIMIENTOS_PATH,
+            columnas_movimientos,
+        )
 
     def categorias_previas(df, cliente_actual, tipo_actual):
         if df is None or df.empty:
@@ -4084,8 +4108,10 @@ def render_indicadores(cliente="", modo="cliente"):
                 elif importe <= 0:
                     st.error("El importe debe ser mayor a cero.")
                 else:
+                    movimientos_guardado = cargar_movimientos_para_guardar()
+
                     nuevo = {
-                        "id": next_prefixed_id(movimientos, "MOV"),
+                        "id": next_prefixed_id(movimientos_guardado, "MOV"),
                         "cliente": cliente_mov,
                         "mes": mes,
                         "tipo": tipo,
@@ -4096,7 +4122,7 @@ def render_indicadores(cliente="", modo="cliente"):
                         "cargado_por": st.session_state.get("username", ""),
                     }
 
-                    actualizado = pd.concat([movimientos, pd.DataFrame([nuevo])], ignore_index=True)
+                    actualizado = pd.concat([movimientos_guardado, pd.DataFrame([nuevo])], ignore_index=True)
                     save_csv(actualizado, INDICADORES_MOVIMIENTOS_PATH)
                     st.success("Movimiento cargado correctamente.")
                     st.rerun()
@@ -4196,11 +4222,12 @@ def render_indicadores(cliente="", modo="cliente"):
 
                 if guardar_rapido:
                     nuevos = []
+                    movimientos_guardado = cargar_movimientos_para_guardar()
 
                     for cat, imp, obs in ingresos_data:
                         if str(cat).strip() and imp > 0:
                             nuevos.append({
-                                "id": next_prefixed_id(pd.concat([movimientos, pd.DataFrame(nuevos)], ignore_index=True), "MOV"),
+                                "id": next_prefixed_id(pd.concat([movimientos_guardado, pd.DataFrame(nuevos)], ignore_index=True), "MOV"),
                                 "cliente": cliente_rapido,
                                 "mes": mes_rapido,
                                 "tipo": "Ingreso",
@@ -4214,7 +4241,7 @@ def render_indicadores(cliente="", modo="cliente"):
                     for cat, imp, obs in gastos_data:
                         if str(cat).strip() and imp > 0:
                             nuevos.append({
-                                "id": next_prefixed_id(pd.concat([movimientos, pd.DataFrame(nuevos)], ignore_index=True), "MOV"),
+                                "id": next_prefixed_id(pd.concat([movimientos_guardado, pd.DataFrame(nuevos)], ignore_index=True), "MOV"),
                                 "cliente": cliente_rapido,
                                 "mes": mes_rapido,
                                 "tipo": "Gasto",
@@ -4228,7 +4255,7 @@ def render_indicadores(cliente="", modo="cliente"):
                     if not nuevos:
                         st.error("No cargaste ningún importe mayor a cero.")
                     else:
-                        actualizado = pd.concat([movimientos, pd.DataFrame(nuevos)], ignore_index=True)
+                        actualizado = pd.concat([movimientos_guardado, pd.DataFrame(nuevos)], ignore_index=True)
                         save_csv(actualizado, INDICADORES_MOVIMIENTOS_PATH)
                         st.success(f"Se cargaron {len(nuevos)} movimiento(s) correctamente.")
                         st.rerun()
