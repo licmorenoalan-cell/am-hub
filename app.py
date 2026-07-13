@@ -54,6 +54,21 @@ POSTGRES_TABLE_MAP = {
     "indicadores_movimientos.csv": "indicadores_movimientos",
 }
 
+POSTGRES_KEY_MAP = {
+    "clientes": "cliente",
+    "usuarios": "username",
+    "asignaciones_equipo": "id",
+    "contenidos": "id",
+    "materiales": "id",
+    "campanias": "id",
+    "reportes": "id",
+    "tareas": "id",
+    "objetivos": "id",
+    "documentos": "id",
+    "indicadores": "id",
+    "indicadores_movimientos": "id",
+}
+
 _POSTGRES_ENGINE = None
 
 
@@ -189,19 +204,161 @@ def leer_postgres_cliente(tabla: str, columns: list[str], cliente: str) -> pd.Da
         return pd.DataFrame(columns=columns)
 
 
+def _sql_cols(cols):
+    return ", ".join([f'"{c}"' for c in cols])
+
+
+def _normalizar_valor_postgres(value):
+    if pd.isna(value):
+        return ""
+    return str(value)
+
+
+def _filas_distintas(row_nueva, row_actual, columnas):
+    for col in columnas:
+        nuevo = _normalizar_valor_postgres(row_nueva.get(col, ""))
+        actual = _normalizar_valor_postgres(row_actual.get(col, ""))
+        if nuevo != actual:
+            return True
+    return False
+
+
+def _limpiar_cache_postgres():
+    for cache_func_name in [
+        "leer_postgres_cacheada",
+        "leer_postgres_cliente_cacheada",
+        "leer_postgres_preview_cacheada",
+        "contar_postgres_cacheada",
+    ]:
+        try:
+            globals()[cache_func_name].clear()
+        except Exception:
+            pass
+
+
 def guardar_postgres(df: pd.DataFrame, tabla: str):
     engine = get_postgres_engine()
 
     clean = df.copy().fillna("")
+    clean.columns = [str(c) for c in clean.columns]
 
-    # Escritura simple y segura para MVP: reemplaza la tabla por la versión editada.
-    # Más adelante podemos pasar a upsert por ID cuando el volumen crezca.
-    clean.to_sql(tabla, engine, if_exists="replace", index=False)
+    key_col = POSTGRES_KEY_MAP.get(tabla)
+
+    if clean.empty:
+        with engine.begin() as conn:
+            try:
+                conn.execute(sql_text(f'DELETE FROM "{tabla}"'))
+            except Exception:
+                pass
+        _limpiar_cache_postgres()
+        return
+
+    # Si no tenemos clave confiable, hacemos reemplazo preservando estructura/índices:
+    # DELETE + append, en vez de DROP/CREATE con if_exists="replace".
+    if not key_col or key_col not in clean.columns:
+        with engine.begin() as conn:
+            try:
+                conn.execute(sql_text(f'DELETE FROM "{tabla}"'))
+                clean.to_sql(tabla, conn, if_exists="append", index=False, method="multi", chunksize=500)
+            except Exception:
+                clean.to_sql(tabla, engine, if_exists="replace", index=False, method="multi", chunksize=500)
+
+        _limpiar_cache_postgres()
+        return
+
+    clean[key_col] = clean[key_col].astype(str).str.strip()
+    clean = clean[clean[key_col] != ""].copy()
+    clean = clean.drop_duplicates(subset=[key_col], keep="last")
+
+    columnas = list(clean.columns)
 
     try:
-        st.cache_data.clear()
-    except Exception:
-        pass
+        with engine.begin() as conn:
+            try:
+                actual = pd.read_sql(sql_text(f'SELECT * FROM "{tabla}"'), conn).fillna("")
+            except Exception:
+                # Tabla inexistente: crearla una sola vez.
+                clean.to_sql(tabla, conn, if_exists="replace", index=False, method="multi", chunksize=500)
+                _limpiar_cache_postgres()
+                return
+
+            if actual.empty or key_col not in actual.columns:
+                try:
+                    conn.execute(sql_text(f'DELETE FROM "{tabla}"'))
+                    clean.to_sql(tabla, conn, if_exists="append", index=False, method="multi", chunksize=500)
+                except Exception:
+                    clean.to_sql(tabla, conn, if_exists="replace", index=False, method="multi", chunksize=500)
+
+                _limpiar_cache_postgres()
+                return
+
+            actual = actual.copy().fillna("")
+            actual.columns = [str(c) for c in actual.columns]
+            actual[key_col] = actual[key_col].astype(str).str.strip()
+
+            # Asegurar columnas nuevas si aparecieron en la app.
+            for col in columnas:
+                if col not in actual.columns:
+                    try:
+                        conn.execute(sql_text(f'ALTER TABLE "{tabla}" ADD COLUMN "{col}" TEXT'))
+                        actual[col] = ""
+                    except Exception:
+                        actual[col] = ""
+
+            actual_idx = actual.drop_duplicates(subset=[key_col], keep="last").set_index(key_col, drop=False)
+            claves_nuevas = set(clean[key_col].astype(str).tolist())
+            claves_actuales = set(actual_idx.index.astype(str).tolist())
+
+            # Deletes: necesario para que baja de clientes/usuarios funcione sin reescribir todo.
+            claves_a_borrar = claves_actuales - claves_nuevas
+            for clave in claves_a_borrar:
+                conn.execute(
+                    sql_text(f'DELETE FROM "{tabla}" WHERE "{key_col}" = :key_value'),
+                    {"key_value": clave},
+                )
+
+            insert_cols_sql = _sql_cols(columnas)
+            insert_vals_sql = ", ".join([f":{c}" for c in columnas])
+            insert_sql = sql_text(
+                f'INSERT INTO "{tabla}" ({insert_cols_sql}) VALUES ({insert_vals_sql})'
+            )
+
+            update_cols = [c for c in columnas if c != key_col]
+            update_set_sql = ", ".join([f'"{c}" = :{c}' for c in update_cols])
+            update_sql = sql_text(
+                f'UPDATE "{tabla}" SET {update_set_sql} WHERE "{key_col}" = :{key_col}'
+            )
+
+            inserts = 0
+            updates = 0
+
+            for _, row in clean.iterrows():
+                params = {col: _normalizar_valor_postgres(row.get(col, "")) for col in columnas}
+                clave = params[key_col]
+
+                if clave not in claves_actuales:
+                    conn.execute(insert_sql, params)
+                    inserts += 1
+                else:
+                    row_actual = actual_idx.loc[clave]
+                    if _filas_distintas(params, row_actual, columnas):
+                        conn.execute(update_sql, params)
+                        updates += 1
+
+            # print útil en terminal local, no molesta en Streamlit Cloud.
+            print(f"[Postgres smart save] {tabla}: inserts={inserts}, updates={updates}, deletes={len(claves_a_borrar)}")
+
+    except Exception as e:
+        # Fallback seguro: preserva funcionamiento aunque falle el smart-save.
+        print(f"[Postgres smart save fallback] {tabla}: {e}")
+        with engine.begin() as conn:
+            try:
+                conn.execute(sql_text(f'DELETE FROM "{tabla}"'))
+                clean.to_sql(tabla, conn, if_exists="append", index=False, method="multi", chunksize=500)
+            except Exception:
+                clean.to_sql(tabla, engine, if_exists="replace", index=False, method="multi", chunksize=500)
+
+    _limpiar_cache_postgres()
 
 
 COLOR_NAVY = "#244777"
@@ -433,6 +590,71 @@ def read_csv_cliente(path: Path, columns: list[str], cliente: str) -> pd.DataFra
         return df
 
     return df[df["cliente"].astype(str) == str(cliente)].copy()
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def contar_postgres_cacheada(tabla: str) -> int:
+    engine = get_postgres_engine()
+
+    with engine.connect() as conn:
+        result = conn.execute(sql_text(f'SELECT COUNT(*) FROM "{tabla}"')).scalar()
+
+    try:
+        return int(result or 0)
+    except Exception:
+        return 0
+
+
+def contar_registros(path: Path, columns=None) -> int:
+    tabla = tabla_postgres_para_path(path)
+
+    if usar_postgres() and tabla:
+        try:
+            return contar_postgres_cacheada(tabla)
+        except Exception:
+            return 0
+
+    try:
+        df = read_csv(path, columns or [])
+        return len(df)
+    except Exception:
+        return 0
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def leer_postgres_preview_cacheada(tabla: str, columns_tuple: tuple, limit: int, cliente: str = "") -> pd.DataFrame:
+    engine = get_postgres_engine()
+    limit = int(limit or 80)
+
+    with engine.connect() as conn:
+        if cliente:
+            df = pd.read_sql(
+                sql_text(f'SELECT * FROM "{tabla}" WHERE cliente = :cliente LIMIT :limit'),
+                conn,
+                params={"cliente": cliente, "limit": limit},
+            )
+        else:
+            df = pd.read_sql(
+                sql_text(f'SELECT * FROM "{tabla}" LIMIT :limit'),
+                conn,
+                params={"limit": limit},
+            )
+
+    columns = list(columns_tuple) if columns_tuple else []
+    return normalizar_df_para_columnas(df, columns)
+
+
+def read_csv_preview(path: Path, columns: list[str], limit: int = 80, cliente: str = "") -> pd.DataFrame:
+    tabla = tabla_postgres_para_path(path)
+
+    if usar_postgres() and tabla:
+        try:
+            return leer_postgres_preview_cacheada(tabla, tuple(columns or []), int(limit), str(cliente or ""))
+        except Exception:
+            return pd.DataFrame(columns=columns)
+
+    df = read_csv_cliente(path, columns, cliente) if cliente else read_csv(path, columns)
+    return df.head(limit).copy()
 
 
 def save_csv(df: pd.DataFrame, path: Path):
@@ -1239,10 +1461,10 @@ def menu_equipo_por_permisos():
     opciones = ["Dashboard AM"]
 
     if servicios.get("consultoria"):
-        opciones += ["Objetivos", "Documentos"]
+        opciones += ["Objetivos"]
 
     if servicios.get("contabilidad"):
-        opciones += ["Cash Flow", "Objetivos", "Documentos"]
+        opciones += ["Cash Flow", "Objetivos"]
 
     if servicios.get("digital"):
         opciones += ["Contenidos", "Materiales", "Campañas", "Reportes"]
@@ -1267,10 +1489,10 @@ def menu_por_servicios_cliente_para_equipo(cliente_nombre):
         opciones += ["Contenidos", "Materiales", "Campañas", "Reportes"]
 
     if servicios.get("consultoria"):
-        opciones += ["Objetivos", "Documentos"]
+        opciones += ["Objetivos"]
 
     if servicios.get("contabilidad"):
-        opciones += ["Cash Flow", "Objetivos", "Documentos"]
+        opciones += ["Cash Flow", "Objetivos"]
 
     opciones += ["Tareas"]
 
@@ -3291,15 +3513,17 @@ def render_edicion_rapida(clientes, contenidos, materiales, campanias, reportes,
 
 
 
-def cargar_objetivos():
-    return read_csv(
-        OBJETIVOS_PATH,
-        [
-            "id", "cliente", "servicio", "mes", "objetivo", "descripcion",
-            "responsable_am", "responsable_cliente", "prioridad", "estado",
-            "avance", "proxima_accion", "fecha_limite", "comentarios"
-        ],
-    )
+def cargar_objetivos(cliente=""):
+    columns = [
+        "id", "cliente", "servicio", "mes", "objetivo", "descripcion",
+        "responsable_am", "responsable_cliente", "prioridad", "estado",
+        "avance", "proxima_accion", "fecha_limite", "comentarios"
+    ]
+
+    if cliente:
+        return read_csv_cliente(OBJETIVOS_PATH, columns, cliente)
+
+    return read_csv(OBJETIVOS_PATH, columns)
 
 
 def cargar_documentos():
@@ -3375,21 +3599,16 @@ def render_inicio_cliente_ejecutivo(cliente):
     # --------------------------------------------------------
     # Cargar fuentes
     # --------------------------------------------------------
-    objetivos = cargar_objetivos() if "cargar_objetivos" in globals() else pd.DataFrame()
-    movimientos = read_csv(
+    objetivos = cargar_objetivos(cliente) if "cargar_objetivos" in globals() else pd.DataFrame()
+    movimientos = read_csv_cliente(
         INDICADORES_MOVIMIENTOS_PATH,
         ["id", "cliente", "mes", "tipo", "categoria", "importe", "observacion", "fecha_carga", "cargado_por"],
+        cliente,
     ) if "INDICADORES_MOVIMIENTOS_PATH" in globals() else pd.DataFrame()
 
-    contenidos = read_csv(
-        CONTENIDOS_PATH,
-        ["id", "cliente", "fecha", "canal", "formato", "tema", "objetivo", "copy", "link", "estado", "comentarios_cliente"],
-    )
+    contenidos = load_contenidos(cliente)
 
-    materiales = read_csv(
-        MATERIALES_PATH,
-        ["id", "cliente", "solicitud", "responsable_cliente", "fecha_limite", "estado", "observacion"],
-    )
+    materiales = load_materiales(cliente)
 
     # --------------------------------------------------------
     # Objetivos
@@ -3557,7 +3776,7 @@ def render_inicio_cliente_ejecutivo(cliente):
 
 
 def render_objetivos(cliente="", modo="cliente"):
-    objetivos = cargar_objetivos()
+    objetivos = cargar_objetivos(cliente) if modo == "cliente" and cliente else cargar_objetivos()
 
     def next_prefixed_id(df, prefix):
         if df is None or df.empty or "id" not in df.columns:
@@ -3630,8 +3849,10 @@ def render_objetivos(cliente="", modo="cliente"):
                 elif not objetivo.strip():
                     st.error("El objetivo es obligatorio.")
                 else:
+                    objetivos_guardado = cargar_objetivos()
+
                     nuevo = {
-                        "id": next_prefixed_id(objetivos, "OBJ"),
+                        "id": next_prefixed_id(objetivos_guardado, "OBJ"),
                         "cliente": cliente_obj,
                         "mes": mes,
                         "objetivo": objetivo.strip(),
@@ -3646,7 +3867,7 @@ def render_objetivos(cliente="", modo="cliente"):
                         "comentarios": comentarios,
                     }
 
-                    objetivos_actualizado = pd.concat([objetivos, pd.DataFrame([nuevo])], ignore_index=True)
+                    objetivos_actualizado = pd.concat([objetivos_guardado, pd.DataFrame([nuevo])], ignore_index=True)
                     save_csv(objetivos_actualizado, OBJETIVOS_PATH)
                     st.success("Objetivo creado correctamente.")
                     st.rerun()
@@ -3802,7 +4023,13 @@ def render_objetivos(cliente="", modo="cliente"):
                     unsafe_allow_html=True,
                 )
             else:
-                for _, row in subset.iterrows():
+                if len(subset) > 8:
+                    st.caption("Mostrando 8 objetivos. Usá los filtros o el detalle para ver más.")
+                    subset_render = subset.head(8)
+                else:
+                    subset_render = subset
+
+                for _, row in subset_render.iterrows():
                     avance = row.get("avance", 0)
                     try:
                         avance_int = int(float(avance))
@@ -3875,7 +4102,7 @@ def render_objetivos(cliente="", modo="cliente"):
                 if not obj_id:
                     st.error("No se pudo identificar el objetivo.")
                 else:
-                    objetivos_actualizado = objetivos.copy()
+                    objetivos_actualizado = cargar_objetivos()
                     mask = objetivos_actualizado["id"].astype(str) == str(obj_id)
 
                     objetivos_actualizado.loc[mask, "estado"] = nuevo_estado
@@ -3935,11 +4162,11 @@ def render_documentos(cliente="", modo="cliente"):
     ]
 
     if modo == "cliente":
-        header("Documentos", f"Documentación y links útiles | {cliente}")
+        header(f"Documentación y links útiles | {cliente}")
         documentos = read_csv_cliente(DOCUMENTOS_PATH, columns, cliente)
         df = documentos.copy()
     else:
-        header("Documentos", "Repositorio general de documentación")
+        header("Repositorio general de documentación")
         documentos = read_csv(DOCUMENTOS_PATH, columns)
         df = documentos.copy()
 
@@ -4055,7 +4282,6 @@ def render_indicadores(cliente="", modo="cliente"):
         header("Cash Flow", "Carga mensual y tablero de gestión por cliente")
         cliente_fijo = ""
 
-    clientes_df = read_csv(CLIENTES_PATH, ["cliente"])
     clientes_lista = clientes_visibles_para_usuario()
 
     # --------------------------------------------------------
@@ -4493,6 +4719,154 @@ def render_indicadores(cliente="", modo="cliente"):
                 st.rerun()
 
 
+def columnas_por_path(path):
+    filename = Path(path).name
+
+    mapa = {
+        "contenidos.csv": [
+            "id", "cliente", "fecha", "canal", "formato", "tema", "objetivo",
+            "copy", "link_canva", "estado", "comentario_cliente",
+        ],
+        "materiales.csv": [
+            "id", "cliente", "solicitud", "responsable_cliente", "fecha_limite",
+            "estado", "observacion", "link_entrega", "medio_envio",
+            "comentario_cliente", "fecha_envio_cliente",
+        ],
+        "campanias.csv": [
+            "id", "cliente", "campania", "plataforma", "objetivo", "presupuesto",
+            "estado", "leads", "costo_por_lead", "observacion",
+        ],
+        "reportes.csv": [
+            "id", "cliente", "mes", "alcance", "interacciones", "consultas",
+            "inversion", "estado", "que_funciono", "proximo_foco",
+        ],
+        "tareas.csv": [
+            "id", "cliente", "tarea", "responsable_am", "prioridad",
+            "estado", "fecha_limite",
+        ],
+        "indicadores_movimientos.csv": [
+            "id", "cliente", "mes", "tipo", "categoria", "importe",
+            "observacion", "fecha_carga", "cargado_por",
+        ],
+    }
+
+    return mapa.get(filename, [])
+
+
+
+def render_admin_dashboard_ligero():
+    header("Dashboard AM", "Resumen operativo liviano")
+
+    clientes = load_clientes()
+
+    total_clientes = len(clientes) if clientes is not None else 0
+    clientes_activos = 0
+
+    if clientes is not None and not clientes.empty and "estado" in clientes.columns:
+        clientes_activos = len(
+            clientes[
+                clientes["estado"].astype(str).str.lower().str.contains("activo", na=False)
+            ]
+        )
+
+    c1, c2, c3 = st.columns(3)
+
+    with c1:
+        st.metric("Clientes", total_clientes)
+
+    with c2:
+        st.metric("Clientes activos", clientes_activos)
+
+    with c3:
+        st.metric("Modo", "liviano")
+
+    st.markdown("### Clientes recientes")
+
+    if clientes is None or clientes.empty:
+        st.info("No hay clientes cargados.")
+    else:
+        columnas = [
+            "cliente",
+            "rubro",
+            "estado",
+            "plan",
+            "responsable_am",
+            "fecha_inicio",
+        ]
+        columnas = [c for c in columnas if c in clientes.columns]
+        st.dataframe(clientes[columnas].tail(20), use_container_width=True, hide_index=True)
+
+    with st.expander("Ver conteos operativos"):
+        st.caption("Estos conteos consultan Supabase. Quedan bajo expander para que el dashboard inicial cargue más rápido.")
+
+        k1, k2, k3 = st.columns(3)
+        k1.metric("Contenidos", contar_registros(CONTENIDOS_PATH, ["id"]))
+        k2.metric("Materiales", contar_registros(MATERIALES_PATH, ["id"]))
+        k3.metric("Campañas", contar_registros(CAMPANIAS_PATH, ["id"]))
+
+        k4, k5, k6 = st.columns(3)
+        k4.metric("Reportes", contar_registros(REPORTES_PATH, ["id"]))
+        k5.metric("Tareas", contar_registros(TAREAS_PATH, ["id"]))
+        k6.metric("Cash Flow", contar_registros(INDICADORES_MOVIMIENTOS_PATH, ["id"]))
+
+    st.info("Para editar información, usá Clientes, Usuarios o Edición rápida. El dashboard evita cargas pesadas al entrar.")
+
+
+
+def render_edicion_rapida_ligera():
+    header("Edición rápida", "Elegí un módulo para cargar solo esa tabla")
+
+    modulos = {
+        "Clientes": {
+            "path": CLIENTES_PATH,
+            "loader": load_clientes,
+        },
+        "Contenidos": {
+            "path": CONTENIDOS_PATH,
+            "loader": load_contenidos,
+        },
+        "Materiales": {
+            "path": MATERIALES_PATH,
+            "loader": load_materiales,
+        },
+        "Campañas": {
+            "path": CAMPANIAS_PATH,
+            "loader": load_campanias,
+        },
+        "Reportes": {
+            "path": REPORTES_PATH,
+            "loader": load_reportes,
+        },
+        "Tareas": {
+            "path": TAREAS_PATH,
+            "loader": load_tareas,
+        },
+        "Cash Flow": {
+            "path": INDICADORES_MOVIMIENTOS_PATH,
+            "loader": lambda: read_csv(
+                INDICADORES_MOVIMIENTOS_PATH,
+                [
+                    "id",
+                    "cliente",
+                    "mes",
+                    "tipo",
+                    "categoria",
+                    "importe",
+                    "observacion",
+                    "fecha_carga",
+                    "cargado_por",
+                ],
+            ),
+        },
+    }
+
+    modulo = st.selectbox("Módulo", list(modulos.keys()), key="edicion_rapida_modulo_ligero")
+
+    config = modulos[modulo]
+    render_crud_table(modulo, config["path"])
+
+
+
 def render_admin_dashboard(clientes, contenidos, materiales, campanias, reportes, tareas):
     header("Dashboard AM", "Vista interna de gestión de clientes, contenidos y campañas.")
 
@@ -4526,417 +4900,85 @@ def render_admin_dashboard(clientes, contenidos, materiales, campanias, reportes
 
 
 def render_crud_table_cliente_seguro(title, path, columns, cliente):
-    header(title, f"Gestión segura por cliente | {cliente}")
+    render_crud_table(title, path, df=None, cliente_preview=cliente)
 
-    vista = read_csv_cliente(path, columns, cliente)
 
-    if vista.empty:
-        st.info("No hay registros cargados para este cliente.")
-        return
 
-    if "cliente" not in vista.columns:
-        st.error("Esta tabla no tiene columna cliente.")
-        return
+def render_crud_table(title, path, df=None, cliente_preview=""):
+    header(title, "Vista rápida y edición avanzada")
 
-    st.caption("Esta edición preserva los datos de otros clientes.")
-
-    edited = st.data_editor(
-        vista,
-        use_container_width=True,
-        hide_index=True,
-        num_rows="dynamic",
-        key=f"editor_seguro_{title}_{cliente}",
-    )
-
-    if st.button(f"Guardar cambios en {title}", use_container_width=True, key=f"guardar_seguro_{title}_{cliente}"):
-        edited = edited.copy().fillna("")
-        edited["cliente"] = cliente
-
-        # Recién al guardar cargamos la tabla completa para preservar otros clientes.
-        full = read_csv(path, columns)
-
-        if "id" in full.columns and "id" in edited.columns:
-            ids_editados = edited["id"].astype(str).tolist()
-            restante = full[~full["id"].astype(str).isin(ids_editados)].copy()
-            nuevo = pd.concat([restante, edited], ignore_index=True)
-        else:
-            restante = full[full["cliente"].astype(str) != cliente].copy()
-            nuevo = pd.concat([restante, edited], ignore_index=True)
-
-        save_csv(nuevo, path)
-        st.success("Cambios guardados.")
-        st.rerun()
-
-
-
-def render_crud_table(title, path, df):
-    header(title, "Carga y gestión de información del portal")
-
-    df = df.copy()
-
-    clientes_df = read_csv(
-        CLIENTES_PATH,
-        ["cliente", "rubro", "estado", "plan", "responsable_am", "fecha_inicio", "notas"],
-    )
-
-    clientes_lista = []
-    if clientes_df is not None and not clientes_df.empty and "cliente" in clientes_df.columns:
-        clientes_lista = sorted(clientes_df["cliente"].dropna().astype(str).unique().tolist())
-
-    archivo = Path(path).name
-
-    def next_id(dataframe):
-        if dataframe is None or dataframe.empty or "id" not in dataframe.columns:
-            return 1
-        ids = pd.to_numeric(dataframe["id"], errors="coerce").fillna(0)
-        return int(ids.max()) + 1
-
-    def append_and_save(nuevo):
-        nonlocal df
-        nuevo_df = pd.DataFrame([nuevo])
-        df = pd.concat([df, nuevo_df], ignore_index=True)
-        save_csv(df, path)
-        st.success("Registro cargado correctamente.")
-        st.rerun()
-
-    st.markdown(
-        """
-        <div style="
-            background: #FFFFFF;
-            border: 1px solid #E5E7EB;
-            border-radius: 20px;
-            padding: 20px 24px;
-            margin-bottom: 22px;
-            box-shadow: 0 10px 24px rgba(16, 24, 40, 0.04);
-        ">
-            <div style="font-size:1.1rem; font-weight:850; color:#172033; margin-bottom:5px;">
-                Carga de información
-            </div>
-            <div style="font-size:0.94rem; color:#667085; line-height:1.45;">
-                Usá los formularios para cargar datos de forma ordenada. Cuando corresponde, el cliente se selecciona desde el desplegable para que la información aparezca en su portal.
-            </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-    # ------------------------------------------------------------
-    # CLIENTES
-    # ------------------------------------------------------------
-    if archivo == "clientes.csv":
-        st.markdown("### Nuevo cliente")
-
-        for col in ["servicio_digital", "servicio_consultoria", "servicio_contabilidad"]:
-            if col not in df.columns:
-                df[col] = "No"
-
-        with st.form("form_clientes"):
-            col1, col2, col3 = st.columns(3)
-
-            with col1:
-                cliente = st.text_input("Nombre del cliente")
-                rubro = st.text_input("Rubro")
-
-            with col2:
-                estado = st.selectbox("Estado", ["Activo", "Pausado", "Finalizado", "Prospecto"])
-                plan = st.text_input("Plan / servicio")
-
-            with col3:
-                responsable_am = st.text_input("Responsable AM")
-                fecha_inicio = st.date_input("Fecha de inicio")
-
-            st.markdown("#### Servicios contratados")
-            s1, s2, s3 = st.columns(3)
-
-            with s1:
-                servicio_digital = st.checkbox("Ecosistema digital", value=True)
-
-            with s2:
-                servicio_consultoria = st.checkbox("Consultoría")
-
-            with s3:
-                servicio_contabilidad = st.checkbox("Contabilidad / gestión")
-
-            notas = st.text_area("Notas internas")
-
-            submitted = st.form_submit_button("Guardar cliente", use_container_width=True)
-
-            if submitted:
-                if not cliente.strip():
-                    st.error("El nombre del cliente es obligatorio.")
-                elif not servicio_digital and not servicio_consultoria and not servicio_contabilidad:
-                    st.error("Seleccioná al menos un servicio contratado.")
-                else:
-                    nuevo = {
-                        "cliente": cliente.strip(),
-                        "rubro": rubro,
-                        "estado": estado,
-                        "plan": plan,
-                        "responsable_am": responsable_am,
-                        "fecha_inicio": fecha_inicio.strftime("%Y-%m-%d"),
-                        "servicio_digital": "Sí" if servicio_digital else "No",
-                        "servicio_consultoria": "Sí" if servicio_consultoria else "No",
-                        "servicio_contabilidad": "Sí" if servicio_contabilidad else "No",
-                        "notas": notas,
-                    }
-                    append_and_save(nuevo)
-
-    # ------------------------------------------------------------
-    # CONTENIDOS
-    # ------------------------------------------------------------
-    elif archivo == "contenidos.csv":
-        st.markdown("### Nuevo contenido para aprobación")
-
-        if not clientes_lista:
-            st.warning("Primero cargá clientes en el menú Clientes.")
-        else:
-            with st.form("form_contenidos"):
-                col1, col2, col3 = st.columns(3)
-
-                with col1:
-                    cliente = st.selectbox("Cliente", clientes_lista)
-                    fecha = st.date_input("Fecha de publicación / propuesta")
-
-                with col2:
-                    canal = st.selectbox("Canal", ["Instagram", "Facebook", "LinkedIn", "TikTok", "YouTube", "Email", "Web", "Otro"])
-                    formato = st.selectbox("Formato", ["Post", "Carrusel", "Reel", "Historia", "Video", "Newsletter", "Landing", "Otro"])
-
-                with col3:
-                    estado = st.selectbox("Estado", ["Pendiente de aprobación", "En diseño", "Correcciones", "Aprobado", "Programado", "Publicado"])
-                    link_canva = st.text_input("Link Canva")
-
-                tema = st.text_input("Tema")
-                objetivo = st.text_input("Objetivo")
-                copy_text = st.text_area("Copy propuesto")
-
-                submitted = st.form_submit_button("Guardar contenido", use_container_width=True)
-
-                if submitted:
-                    if not tema.strip():
-                        st.error("El tema es obligatorio.")
-                    else:
-                        nuevo = {
-                            "id": next_id(df),
-                            "cliente": cliente,
-                            "fecha": fecha.strftime("%Y-%m-%d"),
-                            "canal": canal,
-                            "formato": formato,
-                            "tema": tema,
-                            "objetivo": objetivo,
-                            "copy": copy_text,
-                            "link_canva": link_canva,
-                            "estado": estado,
-                            "comentario_cliente": "",
-                        }
-                        append_and_save(nuevo)
-
-    # ------------------------------------------------------------
-    # MATERIALES
-    # ------------------------------------------------------------
-    elif archivo == "materiales.csv":
-        st.markdown("### Nuevo material solicitado")
-
-        if not clientes_lista:
-            st.warning("Primero cargá clientes en el menú Clientes.")
-        else:
-            with st.form("form_materiales"):
-                col1, col2, col3 = st.columns(3)
-
-                with col1:
-                    cliente = st.selectbox("Cliente", clientes_lista)
-                    solicitud = st.text_input("Solicitud")
-
-                with col2:
-                    responsable_cliente = st.text_input("Responsable del cliente")
-                    fecha_limite = st.date_input("Fecha límite")
-
-                with col3:
-                    estado = st.selectbox("Estado", ["Solicitado", "Pendiente", "Recibido", "Usado", "Cancelado"])
-
-                observacion = st.text_area("Indicaciones / observaciones")
-
-                submitted = st.form_submit_button("Guardar solicitud", use_container_width=True)
-
-                if submitted:
-                    if not solicitud.strip():
-                        st.error("La solicitud es obligatoria.")
-                    else:
-                        nuevo = {
-                            "id": next_id(df),
-                            "cliente": cliente,
-                            "solicitud": solicitud,
-                            "responsable_cliente": responsable_cliente,
-                            "fecha_limite": fecha_limite.strftime("%Y-%m-%d"),
-                            "estado": estado,
-                            "observacion": observacion,
-                        }
-                        append_and_save(nuevo)
-
-    # ------------------------------------------------------------
-    # CAMPAÑAS
-    # ------------------------------------------------------------
-    elif archivo == "campanias.csv":
-        st.markdown("### Nueva campaña")
-
-        if not clientes_lista:
-            st.warning("Primero cargá clientes en el menú Clientes.")
-        else:
-            with st.form("form_campanias"):
-                col1, col2, col3 = st.columns(3)
-
-                with col1:
-                    cliente = st.selectbox("Cliente", clientes_lista)
-                    campania = st.text_input("Nombre de campaña")
-
-                with col2:
-                    plataforma = st.selectbox("Plataforma", ["Meta Ads", "Google Ads", "LinkedIn Ads", "TikTok Ads", "Orgánico", "Otro"])
-                    objetivo = st.text_input("Objetivo")
-
-                with col3:
-                    presupuesto = st.number_input("Presupuesto", min_value=0.0, step=1000.0)
-                    estado = st.selectbox("Estado", ["Activa", "Pausada", "Finalizada", "Borrador"])
-
-                col4, col5 = st.columns(2)
-                with col4:
-                    leads = st.number_input("Consultas / leads", min_value=0, step=1)
-                with col5:
-                    costo_por_lead = st.number_input("Costo por lead", min_value=0.0, step=100.0)
-
-                observacion = st.text_area("Observaciones")
-
-                submitted = st.form_submit_button("Guardar campaña", use_container_width=True)
-
-                if submitted:
-                    if not campania.strip():
-                        st.error("El nombre de la campaña es obligatorio.")
-                    else:
-                        nuevo = {
-                            "id": next_id(df),
-                            "cliente": cliente,
-                            "campania": campania,
-                            "plataforma": plataforma,
-                            "objetivo": objetivo,
-                            "presupuesto": presupuesto,
-                            "estado": estado,
-                            "leads": leads,
-                            "costo_por_lead": costo_por_lead,
-                            "observacion": observacion,
-                        }
-                        append_and_save(nuevo)
-
-    # ------------------------------------------------------------
-    # REPORTES
-    # ------------------------------------------------------------
-    elif archivo == "reportes.csv":
-        st.markdown("### Nuevo reporte mensual")
-
-        if not clientes_lista:
-            st.warning("Primero cargá clientes en el menú Clientes.")
-        else:
-            with st.form("form_reportes"):
-                col1, col2, col3 = st.columns(3)
-
-                with col1:
-                    cliente = st.selectbox("Cliente", clientes_lista)
-                    mes = st.text_input("Mes", placeholder="Ej: Julio 2026")
-
-                with col2:
-                    alcance = st.number_input("Alcance", min_value=0, step=100)
-                    interacciones = st.number_input("Interacciones", min_value=0, step=50)
-
-                with col3:
-                    consultas = st.number_input("Consultas", min_value=0, step=1)
-                    inversion = st.number_input("Inversión publicitaria", min_value=0.0, step=1000.0)
-
-                estado = st.selectbox("Estado", ["Disponible", "Borrador", "En revisión"])
-                que_funciono = st.text_area("Qué funcionó")
-                proximo_foco = st.text_area("Próximo foco")
-
-                submitted = st.form_submit_button("Guardar reporte", use_container_width=True)
-
-                if submitted:
-                    if not mes.strip():
-                        st.error("El mes del reporte es obligatorio.")
-                    else:
-                        nuevo = {
-                            "id": next_id(df),
-                            "cliente": cliente,
-                            "mes": mes,
-                            "alcance": alcance,
-                            "interacciones": interacciones,
-                            "consultas": consultas,
-                            "inversion": inversion,
-                            "estado": estado,
-                            "que_funciono": que_funciono,
-                            "proximo_foco": proximo_foco,
-                        }
-                        append_and_save(nuevo)
-
-    # ------------------------------------------------------------
-    # TAREAS
-    # ------------------------------------------------------------
-    elif archivo == "tareas.csv":
-        st.markdown("### Nueva tarea interna")
-
-        if not clientes_lista:
-            st.warning("Primero cargá clientes en el menú Clientes.")
-        else:
-            with st.form("form_tareas"):
-                col1, col2, col3 = st.columns(3)
-
-                with col1:
-                    cliente = st.selectbox("Cliente", clientes_lista)
-                    tarea = st.text_input("Tarea")
-
-                with col2:
-                    responsable_am = st.text_input("Responsable AM")
-                    fecha_limite = st.date_input("Fecha límite")
-
-                with col3:
-                    prioridad = st.selectbox("Prioridad", ["Alta", "Media", "Baja"])
-                    estado = st.selectbox("Estado", ["Pendiente", "En curso", "Finalizado", "Pausado"])
-
-                submitted = st.form_submit_button("Guardar tarea", use_container_width=True)
-
-                if submitted:
-                    if not tarea.strip():
-                        st.error("La tarea es obligatoria.")
-                    else:
-                        nuevo = {
-                            "id": next_id(df),
-                            "cliente": cliente,
-                            "tarea": tarea,
-                            "responsable_am": responsable_am,
-                            "prioridad": prioridad,
-                            "estado": estado,
-                            "fecha_limite": fecha_limite.strftime("%Y-%m-%d"),
-                        }
-                        append_and_save(nuevo)
-
+    columns = columnas_por_path(path)
+    if df is None:
+        df_preview = read_csv_preview(path, columns, limit=80, cliente=cliente_preview)
     else:
-        st.warning("No hay formulario específico para esta sección.")
+        df_preview = df.copy().fillna("").head(80)
 
-    st.markdown("---")
-    st.markdown("### Últimos registros")
+    total_aprox = contar_registros(path, columns)
 
-    if df.empty:
-        st.info("Todavía no hay registros cargados.")
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Registros totales", total_aprox)
+    c2.metric("Vista previa", len(df_preview))
+    c3.metric("Modo", "rápido")
+
+    if df_preview is None or df_preview.empty:
+        st.info("No hay registros cargados.")
     else:
-        st.dataframe(df.tail(10), use_container_width=True, hide_index=True)
+        vista = df_preview.copy()
 
-    with st.expander("Edición avanzada en tabla"):
-        st.caption("Usá esta vista solo para correcciones puntuales o edición masiva.")
+        if "cliente" in vista.columns and not cliente_preview:
+            clientes = ["Todos"] + sorted(vista["cliente"].dropna().astype(str).unique().tolist())
+            filtro_cliente = st.selectbox("Cliente", clientes, key=f"filtro_crud_cliente_{title}")
+            if filtro_cliente != "Todos":
+                vista = vista[vista["cliente"].astype(str) == filtro_cliente]
+
+        if "estado" in vista.columns:
+            estados = ["Todos"] + sorted(vista["estado"].dropna().astype(str).unique().tolist())
+            filtro_estado = st.selectbox("Estado", estados, key=f"filtro_crud_estado_{title}")
+            if filtro_estado != "Todos":
+                vista = vista[vista["estado"].astype(str) == filtro_estado]
+
+        st.caption("Vista rápida. Para modificar datos, activá la edición avanzada.")
+        st.dataframe(vista, use_container_width=True, hide_index=True)
+
+    activar_edicion = st.toggle(
+        f"Activar edición avanzada de {title}",
+        value=False,
+        key=f"toggle_edicion_{title}_{cliente_preview}",
+    )
+
+    if activar_edicion:
+        st.warning("Ahora sí se carga la tabla completa para edición.")
+
+        full = read_csv_cliente(path, columns, cliente_preview) if cliente_preview else read_csv(path, columns)
+
         edited = st.data_editor(
-            df,
+            full,
             use_container_width=True,
             hide_index=True,
             num_rows="dynamic",
-            key=f"editor_avanzado_{title}",
+            key=f"editor_{title}_{cliente_preview}",
         )
 
-        if st.button(f"Guardar edición avanzada en {title}", use_container_width=True):
-            save_csv(edited, path)
-            st.success(f"{title} actualizado correctamente.")
+        if st.button(f"Guardar {title}", use_container_width=True, key=f"guardar_{title}_{cliente_preview}"):
+            if cliente_preview and "cliente" in edited.columns:
+                edited = edited.copy().fillna("")
+                edited["cliente"] = cliente_preview
+
+                full_all = read_csv(path, columns)
+
+                if "id" in full_all.columns and "id" in edited.columns:
+                    ids_editados = edited["id"].astype(str).tolist()
+                    restante = full_all[~full_all["id"].astype(str).isin(ids_editados)].copy()
+                    nuevo = pd.concat([restante, edited], ignore_index=True)
+                else:
+                    restante = full_all[full_all["cliente"].astype(str) != str(cliente_preview)].copy()
+                    nuevo = pd.concat([restante, edited], ignore_index=True)
+
+                save_csv(nuevo, path)
+            else:
+                save_csv(edited, path)
+
+            st.success("Cambios guardados.")
             st.rerun()
 
 
@@ -4973,6 +5015,11 @@ def main():
 
     menu = sidebar()
 
+    if menu == "Documentos":
+        st.warning("El módulo Documentos fue desactivado del MVP.")
+        role_tmp = st.session_state.get("role", "")
+        menu = "Dashboard AM" if role_tmp in ["admin", "admin_general"] else "Inicio"
+
     role = st.session_state.get("role")
     cliente_user = st.session_state.get("cliente")
 
@@ -4993,8 +5040,6 @@ def main():
             render_reportes(cliente, load_reportes(cliente))
         elif menu == "Objetivos":
             render_objetivos(cliente, modo="cliente")
-        elif menu == "Documentos":
-            render_documentos(cliente, modo="cliente")
         elif menu == "Cash Flow":
             render_indicadores(cliente, modo="cliente")
 
@@ -5011,8 +5056,6 @@ def main():
                 render_inicio_cliente_ejecutivo(cliente_equipo)
             elif menu == "Objetivos":
                 render_objetivos(cliente_equipo, modo="cliente")
-            elif menu == "Documentos":
-                render_documentos(cliente_equipo, modo="cliente")
             elif menu == "Cash Flow":
                 render_indicadores(cliente_equipo, modo="cliente")
             elif menu == "Contenidos":
@@ -5073,15 +5116,13 @@ def main():
                     cliente_equipo,
                 )
             elif menu == "Tareas":
-                render_crud_table("Tareas", TAREAS_PATH, load_tareas())
+                render_crud_table("Tareas", TAREAS_PATH, cliente_preview=cliente_equipo)
 
         else:
             if menu == "Dashboard AM":
-                clientes, contenidos, materiales, campanias, reportes, tareas = load_data()
-                render_admin_dashboard(clientes, contenidos, materiales, campanias, reportes, tareas)
+                render_admin_dashboard_ligero()
             elif menu == "Edición rápida":
-                clientes, contenidos, materiales, campanias, reportes, tareas = load_data()
-                render_edicion_rapida(clientes, contenidos, materiales, campanias, reportes, tareas)
+                render_edicion_rapida_ligera()
             elif menu == "Usuarios":
                 render_usuarios(load_clientes())
             elif menu == "Onboarding":
@@ -5090,20 +5131,18 @@ def main():
                 render_gestion_clientes()
             elif menu == "Objetivos":
                 render_objetivos("", modo="admin")
-            elif menu == "Documentos":
-                render_documentos("", modo="admin")
             elif menu == "Cash Flow":
                 render_indicadores("", modo="admin")
             elif menu == "Contenidos":
-                render_crud_table("Contenidos", CONTENIDOS_PATH, load_contenidos())
+                render_crud_table("Contenidos", CONTENIDOS_PATH)
             elif menu == "Materiales":
-                render_crud_table("Materiales", MATERIALES_PATH, load_materiales())
+                render_crud_table("Materiales", MATERIALES_PATH)
             elif menu == "Campañas":
-                render_crud_table("Campañas", CAMPANIAS_PATH, load_campanias())
+                render_crud_table("Campañas", CAMPANIAS_PATH)
             elif menu == "Reportes":
-                render_crud_table("Reportes", REPORTES_PATH, load_reportes())
+                render_crud_table("Reportes", REPORTES_PATH)
             elif menu == "Tareas":
-                render_crud_table("Tareas", TAREAS_PATH, load_tareas())
+                render_crud_table("Tareas", TAREAS_PATH)
             elif menu == "Vista cliente":
                 clientes, contenidos, materiales, campanias, reportes, _ = load_data()
                 render_vista_cliente_admin(clientes, contenidos, materiales, campanias, reportes)
