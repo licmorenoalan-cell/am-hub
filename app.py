@@ -1,5 +1,6 @@
 from pathlib import Path
 import os
+import time
 import base64
 from PIL import Image
 from datetime import date
@@ -71,6 +72,20 @@ POSTGRES_KEY_MAP = {
     "indicadores_movimientos": "id",
     "cuenta_corriente": "id",
 }
+
+POSTGRES_CORE_TABLES = [
+    "clientes",
+    "usuarios",
+    "asignaciones_equipo",
+    "contenidos",
+    "materiales",
+    "campanias",
+    "reportes",
+    "tareas",
+    "objetivos",
+    "indicadores_movimientos",
+    "cuenta_corriente",
+]
 
 _POSTGRES_ENGINE = None
 
@@ -163,26 +178,73 @@ def normalizar_df_para_columnas(df: pd.DataFrame, columns: list[str]) -> pd.Data
 
 
 @st.cache_data(ttl=600, show_spinner=False)
+def leer_postgres_core_cacheada() -> dict:
+    inicio_perf = perf_start()
+    engine = get_postgres_engine()
+    data = {}
+
+    with engine.connect() as conn:
+        for tabla in POSTGRES_CORE_TABLES:
+            try:
+                data[tabla] = pd.read_sql(sql_text(f'SELECT * FROM "{tabla}"'), conn).fillna("")
+            except Exception:
+                data[tabla] = pd.DataFrame()
+
+    try:
+        total_filas = sum(len(df) for df in data.values())
+    except Exception:
+        total_filas = 0
+
+    perf_log(f"CORE postgres tablas={len(data)} filas={total_filas}", inicio_perf)
+    return data
+
+
+def leer_postgres_core_tabla(tabla: str, columns: list[str]) -> pd.DataFrame:
+    data = leer_postgres_core_cacheada()
+    df = data.get(tabla, pd.DataFrame()).copy()
+    return normalizar_df_para_columnas(df, columns)
+
+
+
+@st.cache_data(ttl=600, show_spinner=False)
 def leer_postgres_cacheada(tabla: str, columns_tuple: tuple) -> pd.DataFrame:
+    columns = list(columns_tuple) if columns_tuple else []
+
+    if tabla in POSTGRES_CORE_TABLES:
+        return leer_postgres_core_tabla(tabla, columns)
+
     engine = get_postgres_engine()
 
     with engine.connect() as conn:
         df = pd.read_sql(sql_text(f'SELECT * FROM "{tabla}"'), conn)
 
-    columns = list(columns_tuple) if columns_tuple else []
     return normalizar_df_para_columnas(df, columns)
 
 
 def leer_postgres(tabla: str, columns: list[str]) -> pd.DataFrame:
+    inicio_perf = perf_start()
     try:
         columns_tuple = tuple(columns) if columns is not None else tuple()
-        return leer_postgres_cacheada(tabla, columns_tuple)
+        df = leer_postgres_cacheada(tabla, columns_tuple)
+        perf_log(f"leer_postgres {tabla} filas={len(df)}", inicio_perf)
+        return df
     except Exception:
+        perf_log(f"leer_postgres ERROR {tabla}", inicio_perf)
         return pd.DataFrame(columns=columns)
 
 
 @st.cache_data(ttl=600, show_spinner=False)
 def leer_postgres_cliente_cacheada(tabla: str, columns_tuple: tuple, cliente: str) -> pd.DataFrame:
+    columns = list(columns_tuple) if columns_tuple else []
+
+    if tabla in POSTGRES_CORE_TABLES:
+        df = leer_postgres_core_tabla(tabla, columns)
+
+        if df.empty or "cliente" not in df.columns:
+            return pd.DataFrame(columns=columns)
+
+        return df[df["cliente"].astype(str) == str(cliente)].copy()
+
     engine = get_postgres_engine()
 
     with engine.connect() as conn:
@@ -192,7 +254,6 @@ def leer_postgres_cliente_cacheada(tabla: str, columns_tuple: tuple, cliente: st
             params={"cliente": cliente},
         )
 
-    columns = list(columns_tuple) if columns_tuple else []
     return normalizar_df_para_columnas(df, columns)
 
 
@@ -200,10 +261,14 @@ def leer_postgres_cliente(tabla: str, columns: list[str], cliente: str) -> pd.Da
     if not cliente:
         return leer_postgres(tabla, columns)
 
+    inicio_perf = perf_start()
     try:
         columns_tuple = tuple(columns) if columns is not None else tuple()
-        return leer_postgres_cliente_cacheada(tabla, columns_tuple, str(cliente))
+        df = leer_postgres_cliente_cacheada(tabla, columns_tuple, str(cliente))
+        perf_log(f"leer_postgres_cliente {tabla} cliente={cliente} filas={len(df)}", inicio_perf)
+        return df
     except Exception:
+        perf_log(f"leer_postgres_cliente ERROR {tabla} cliente={cliente}", inicio_perf)
         return pd.DataFrame(columns=columns)
 
 
@@ -228,6 +293,7 @@ def _filas_distintas(row_nueva, row_actual, columnas):
 
 def _limpiar_cache_postgres():
     for cache_func_name in [
+        "leer_postgres_core_cacheada",
         "leer_postgres_cacheada",
         "leer_postgres_cliente_cacheada",
         "leer_postgres_preview_cacheada",
@@ -557,6 +623,21 @@ def ensure_data_dir():
     ASSETS_DIR.mkdir(exist_ok=True)
 
 
+def perf_log(nombre, inicio):
+    try:
+        duracion = time.perf_counter() - inicio
+        print(f"[PERF] {nombre}: {duracion:.3f}s")
+    except Exception:
+        pass
+
+
+def perf_start():
+    try:
+        return time.perf_counter()
+    except Exception:
+        return 0
+
+
 def read_csv(path: Path, columns: list[str]) -> pd.DataFrame:
     ensure_data_dir()
 
@@ -626,8 +707,18 @@ def contar_registros(path: Path, columns=None) -> int:
 
 @st.cache_data(ttl=600, show_spinner=False)
 def leer_postgres_preview_cacheada(tabla: str, columns_tuple: tuple, limit: int, cliente: str = "") -> pd.DataFrame:
-    engine = get_postgres_engine()
+    columns = list(columns_tuple) if columns_tuple else []
     limit = int(limit or 80)
+
+    if tabla in POSTGRES_CORE_TABLES:
+        df = leer_postgres_core_tabla(tabla, columns)
+
+        if cliente and "cliente" in df.columns:
+            df = df[df["cliente"].astype(str) == str(cliente)].copy()
+
+        return df.head(limit).copy()
+
+    engine = get_postgres_engine()
 
     with engine.connect() as conn:
         if cliente:
@@ -643,21 +734,26 @@ def leer_postgres_preview_cacheada(tabla: str, columns_tuple: tuple, limit: int,
                 params={"limit": limit},
             )
 
-    columns = list(columns_tuple) if columns_tuple else []
     return normalizar_df_para_columnas(df, columns)
 
 
 def read_csv_preview(path: Path, columns: list[str], limit: int = 80, cliente: str = "") -> pd.DataFrame:
+    inicio_perf = perf_start()
     tabla = tabla_postgres_para_path(path)
 
     if usar_postgres() and tabla:
         try:
-            return leer_postgres_preview_cacheada(tabla, tuple(columns or []), int(limit), str(cliente or ""))
+            df = leer_postgres_preview_cacheada(tabla, tuple(columns or []), int(limit), str(cliente or ""))
+            perf_log(f"preview {tabla} cliente={cliente or '-'} filas={len(df)}", inicio_perf)
+            return df
         except Exception:
+            perf_log(f"preview ERROR {tabla} cliente={cliente or '-'}", inicio_perf)
             return pd.DataFrame(columns=columns)
 
     df = read_csv_cliente(path, columns, cliente) if cliente else read_csv(path, columns)
-    return df.head(limit).copy()
+    df = df.head(limit).copy()
+    perf_log(f"preview CSV {Path(path).name} cliente={cliente or '-'} filas={len(df)}", inicio_perf)
+    return df
 
 
 def save_csv(df: pd.DataFrame, path: Path):
@@ -5443,6 +5539,8 @@ def main():
         return
 
     menu = sidebar()
+    inicio_menu_perf = perf_start()
+    print(f"[PERF] MENU START role={st.session_state.get('role')} menu={menu}")
 
     if menu == "Documentos":
         st.warning("El módulo Documentos fue desactivado del MVP.")
