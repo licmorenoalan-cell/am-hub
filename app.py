@@ -624,6 +624,9 @@ def ensure_data_dir():
 
 
 def perf_log(nombre, inicio):
+    if os.getenv("PERF_DEBUG", "0") != "1":
+        return
+
     try:
         duracion = time.perf_counter() - inicio
         print(f"[PERF] {nombre}: {duracion:.3f}s")
@@ -5540,7 +5543,8 @@ def main():
 
     menu = sidebar()
     inicio_menu_perf = perf_start()
-    print(f"[PERF] MENU START role={st.session_state.get('role')} menu={menu}")
+    if os.getenv("PERF_DEBUG", "0") == "1":
+        print(f"[PERF] MENU START role={st.session_state.get('role')} menu={menu}")
 
     if menu == "Documentos":
         st.warning("El módulo Documentos fue desactivado del MVP.")
