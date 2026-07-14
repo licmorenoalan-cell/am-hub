@@ -3684,8 +3684,89 @@ def cargar_indicadores():
     )
 
 
+def render_resumen_cuenta_corriente_inicio(cliente):
+    columnas = [
+        "id",
+        "cliente",
+        "mes",
+        "concepto",
+        "importe",
+        "estado",
+        "fecha_factura",
+        "fecha_pago",
+        "observacion",
+        "comprobante_nombre",
+        "comprobante_tipo",
+        "comprobante_base64",
+        "fecha_carga",
+        "cargado_por",
+    ]
+
+    cuenta = read_csv_cliente(CUENTA_CORRIENTE_PATH, columnas, cliente)
+
+    if cuenta is None or cuenta.empty:
+        saldo_adeudado = 0
+        movimientos_pendientes = 0
+    else:
+        cuenta = cuenta.copy().fillna("")
+        cuenta["importe"] = pd.to_numeric(cuenta["importe"], errors="coerce").fillna(0)
+
+        estados_sin_deuda = ["Pagado", "Bonificado"]
+        pendientes = cuenta[
+            ~cuenta["estado"].astype(str).isin(estados_sin_deuda)
+        ].copy()
+
+        saldo_adeudado = pendientes["importe"].sum()
+        movimientos_pendientes = len(pendientes)
+
+    def formato_pesos(valor):
+        try:
+            return f"$ {float(valor):,.0f}".replace(",", ".")
+        except Exception:
+            return "$ 0"
+
+    if saldo_adeudado > 0:
+        estado_label = "Pendiente de pago"
+        estado_color = "#A94442"
+        fondo_estado = "#FDECEC"
+        texto_aux = f"Tenés {movimientos_pendientes} movimiento(s) pendiente(s)."
+        boton_label = "Registrar pago"
+    else:
+        estado_label = "Al día"
+        estado_color = "#1F7A4D"
+        fondo_estado = "#EAF7F0"
+        texto_aux = "No registrás saldo adeudado."
+        boton_label = "Ver cuenta corriente"
+
+    html = f"""
+<div style="margin: 18px 0 16px 0; padding: 24px 28px; border-radius: 22px; background: #FFFFFF; border: 1px solid rgba(22,35,58,0.08); box-shadow: 0 10px 26px rgba(22,35,58,0.06);">
+  <div style="display: flex; justify-content: space-between; gap: 18px; align-items: flex-start; flex-wrap: wrap;">
+    <div style="min-width: 240px;">
+      <div style="font-size: 0.78rem; text-transform: uppercase; letter-spacing: .08em; color: #65758B; font-weight: 800; margin-bottom: 10px;">Cuenta corriente</div>
+      <div style="font-size: 1rem; color: #16233A; font-weight: 800; margin-bottom: 8px;">Saldo adeudado</div>
+      <div style="font-size: 2rem; line-height: 1.05; color: #244A7C; font-weight: 950;">{formato_pesos(saldo_adeudado)}</div>
+      <div style="margin-top: 10px; color: #65758B; font-size: 0.95rem;">{texto_aux}</div>
+    </div>
+    <div style="padding: 9px 14px; border-radius: 999px; background: {fondo_estado}; color: {estado_color}; font-weight: 850; font-size: 0.88rem; white-space: nowrap;">
+      {estado_label}
+    </div>
+  </div>
+</div>
+"""
+
+    st.markdown(html, unsafe_allow_html=True)
+
+    if st.button(boton_label, use_container_width=True, key=f"btn_registrar_pago_inicio_{cliente}"):
+        st.session_state["menu_cliente_v2"] = "Cuenta corriente"
+        st.rerun()
+
+
+
 def render_inicio_cliente_ejecutivo(cliente):
     header("Inicio", f"Panel ejecutivo | {cliente}")
+
+    render_resumen_cuenta_corriente_inicio(cliente)
+
 
     servicios = servicios_activos_cliente(cliente)
 
@@ -3910,7 +3991,6 @@ def render_inicio_cliente_ejecutivo(cliente):
         else:
             st.markdown("### Estado general")
             st.info("Usá Objetivos para crear, actualizar y seguir el plan de trabajo.")
-
 
 def render_objetivos(cliente="", modo="cliente"):
     objetivos = cargar_objetivos(cliente) if modo == "cliente" and cliente else cargar_objetivos()
