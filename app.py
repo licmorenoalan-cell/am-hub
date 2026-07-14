@@ -1052,16 +1052,23 @@ def load_tareas(cliente=""):
         "id",
         "cliente",
         "tarea",
+        "descripcion",
         "responsable_am",
         "prioridad",
         "estado",
         "fecha_limite",
+        "comentarios",
+        "fecha_carga",
+        "creado_por",
+        "fecha_actualizacion",
+        "actualizado_por",
     ]
 
     if cliente:
         return read_csv_cliente(TAREAS_PATH, columns, cliente)
 
     return read_csv(TAREAS_PATH, columns)
+
 
 
 def load_data():
@@ -4989,8 +4996,19 @@ def columnas_por_path(path):
             "inversion", "estado", "que_funciono", "proximo_foco",
         ],
         "tareas.csv": [
-            "id", "cliente", "tarea", "responsable_am", "prioridad",
-            "estado", "fecha_limite",
+            "id",
+            "cliente",
+            "tarea",
+            "descripcion",
+            "responsable_am",
+            "prioridad",
+            "estado",
+            "fecha_limite",
+            "comentarios",
+            "fecha_carga",
+            "creado_por",
+            "fecha_actualizacion",
+            "actualizado_por",
         ],
         "indicadores_movimientos.csv": [
             "id", "cliente", "mes", "tipo", "categoria", "importe",
@@ -5773,6 +5791,265 @@ def banner_cliente_global():
 
 
 
+def columnas_tareas_internas():
+    return [
+        "id",
+        "cliente",
+        "tarea",
+        "descripcion",
+        "responsable_am",
+        "prioridad",
+        "estado",
+        "fecha_limite",
+        "comentarios",
+        "fecha_carga",
+        "creado_por",
+        "fecha_actualizacion",
+        "actualizado_por",
+    ]
+
+
+def cargar_tareas_internas(cliente=""):
+    if cliente:
+        return read_csv_cliente(TAREAS_PATH, columnas_tareas_internas(), cliente)
+
+    return read_csv(TAREAS_PATH, columnas_tareas_internas())
+
+
+def normalizar_tareas_internas(df):
+    columns = columnas_tareas_internas()
+
+    if df is None or df.empty:
+        return pd.DataFrame(columns=columns)
+
+    df = df.copy()
+
+    for col in columns:
+        if col not in df.columns:
+            df[col] = ""
+
+    df = df[columns].fillna("")
+
+    df["cliente"] = df["cliente"].astype(str).str.strip()
+    df["tarea"] = df["tarea"].astype(str).str.strip()
+    df["responsable_am"] = df["responsable_am"].astype(str).str.strip().replace("", "Sin asignar")
+    df["prioridad"] = df["prioridad"].astype(str).str.strip().replace("", "Media")
+    df["estado"] = df["estado"].astype(str).str.strip().replace("", "Pendiente")
+
+    return df
+
+
+def render_tareas_internas(cliente_fijo="", modo="admin"):
+    role = st.session_state.get("role", "")
+    username = st.session_state.get("username", "")
+    nombre_usuario = st.session_state.get("name", username)
+
+    header("Tareas internas", "Tablero operativo por cliente y responsable.")
+
+    estados_kanban = ["Pendiente", "En curso", "En revisión", "Finalizada", "Pausada"]
+    prioridades = ["Alta", "Media", "Baja"]
+
+    usuarios_equipo = usuarios_equipo_disponibles()
+    responsables = ["Sin asignar"] + usuarios_equipo
+
+    if modo == "equipo":
+        clientes_opciones = [cliente_fijo] if cliente_fijo else clientes_visibles_para_usuario()
+    else:
+        clientes_df = load_clientes()
+        if clientes_df is None or clientes_df.empty or "cliente" not in clientes_df.columns:
+            clientes_opciones = []
+        else:
+            clientes_opciones = sorted(clientes_df["cliente"].dropna().astype(str).unique().tolist())
+
+    if not clientes_opciones:
+        st.info("No hay clientes disponibles para cargar tareas.")
+        return
+
+    tareas_full = normalizar_tareas_internas(cargar_tareas_internas())
+
+    if modo == "equipo":
+        clientes_permitidos = set(clientes_opciones)
+        tareas_vista_base = tareas_full[tareas_full["cliente"].astype(str).isin(clientes_permitidos)].copy()
+    else:
+        tareas_vista_base = tareas_full.copy()
+
+    # ------------------------------------------------------------
+    # Alta de tareas: principal para admin. Equipo puede cargar solo sobre cliente activo.
+    # ------------------------------------------------------------
+    with st.expander("Crear nueva tarea interna", expanded=(modo == "admin")):
+        with st.form(f"form_nueva_tarea_interna_{modo}_{cliente_fijo or 'admin'}"):
+            if modo == "equipo" and cliente_fijo:
+                cliente_sel = cliente_fijo
+                st.text_input("Cliente", value=cliente_sel, disabled=True)
+            else:
+                cliente_sel = st.selectbox("Cliente", clientes_opciones, key=f"tarea_cliente_{modo}")
+
+            tarea_txt = st.text_input("Tarea", placeholder="Ejemplo: preparar reporte mensual")
+            descripcion = st.text_area("Descripción / detalle operativo", placeholder="Indicaciones, links, contexto, entregables esperados.")
+            responsable_sel = st.selectbox("Responsable", responsables, key=f"tarea_responsable_{modo}")
+            prioridad_sel = st.selectbox("Prioridad", prioridades, index=1, key=f"tarea_prioridad_{modo}")
+            fecha_limite = st.date_input("Fecha límite", value=date.today())
+            estado_sel = st.selectbox("Estado inicial", estados_kanban, key=f"tarea_estado_inicial_{modo}")
+
+            crear = st.form_submit_button("Crear tarea", use_container_width=True)
+
+            if crear:
+                if not tarea_txt.strip():
+                    st.error("La tarea no puede estar vacía.")
+                else:
+                    nueva = {
+                        "id": f"TAR-{pd.Timestamp.now().strftime('%Y%m%d%H%M%S')}",
+                        "cliente": cliente_sel,
+                        "tarea": tarea_txt.strip(),
+                        "descripcion": descripcion.strip(),
+                        "responsable_am": responsable_sel,
+                        "prioridad": prioridad_sel,
+                        "estado": estado_sel,
+                        "fecha_limite": fecha_limite.strftime("%Y-%m-%d"),
+                        "comentarios": "",
+                        "fecha_carga": date.today().strftime("%Y-%m-%d"),
+                        "creado_por": nombre_usuario,
+                        "fecha_actualizacion": date.today().strftime("%Y-%m-%d"),
+                        "actualizado_por": nombre_usuario,
+                    }
+
+                    actualizado = pd.concat([tareas_full, pd.DataFrame([nueva])], ignore_index=True)
+                    save_csv(actualizado, TAREAS_PATH)
+                    st.success("Tarea creada correctamente.")
+                    st.rerun()
+
+    # ------------------------------------------------------------
+    # Filtros
+    # ------------------------------------------------------------
+    st.markdown("### Tablero Kanban")
+
+    f1, f2, f3 = st.columns([2, 1.5, 1])
+
+    with f1:
+        if modo == "equipo" and cliente_fijo:
+            cliente_filtro = cliente_fijo
+            st.caption(f"Cliente activo: {cliente_filtro}")
+        else:
+            cliente_filtro = st.selectbox(
+                "Filtrar por cliente",
+                ["Todos"] + clientes_opciones,
+                key=f"filtro_cliente_tareas_{modo}",
+            )
+
+    with f2:
+        responsables_disponibles = sorted(
+            tareas_vista_base["responsable_am"].dropna().astype(str).replace("", "Sin asignar").unique().tolist()
+        )
+        responsable_filtro = st.selectbox(
+            "Responsable",
+            ["Todos"] + responsables_disponibles,
+            key=f"filtro_responsable_tareas_{modo}",
+        )
+
+    with f3:
+        prioridad_filtro = st.selectbox(
+            "Prioridad",
+            ["Todas"] + prioridades,
+            key=f"filtro_prioridad_tareas_{modo}",
+        )
+
+    tareas_vista = tareas_vista_base.copy()
+
+    if cliente_filtro != "Todos":
+        tareas_vista = tareas_vista[tareas_vista["cliente"].astype(str) == str(cliente_filtro)].copy()
+
+    if responsable_filtro != "Todos":
+        tareas_vista = tareas_vista[tareas_vista["responsable_am"].astype(str) == str(responsable_filtro)].copy()
+
+    if prioridad_filtro != "Todas":
+        tareas_vista = tareas_vista[tareas_vista["prioridad"].astype(str) == str(prioridad_filtro)].copy()
+
+    k1, k2, k3, k4 = st.columns(4)
+    k1.metric("Tareas visibles", len(tareas_vista))
+    k2.metric("Pendientes", len(tareas_vista[tareas_vista["estado"] == "Pendiente"]))
+    k3.metric("En curso", len(tareas_vista[tareas_vista["estado"] == "En curso"]))
+    k4.metric("Finalizadas", len(tareas_vista[tareas_vista["estado"] == "Finalizada"]))
+
+    if tareas_vista.empty:
+        st.info("No hay tareas para los filtros seleccionados.")
+        return
+
+    # ------------------------------------------------------------
+    # Kanban
+    # ------------------------------------------------------------
+    cols = st.columns(len(estados_kanban))
+
+    for idx_estado, estado in enumerate(estados_kanban):
+        subset = tareas_vista[tareas_vista["estado"].astype(str) == estado].copy()
+
+        with cols[idx_estado]:
+            st.markdown(f"#### {estado}")
+            st.caption(f"{len(subset)} tarea(s)")
+
+            if subset.empty:
+                st.caption("Sin tareas.")
+                continue
+
+            for _, row in subset.iterrows():
+                tarea_id = str(row.get("id", ""))
+                tarea_titulo = str(row.get("tarea", "Sin título"))
+                cliente_txt = str(row.get("cliente", ""))
+                responsable_txt = str(row.get("responsable_am", "Sin asignar"))
+                prioridad_txt = str(row.get("prioridad", "Media"))
+                fecha_txt = str(row.get("fecha_limite", ""))
+                descripcion_txt = str(row.get("descripcion", ""))
+                comentarios_txt = str(row.get("comentarios", ""))
+
+                with st.container(border=True):
+                    st.markdown(f"**{tarea_titulo}**")
+                    st.caption(cliente_txt)
+                    st.caption(f"Responsable: {responsable_txt}")
+                    st.caption(f"Prioridad: {prioridad_txt} · Límite: {fecha_txt}")
+
+                    if descripcion_txt:
+                        st.write(descripcion_txt)
+
+                    nuevo_estado = st.selectbox(
+                        "Estado",
+                        estados_kanban,
+                        index=estados_kanban.index(estado) if estado in estados_kanban else 0,
+                        key=f"estado_tarea_{tarea_id}",
+                    )
+
+                    nuevo_comentario = st.text_area(
+                        "Comentario / avance",
+                        value="",
+                        placeholder="Agregar actualización breve...",
+                        key=f"comentario_tarea_{tarea_id}",
+                        height=90,
+                    )
+
+                    if comentarios_txt:
+                        with st.expander("Historial"):
+                            st.write(comentarios_txt)
+
+                    if st.button("Guardar avance", key=f"guardar_tarea_{tarea_id}", use_container_width=True):
+                        tareas_actualizadas = normalizar_tareas_internas(cargar_tareas_internas())
+                        mask = tareas_actualizadas["id"].astype(str) == tarea_id
+
+                        if not mask.any():
+                            st.error("No se encontró la tarea.")
+                        else:
+                            tareas_actualizadas.loc[mask, "estado"] = nuevo_estado
+                            tareas_actualizadas.loc[mask, "fecha_actualizacion"] = date.today().strftime("%Y-%m-%d")
+                            tareas_actualizadas.loc[mask, "actualizado_por"] = nombre_usuario
+
+                            if nuevo_comentario.strip():
+                                anterior = str(tareas_actualizadas.loc[mask, "comentarios"].iloc[0] or "")
+                                agregado = f"{date.today().strftime('%Y-%m-%d')} - {nombre_usuario}: {nuevo_comentario.strip()}"
+                                tareas_actualizadas.loc[mask, "comentarios"] = (anterior + "\\n" + agregado).strip()
+
+                            save_csv(tareas_actualizadas, TAREAS_PATH)
+                            st.success("Tarea actualizada.")
+                            st.rerun()
+
+
+
 def main():
     ensure_data_dir()
     seed_data()
@@ -5896,7 +6173,7 @@ def main():
                     cliente_equipo,
                 )
             elif menu == "Tareas":
-                render_crud_table("Tareas", TAREAS_PATH, cliente_preview=cliente_equipo)
+                render_tareas_internas(cliente_fijo=cliente_equipo, modo="equipo")
 
         else:
             if menu == "Dashboard AM":
@@ -5924,7 +6201,7 @@ def main():
             elif menu == "Reportes":
                 render_crud_table("Reportes", REPORTES_PATH)
             elif menu == "Tareas":
-                render_crud_table("Tareas", TAREAS_PATH)
+                render_tareas_internas(modo="admin")
             elif menu == "Vista cliente":
                 clientes, contenidos, materiales, campanias, reportes, _ = load_data()
                 render_vista_cliente_admin(clientes, contenidos, materiales, campanias, reportes)
