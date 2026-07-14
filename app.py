@@ -1647,6 +1647,11 @@ def sidebar():
         else:
             opciones_cliente = [op for op in opciones_cliente if op != "Documentos"]
 
+        destino_menu_cliente = st.session_state.pop("menu_cliente_destino", None)
+
+        if destino_menu_cliente in opciones_cliente:
+            st.session_state["menu_cliente_v2"] = destino_menu_cliente
+
         menu = st.sidebar.radio(
             "Menú",
             opciones_cliente,
@@ -3690,6 +3695,7 @@ def render_resumen_cuenta_corriente_inicio(cliente):
         "cliente",
         "mes",
         "concepto",
+        "servicio",
         "importe",
         "estado",
         "fecha_factura",
@@ -3704,11 +3710,23 @@ def render_resumen_cuenta_corriente_inicio(cliente):
 
     cuenta = read_csv_cliente(CUENTA_CORRIENTE_PATH, columnas, cliente)
 
+    def formato_pesos(valor):
+        try:
+            return f"$ {float(valor):,.0f}".replace(",", ".")
+        except Exception:
+            return "$ 0"
+
     if cuenta is None or cuenta.empty:
         saldo_adeudado = 0
         movimientos_pendientes = 0
+        resumen_servicios = pd.DataFrame(columns=["servicio", "importe"])
     else:
         cuenta = cuenta.copy().fillna("")
+
+        if "servicio" not in cuenta.columns:
+            cuenta["servicio"] = "General"
+
+        cuenta["servicio"] = cuenta["servicio"].replace("", "General")
         cuenta["importe"] = pd.to_numeric(cuenta["importe"], errors="coerce").fillna(0)
 
         estados_sin_deuda = ["Pagado", "Bonificado"]
@@ -3719,46 +3737,59 @@ def render_resumen_cuenta_corriente_inicio(cliente):
         saldo_adeudado = pendientes["importe"].sum()
         movimientos_pendientes = len(pendientes)
 
-    def formato_pesos(valor):
-        try:
-            return f"$ {float(valor):,.0f}".replace(",", ".")
-        except Exception:
-            return "$ 0"
+        if pendientes.empty:
+            resumen_servicios = pd.DataFrame(columns=["servicio", "importe"])
+        else:
+            resumen_servicios = (
+                pendientes
+                .groupby("servicio", dropna=False)["importe"]
+                .sum()
+                .reset_index()
+                .sort_values("importe", ascending=False)
+            )
 
     if saldo_adeudado > 0:
         estado_label = "Pendiente de pago"
-        estado_color = "#A94442"
-        fondo_estado = "#FDECEC"
-        texto_aux = f"Tenés {movimientos_pendientes} movimiento(s) pendiente(s)."
         boton_label = "Registrar pago"
+        detalle = f"{movimientos_pendientes} movimiento(s) pendiente(s)"
     else:
         estado_label = "Al día"
-        estado_color = "#1F7A4D"
-        fondo_estado = "#EAF7F0"
-        texto_aux = "No registrás saldo adeudado."
         boton_label = "Ver cuenta corriente"
+        detalle = "Sin saldo adeudado"
 
-    html = f"""
-<div style="margin: 18px 0 16px 0; padding: 24px 28px; border-radius: 22px; background: #FFFFFF; border: 1px solid rgba(22,35,58,0.08); box-shadow: 0 10px 26px rgba(22,35,58,0.06);">
-  <div style="display: flex; justify-content: space-between; gap: 18px; align-items: flex-start; flex-wrap: wrap;">
-    <div style="min-width: 240px;">
-      <div style="font-size: 0.78rem; text-transform: uppercase; letter-spacing: .08em; color: #65758B; font-weight: 800; margin-bottom: 10px;">Cuenta corriente</div>
-      <div style="font-size: 1rem; color: #16233A; font-weight: 800; margin-bottom: 8px;">Saldo adeudado</div>
-      <div style="font-size: 2rem; line-height: 1.05; color: #244A7C; font-weight: 950;">{formato_pesos(saldo_adeudado)}</div>
-      <div style="margin-top: 10px; color: #65758B; font-size: 0.95rem;">{texto_aux}</div>
-    </div>
-    <div style="padding: 9px 14px; border-radius: 999px; background: {fondo_estado}; color: {estado_color}; font-weight: 850; font-size: 0.88rem; white-space: nowrap;">
-      {estado_label}
-    </div>
-  </div>
-</div>
-"""
+    with st.container(border=True):
+        c1, c2, c3, c4 = st.columns([2.1, 1.4, 2.3, 1.5])
 
-    st.markdown(html, unsafe_allow_html=True)
+        with c1:
+            st.caption("CUENTA CORRIENTE")
+            st.markdown("**Saldo adeudado**")
 
-    if st.button(boton_label, use_container_width=True, key=f"btn_registrar_pago_inicio_{cliente}"):
-        st.session_state["menu_cliente_v2"] = "Cuenta corriente"
-        st.rerun()
+        with c2:
+            st.markdown(f"### {formato_pesos(saldo_adeudado)}")
+            st.caption(detalle)
+
+        with c3:
+            if not resumen_servicios.empty:
+                servicios_txt = []
+                for _, row in resumen_servicios.iterrows():
+                    servicio = str(row.get("servicio", "") or "General")
+                    importe_servicio = formato_pesos(row.get("importe", 0))
+                    servicios_txt.append(f"{servicio}: {importe_servicio}")
+                st.caption("Detalle por servicio")
+                st.write(" · ".join(servicios_txt))
+            else:
+                st.caption("Detalle por servicio")
+                st.write("Sin deuda por servicio")
+
+        with c4:
+            if saldo_adeudado > 0:
+                st.warning(estado_label)
+            else:
+                st.success(estado_label)
+
+            if st.button(boton_label, use_container_width=True, key=f"btn_registrar_pago_inicio_{cliente}"):
+                st.session_state["menu_cliente_destino"] = "Cuenta corriente"
+                st.rerun()
 
 
 
@@ -4983,6 +5014,7 @@ def cargar_cuenta_corriente(cliente=""):
         "cliente",
         "mes",
         "concepto",
+        "servicio",
         "importe",
         "estado",
         "fecha_factura",
@@ -5001,6 +5033,26 @@ def cargar_cuenta_corriente(cliente=""):
     return read_csv(CUENTA_CORRIENTE_PATH, columns)
 
 
+def opciones_servicio_cliente(cliente_nombre):
+    servicios = servicios_activos_cliente(cliente_nombre)
+    opciones = []
+
+    if servicios.get("digital"):
+        opciones.append("Ecosistema digital")
+
+    if servicios.get("consultoria"):
+        opciones.append("Consultoría")
+
+    if servicios.get("contabilidad"):
+        opciones.append("Contabilidad / Gestión")
+
+    if not opciones:
+        opciones.append("General")
+
+    return opciones
+
+
+
 def render_cuenta_corriente_admin():
     if st.session_state.get("role") != "admin_general":
         header("Cuenta corriente", "Acceso restringido")
@@ -5014,6 +5066,7 @@ def render_cuenta_corriente_admin():
         "cliente",
         "mes",
         "concepto",
+        "servicio",
         "importe",
         "estado",
         "fecha_factura",
@@ -5119,6 +5172,7 @@ def render_cuenta_corriente_admin():
                             "cliente": cliente_sel,
                             "mes": mes,
                             "concepto": concepto.strip() or "Honorarios mensuales",
+                            "servicio": servicio_sel,
                             "importe": importe,
                             "estado": estado,
                             "fecha_factura": fecha_factura.strftime("%Y-%m-%d"),
@@ -5144,6 +5198,9 @@ def render_cuenta_corriente_admin():
         return
 
     cuenta = cuenta.copy().fillna("")
+    if "servicio" not in cuenta.columns:
+        cuenta["servicio"] = "General"
+    cuenta["servicio"] = cuenta["servicio"].replace("", "General")
     cuenta["importe"] = pd.to_numeric(cuenta["importe"], errors="coerce").fillna(0)
     cuenta["mes"] = cuenta["mes"].astype(str)
 
@@ -5198,6 +5255,7 @@ def render_cuenta_corriente_admin():
         "cliente",
         "mes",
         "concepto",
+        "servicio",
         "importe",
         "estado",
         "fecha_factura",
@@ -5234,6 +5292,7 @@ def render_cuenta_corriente_cliente(cliente):
         "cliente",
         "mes",
         "concepto",
+        "servicio",
         "importe",
         "estado",
         "fecha_factura",
@@ -5253,6 +5312,9 @@ def render_cuenta_corriente_cliente(cliente):
         return
 
     cuenta = cuenta.copy().fillna("")
+    if "servicio" not in cuenta.columns:
+        cuenta["servicio"] = "General"
+    cuenta["servicio"] = cuenta["servicio"].replace("", "General")
     cuenta["importe"] = pd.to_numeric(cuenta["importe"], errors="coerce").fillna(0)
     cuenta["mes"] = cuenta["mes"].astype(str)
 
@@ -5277,6 +5339,7 @@ def render_cuenta_corriente_cliente(cliente):
     columnas_vista = [
         "mes",
         "concepto",
+        "servicio",
         "importe",
         "estado",
         "fecha_factura",
@@ -5301,7 +5364,8 @@ def render_cuenta_corriente_cliente(cliente):
     mapa = {}
 
     for _, row in pendientes.iterrows():
-        etiqueta = f"{row.get('id', '')} · {row.get('mes', '')} · {row.get('concepto', '')} · {formato_pesos(row.get('importe', 0))}"
+        servicio_txt = str(row.get("servicio", "") or "General")
+        etiqueta = f"{row.get('id', '')} · {row.get('mes', '')} · {servicio_txt} · {row.get('concepto', '')} · {formato_pesos(row.get('importe', 0))}"
         opciones.append(etiqueta)
         mapa[etiqueta] = row.get("id", "")
 
