@@ -3830,604 +3830,520 @@ def render_resumen_cuenta_corriente_inicio(cliente):
 def render_inicio_cliente_ejecutivo(cliente):
     header("Inicio", f"Panel ejecutivo | {cliente}")
 
+    # ------------------------------------------------------------
+    # Cuenta corriente: solo cliente/admin, no equipo.
+    # ------------------------------------------------------------
     render_resumen_cuenta_corriente_inicio(cliente)
-
 
     servicios = servicios_activos_cliente(cliente)
 
-    # --------------------------------------------------------
-    # Servicios activos
-    # --------------------------------------------------------
-    servicios_texto = []
+    # ------------------------------------------------------------
+    # Servicios activos.
+    # ------------------------------------------------------------
+    servicios_visibles = []
 
     if servicios.get("digital"):
-        servicios_texto.append("Ecosistema digital")
+        servicios_visibles.append("Ecosistema digital")
 
     if servicios.get("consultoria"):
-        servicios_texto.append("Consultoría")
+        servicios_visibles.append("Consultoría")
 
     if servicios.get("contabilidad"):
-        servicios_texto.append("Contabilidad / gestión")
+        servicios_visibles.append("Contabilidad / gestión")
 
-    st.markdown("### Servicios activos")
+    if servicios_visibles:
+        st.markdown("### Servicios activos")
+        cols_servicios = st.columns(len(servicios_visibles))
 
-    if servicios_texto:
-        cols = st.columns(len(servicios_texto))
+        for idx, servicio in enumerate(servicios_visibles):
+            with cols_servicios[idx]:
+                with st.container(border=True):
+                    st.caption("Servicio contratado")
+                    st.markdown(f"**{servicio}**")
 
-        for i, servicio in enumerate(servicios_texto):
-            with cols[i]:
-                st.markdown(
-                    f"""
-                    <div style="
-                        background:white;
-                        border:1px solid #E5E7EB;
-                        border-radius:18px;
-                        padding:18px;
-                        box-shadow:0 8px 20px rgba(16,24,40,0.04);
-                        min-height:92px;
-                    ">
-                        <div style="font-size:0.78rem; color:#667085; font-weight:700;">
-                            Servicio contratado
-                        </div>
-                        <div style="font-size:1.05rem; color:#172033; font-weight:900; margin-top:8px;">
-                            {servicio}
-                        </div>
-                    </div>
-                    """,
-                    unsafe_allow_html=True,
+    # ------------------------------------------------------------
+    # Carga de datos del cliente.
+    # ------------------------------------------------------------
+    columnas_objetivos = [
+        "id",
+        "cliente",
+        "mes",
+        "objetivo",
+        "descripcion",
+        "responsable",
+        "prioridad",
+        "estado",
+        "avance",
+        "fecha_limite",
+        "comentarios",
+        "fecha_carga",
+        "creado_por",
+        "fecha_actualizacion",
+        "actualizado_por",
+    ]
+
+    columnas_contenidos = [
+        "id",
+        "cliente",
+        "mes",
+        "tipo",
+        "titulo",
+        "copy",
+        "fecha",
+        "estado",
+        "observaciones",
+    ]
+
+    columnas_materiales = [
+        "id",
+        "cliente",
+        "titulo",
+        "descripcion",
+        "link",
+        "estado",
+        "fecha_carga",
+        "observaciones",
+    ]
+
+    objetivos = read_csv_cliente(OBJETIVOS_PATH, columnas_objetivos, cliente)
+    contenidos = read_csv_cliente(CONTENIDOS_PATH, columnas_contenidos, cliente)
+    materiales = read_csv_cliente(MATERIALES_PATH, columnas_materiales, cliente)
+
+    if objetivos is None or objetivos.empty:
+        objetivos = pd.DataFrame(columns=columnas_objetivos)
+    else:
+        objetivos = objetivos.copy().fillna("")
+
+    if contenidos is None or contenidos.empty:
+        contenidos = pd.DataFrame(columns=columnas_contenidos)
+    else:
+        contenidos = contenidos.copy().fillna("")
+
+    if materiales is None or materiales.empty:
+        materiales = pd.DataFrame(columns=columnas_materiales)
+    else:
+        materiales = materiales.copy().fillna("")
+
+    for col in columnas_objetivos:
+        if col not in objetivos.columns:
+            objetivos[col] = ""
+
+    for col in columnas_contenidos:
+        if col not in contenidos.columns:
+            contenidos[col] = ""
+
+    for col in columnas_materiales:
+        if col not in materiales.columns:
+            materiales[col] = ""
+
+    objetivos = objetivos[columnas_objetivos].fillna("")
+    contenidos = contenidos[columnas_contenidos].fillna("")
+    materiales = materiales[columnas_materiales].fillna("")
+
+    objetivos["avance"] = pd.to_numeric(objetivos["avance"], errors="coerce").fillna(0)
+    objetivos["estado"] = objetivos["estado"].astype(str).replace("", "Pendiente")
+
+    objetivos_activos = objetivos[
+        ~objetivos["estado"].astype(str).isin(["Finalizado", "Finalizada"])
+    ].copy()
+
+    avance_promedio = 0
+    if not objetivos.empty:
+        avance_promedio = int(objetivos["avance"].mean())
+
+    aprobaciones_pendientes = 0
+    if not contenidos.empty and "estado" in contenidos.columns:
+        aprobaciones_pendientes = len(
+            contenidos[
+                contenidos["estado"].astype(str).str.lower().isin(
+                    ["pendiente", "pendiente de aprobación", "en revisión", "a aprobar"]
                 )
-    else:
-        st.info("Todavía no hay servicios activos configurados para este cliente.")
-
-    # --------------------------------------------------------
-    # Cargar fuentes
-    # --------------------------------------------------------
-    objetivos = cargar_objetivos(cliente) if "cargar_objetivos" in globals() else pd.DataFrame()
-    movimientos = read_csv_cliente(
-        INDICADORES_MOVIMIENTOS_PATH,
-        ["id", "cliente", "mes", "tipo", "categoria", "importe", "observacion", "fecha_carga", "cargado_por"],
-        cliente,
-    ) if "INDICADORES_MOVIMIENTOS_PATH" in globals() else pd.DataFrame()
-
-    contenidos = load_contenidos(cliente)
-
-    materiales = load_materiales(cliente)
-
-    # --------------------------------------------------------
-    # Objetivos
-    # --------------------------------------------------------
-    obj_cliente = objetivos.copy()
-    if obj_cliente is not None and not obj_cliente.empty and "cliente" in obj_cliente.columns:
-        obj_cliente = obj_cliente[obj_cliente["cliente"].astype(str) == str(cliente)]
-    else:
-        obj_cliente = pd.DataFrame()
-
-    if not obj_cliente.empty:
-        obj_en_curso = obj_cliente[obj_cliente["estado"].astype(str).isin(["Pendiente", "En curso", "En revisión"])] if "estado" in obj_cliente.columns else obj_cliente
-        obj_finalizados = obj_cliente[obj_cliente["estado"].astype(str) == "Finalizado"] if "estado" in obj_cliente.columns else pd.DataFrame()
-        avance_promedio = pd.to_numeric(obj_cliente.get("avance", 0), errors="coerce").fillna(0).mean() if "avance" in obj_cliente.columns else 0
-    else:
-        obj_en_curso = pd.DataFrame()
-        obj_finalizados = pd.DataFrame()
-        avance_promedio = 0
-
-    # --------------------------------------------------------
-    # Indicadores
-    # --------------------------------------------------------
-    mov_cliente = movimientos.copy()
-    if mov_cliente is not None and not mov_cliente.empty and "cliente" in mov_cliente.columns:
-        mov_cliente = mov_cliente[mov_cliente["cliente"].astype(str) == str(cliente)]
-    else:
-        mov_cliente = pd.DataFrame()
-
-    ingresos_total = 0
-    gastos_total = 0
-    resultado_total = 0
-    ultimo_mes = ""
-
-    if not mov_cliente.empty:
-        mov_cliente["importe"] = pd.to_numeric(mov_cliente["importe"], errors="coerce").fillna(0)
-        mov_cliente["mes"] = mov_cliente["mes"].astype(str)
-
-        ultimo_mes = sorted(mov_cliente["mes"].dropna().astype(str).unique().tolist())[-1]
-        mov_ultimo = mov_cliente[mov_cliente["mes"] == ultimo_mes]
-
-        ingresos_total = mov_ultimo.loc[mov_ultimo["tipo"] == "Ingreso", "importe"].sum()
-        gastos_total = mov_ultimo.loc[mov_ultimo["tipo"] == "Gasto", "importe"].sum()
-        resultado_total = ingresos_total - gastos_total
-
-    # --------------------------------------------------------
-    # Contenidos y materiales
-    # --------------------------------------------------------
-    cont_cliente = contenidos.copy()
-    if cont_cliente is not None and not cont_cliente.empty and "cliente" in cont_cliente.columns:
-        cont_cliente = cont_cliente[cont_cliente["cliente"].astype(str) == str(cliente)]
-    else:
-        cont_cliente = pd.DataFrame()
-
-    mat_cliente = materiales.copy()
-    if mat_cliente is not None and not mat_cliente.empty and "cliente" in mat_cliente.columns:
-        mat_cliente = mat_cliente[mat_cliente["cliente"].astype(str) == str(cliente)]
-    else:
-        mat_cliente = pd.DataFrame()
-
-    pendientes_aprobacion = 0
-    if not cont_cliente.empty and "estado" in cont_cliente.columns:
-        pendientes_aprobacion = cont_cliente["estado"].astype(str).str.contains("Pendiente|Correcciones|En diseño", case=False, na=False).sum()
+            ]
+        )
 
     materiales_pendientes = 0
-    if not mat_cliente.empty and "estado" in mat_cliente.columns:
-        materiales_pendientes = mat_cliente["estado"].astype(str).str.contains("Solicitado|Pendiente", case=False, na=False).sum()
+    if not materiales.empty and "estado" in materiales.columns:
+        materiales_pendientes = len(
+            materiales[
+                materiales["estado"].astype(str).str.lower().isin(
+                    ["pendiente", "solicitado", "faltante", "a enviar"]
+                )
+            ]
+        )
 
-    # --------------------------------------------------------
-    # KPIs resumen
-    # --------------------------------------------------------
+    # ------------------------------------------------------------
+    # Resumen operativo.
+    # ------------------------------------------------------------
     st.markdown("### Resumen operativo")
 
     k1, k2, k3, k4 = st.columns(4)
 
-    k1.metric("Objetivos activos", len(obj_en_curso))
-    k2.metric("Avance promedio", f"{avance_promedio:.0f}%")
+    with k1:
+        with st.container(border=True):
+            st.caption("Objetivos activos")
+            st.markdown(f"## {len(objetivos_activos)}")
 
-    if servicios.get("digital"):
-        k3.metric("Aprobaciones pendientes", int(pendientes_aprobacion))
-        k4.metric("Materiales pendientes", int(materiales_pendientes))
-    elif servicios.get("contabilidad"):
-        k3.metric("Último mes", ultimo_mes or "-")
-        k4.metric("Resultado", f"$ {resultado_total:,.0f}".replace(",", "."))
-    else:
-        k3.metric("Objetivos finalizados", len(obj_finalizados))
-        k4.metric("Próximas acciones", len(obj_en_curso))
+    with k2:
+        with st.container(border=True):
+            st.caption("Avance promedio")
+            st.markdown(f"## {avance_promedio}%")
 
-    # --------------------------------------------------------
-    # Bloques principales
-    # --------------------------------------------------------
-    col_a, col_b = st.columns(2)
+    with k3:
+        with st.container(border=True):
+            st.caption("Aprobaciones pendientes")
+            st.markdown(f"## {aprobaciones_pendientes}")
 
-    with col_a:
+    with k4:
+        with st.container(border=True):
+            st.caption("Materiales pendientes")
+            st.markdown(f"## {materiales_pendientes}")
+
+    # ------------------------------------------------------------
+    # Próximas acciones + pendientes digitales.
+    # ------------------------------------------------------------
+    col_acciones, col_digital = st.columns([1.2, 1])
+
+    with col_acciones:
         st.markdown("### Próximas acciones")
 
-        if obj_en_curso.empty:
+        if objetivos_activos.empty:
             st.info("No hay próximas acciones cargadas.")
         else:
-            acciones = obj_en_curso.copy()
+            proximos = objetivos_activos.copy()
 
-            if "fecha_limite" in acciones.columns:
-                acciones = acciones.sort_values("fecha_limite", ascending=True)
+            if "fecha_limite" in proximos.columns:
+                proximos = proximos.sort_values("fecha_limite", ascending=True)
 
-            acciones = acciones.head(5)
+            proximos = proximos.head(3)
 
-            for _, row in acciones.iterrows():
-                st.markdown(
-                    f"""
-                    <div style="
-                        background:white;
-                        border:1px solid #E5E7EB;
-                        border-radius:16px;
-                        padding:14px 16px;
-                        margin-bottom:10px;
-                        box-shadow:0 6px 16px rgba(16,24,40,0.04);
-                    ">
-                        <div style="font-weight:850; color:#172033; margin-bottom:5px;">
-                            {row.get('objetivo', '')}
-                        </div>
-                        <div style="font-size:0.86rem; color:#667085; margin-bottom:6px;">
-                            {row.get('proxima_accion', '')}
-                        </div>
-                        <div style="font-size:0.78rem; color:#244777;">
-                            Estado: {row.get('estado', '')} · Límite: {row.get('fecha_limite', '')}
-                        </div>
-                    </div>
-                    """,
-                    unsafe_allow_html=True,
-                )
+            for _, row in proximos.iterrows():
+                objetivo_txt = str(row.get("objetivo", "") or "Sin objetivo")
+                descripcion_txt = str(row.get("descripcion", "") or "")
+                estado_txt = str(row.get("estado", "") or "Pendiente")
+                prioridad_txt = str(row.get("prioridad", "") or "Media")
+                fecha_limite_txt = str(row.get("fecha_limite", "") or "")
+                avance_val = int(float(row.get("avance", 0) or 0))
 
-    with col_b:
-        if servicios.get("contabilidad") and not mov_cliente.empty:
-            st.markdown("### Último Cash Flow")
+                with st.container(border=True):
+                    st.markdown(f"**{objetivo_txt}**")
 
-            i1, i2, i3 = st.columns(3)
-            i1.metric("Ingresos", f"$ {ingresos_total:,.0f}".replace(",", "."))
-            i2.metric("Gastos", f"$ {gastos_total:,.0f}".replace(",", "."))
-            i3.metric("Resultado", f"$ {resultado_total:,.0f}".replace(",", "."))
+                    if descripcion_txt:
+                        st.write(descripcion_txt)
 
-            st.caption(f"Último mes cargado: {ultimo_mes}")
+                    st.caption(f"Estado: {estado_txt} · Prioridad: {prioridad_txt} · Límite: {fecha_limite_txt}")
+                    st.progress(avance_val / 100)
+                    st.caption(f"Avance: {avance_val}%")
 
-        elif servicios.get("digital"):
-            st.markdown("### Pendientes digitales")
+    with col_digital:
+        st.markdown("### Pendientes digitales")
 
-            if pendientes_aprobacion == 0 and materiales_pendientes == 0:
-                st.success("No hay pendientes digitales críticos.")
-            else:
-                st.warning(
-                    f"Hay {pendientes_aprobacion} contenido(s) pendiente(s) y "
-                    f"{materiales_pendientes} solicitud(es) de material pendiente(s)."
-                )
+        pendientes = []
 
-            if not cont_cliente.empty:
-                recientes = cont_cliente.tail(5)
-                st.markdown("#### Últimos contenidos")
-                st.dataframe(
-                    recientes[[c for c in ["fecha", "canal", "formato", "tema", "estado"] if c in recientes.columns]],
-                    use_container_width=True,
-                    hide_index=True,
-                )
+        if aprobaciones_pendientes > 0:
+            pendientes.append(f"{aprobaciones_pendientes} aprobación(es) pendiente(s).")
 
+        if materiales_pendientes > 0:
+            pendientes.append(f"{materiales_pendientes} material(es) pendiente(s).")
+
+        if pendientes:
+            for item in pendientes:
+                st.warning(item)
         else:
-            st.markdown("### Estado general")
-            st.info("Usá Objetivos para crear, actualizar y seguir el plan de trabajo.")
+            st.success("No hay pendientes digitales críticos.")
+
+
 
 def render_objetivos(cliente="", modo="cliente"):
-    objetivos = cargar_objetivos(cliente) if modo == "cliente" and cliente else cargar_objetivos()
+    role = st.session_state.get("role", "")
+    username = st.session_state.get("username", "")
+    nombre_usuario = st.session_state.get("name", username)
 
-    def next_prefixed_id(df, prefix):
-        if df is None or df.empty or "id" not in df.columns:
-            return f"{prefix}-001"
-
-        nums = []
-        for value in df["id"].dropna().astype(str).tolist():
-            value = value.strip()
-            if value.upper().startswith(prefix.upper() + "-"):
-                try:
-                    nums.append(int(value.split("-")[-1]))
-                except Exception:
-                    pass
-
-        siguiente = max(nums) + 1 if nums else 1
-        return f"{prefix}-{siguiente:03d}"
-
-    estados_orden = ["Pendiente", "En curso", "En revisión", "Finalizado", "Pausado"]
-
-    if modo == "cliente":
-        header("Objetivos", f"Creación y seguimiento de objetivos | {cliente}")
-        cliente_fijo = cliente
+    if modo == "admin":
+        header("Objetivos", "Plan de trabajo y seguimiento por cliente.")
     else:
-        header("Objetivos", "Creación y seguimiento de objetivos por cliente")
-        cliente_fijo = ""
+        header("Objetivos", f"Plan de trabajo | {cliente}")
 
-    clientes_lista = clientes_visibles_para_usuario()
+    columnas = [
+        "id",
+        "cliente",
+        "mes",
+        "objetivo",
+        "descripcion",
+        "responsable",
+        "prioridad",
+        "estado",
+        "avance",
+        "fecha_limite",
+        "comentarios",
+        "fecha_carga",
+        "creado_por",
+        "fecha_actualizacion",
+        "actualizado_por",
+    ]
 
-    # --------------------------------------------------------
-    # Alta de objetivo: admin y cliente
-    # --------------------------------------------------------
-    st.markdown("### Crear objetivo")
-
-    if modo != "cliente" and not clientes_lista:
-        st.warning("Primero cargá clientes en el menú Clientes.")
+    if cliente:
+        objetivos = read_csv_cliente(OBJETIVOS_PATH, columnas, cliente)
     else:
-        with st.form(f"form_nuevo_objetivo_{modo}_{cliente_fijo}"):
-            c1, c2, c3 = st.columns(3)
+        objetivos = read_csv(OBJETIVOS_PATH, columnas)
 
-            with c1:
-                if modo == "cliente":
-                    cliente_obj = cliente_fijo
-                    st.text_input("Cliente", value=cliente_obj, disabled=True)
-                else:
-                    cliente_obj = st.selectbox("Cliente", clientes_lista)
-
-                fecha_mes_objetivo = st.date_input("Mes y año", value=date.today(), key=f"fecha_mes_objetivo_{modo}_{cliente_fijo}")
-                mes = fecha_mes_objetivo.strftime("%Y-%m")
-
-            with c2:
-                responsable_am = st.text_input("Responsable AM", value="AM Consultora")
-                responsable_cliente = st.text_input("Responsable cliente")
-                prioridad = st.selectbox("Prioridad", ["Alta", "Media", "Baja"])
-
-            with c3:
-                estado = st.selectbox("Estado", estados_orden, index=1)
-                avance = st.slider("Avance", min_value=0, max_value=100, value=0, step=5)
-                fecha_limite = st.date_input("Fecha límite")
-
-            objetivo = st.text_input("Objetivo")
-            descripcion = st.text_area("Descripción / alcance")
-            proxima_accion = st.text_input("Próxima acción")
-            comentarios = st.text_area("Comentarios")
-
-            guardar = st.form_submit_button("Guardar objetivo", use_container_width=True)
-
-            if guardar:
-                if not cliente_obj:
-                    st.error("No se pudo identificar el cliente.")
-                elif not objetivo.strip():
-                    st.error("El objetivo es obligatorio.")
-                else:
-                    objetivos_guardado = cargar_objetivos()
-
-                    nuevo = {
-                        "id": next_prefixed_id(objetivos_guardado, "OBJ"),
-                        "cliente": cliente_obj,
-                        "mes": mes,
-                        "objetivo": objetivo.strip(),
-                        "descripcion": descripcion,
-                        "responsable_am": responsable_am,
-                        "responsable_cliente": responsable_cliente,
-                        "prioridad": prioridad,
-                        "estado": estado,
-                        "avance": avance,
-                        "proxima_accion": proxima_accion,
-                        "fecha_limite": fecha_limite.strftime("%Y-%m-%d"),
-                        "comentarios": comentarios,
-                    }
-
-                    objetivos_actualizado = pd.concat([objetivos_guardado, pd.DataFrame([nuevo])], ignore_index=True)
-                    save_csv(objetivos_actualizado, OBJETIVOS_PATH)
-                    st.success("Objetivo creado correctamente.")
-                    st.rerun()
-
-    # --------------------------------------------------------
-    # Vista filtrada
-    # --------------------------------------------------------
     if objetivos is None or objetivos.empty:
-        st.info("Todavía no hay objetivos cargados.")
-        return
+        objetivos = pd.DataFrame(columns=columnas)
 
-    vista = objetivos.copy()
+    objetivos = objetivos.copy().fillna("")
 
-    if modo == "cliente":
-        vista = vista[vista["cliente"].astype(str) == str(cliente)]
-    else:
-        clientes_permitidos = clientes_visibles_para_usuario()
+    for col in columnas:
+        if col not in objetivos.columns:
+            objetivos[col] = ""
 
-        if st.session_state.get("role") == "equipo":
-            vista = vista[vista["cliente"].astype(str).isin(clientes_permitidos)]
+    objetivos = objetivos[columnas].fillna("")
 
-        clientes_disponibles = ["Todos"] + sorted(vista["cliente"].dropna().astype(str).unique().tolist()) if "cliente" in vista.columns else ["Todos"]
-        filtro_cliente = st.selectbox("Filtrar cliente", clientes_disponibles, key="objetivos_filtro_cliente_admin")
+    objetivos["cliente"] = objetivos["cliente"].astype(str).str.strip()
+    objetivos["objetivo"] = objetivos["objetivo"].astype(str).str.strip()
+    objetivos["estado"] = objetivos["estado"].astype(str).str.strip().replace("", "Pendiente")
+    objetivos["prioridad"] = objetivos["prioridad"].astype(str).str.strip().replace("", "Media")
+    objetivos["responsable"] = objetivos["responsable"].astype(str).str.strip().replace("", "AM Consultora")
+    objetivos["avance"] = pd.to_numeric(objetivos["avance"], errors="coerce").fillna(0).clip(0, 100)
 
-        if filtro_cliente != "Todos":
-            vista = vista[vista["cliente"].astype(str) == filtro_cliente]
+    estados = ["Pendiente", "En curso", "En revisión", "Finalizado", "Pausado"]
+    prioridades = ["Alta", "Media", "Baja"]
 
-    if vista.empty:
-        st.info("No hay objetivos para este filtro.")
-        return
+    # ------------------------------------------------------------
+    # Alta de objetivo: solo admin.
+    # ------------------------------------------------------------
+    if modo == "admin":
+        clientes_df = load_clientes()
 
-    for col in ["estado", "prioridad", "avance"]:
-        if col not in vista.columns:
-            vista[col] = ""
-
-    # --------------------------------------------------------
-    # Filtros de objetivos
-    # --------------------------------------------------------
-    st.markdown("### Filtros")
-
-    filtro_cols = st.columns(4)
-
-    with filtro_cols[0]:
-        meses_disponibles = []
-        if "mes" in vista.columns:
-            meses_disponibles = sorted(vista["mes"].dropna().astype(str).unique().tolist())
-
-        if meses_disponibles:
-            mes_desde = st.selectbox(
-                "Mes desde",
-                meses_disponibles,
-                index=0,
-                key=f"objetivos_mes_desde_{modo}_{cliente_fijo}",
-            )
+        if clientes_df is None or clientes_df.empty or "cliente" not in clientes_df.columns:
+            clientes_opciones = []
         else:
-            mes_desde = ""
+            clientes_opciones = sorted(clientes_df["cliente"].dropna().astype(str).unique().tolist())
 
-    with filtro_cols[1]:
-        if meses_disponibles:
-            mes_hasta = st.selectbox(
-                "Mes hasta",
-                meses_disponibles,
-                index=len(meses_disponibles) - 1,
-                key=f"objetivos_mes_hasta_{modo}_{cliente_fijo}",
+        with st.expander("Crear nuevo objetivo", expanded=False):
+            if not clientes_opciones:
+                st.info("No hay clientes cargados.")
+            else:
+                with st.form("form_nuevo_objetivo"):
+                    c1, c2 = st.columns([2, 1])
+
+                    with c1:
+                        cliente_sel = st.selectbox("Cliente", clientes_opciones)
+                        objetivo_txt = st.text_input("Objetivo", placeholder="Ejemplo: análisis de régimen PADIC")
+                        descripcion = st.text_area("Descripción", placeholder="Detalle del objetivo, alcance o entregable esperado.")
+
+                    with c2:
+                        mes_ref = st.text_input("Mes", value=date.today().strftime("%Y-%m"))
+                        responsable = st.text_input("Responsable", value="AM Consultora")
+                        prioridad = st.selectbox("Prioridad", prioridades, index=1)
+                        estado = st.selectbox("Estado inicial", estados)
+                        avance = st.slider("Avance", 0, 100, 0)
+                        fecha_limite = st.date_input("Fecha límite", value=date.today())
+
+                    crear = st.form_submit_button("Crear objetivo", use_container_width=True)
+
+                    if crear:
+                        if not objetivo_txt.strip():
+                            st.error("El objetivo no puede estar vacío.")
+                        else:
+                            nuevo = {
+                                "id": f"OBJ-{pd.Timestamp.now().strftime('%Y%m%d%H%M%S')}",
+                                "cliente": cliente_sel,
+                                "mes": mes_ref.strip(),
+                                "objetivo": objetivo_txt.strip(),
+                                "descripcion": descripcion.strip(),
+                                "responsable": responsable.strip() or "AM Consultora",
+                                "prioridad": prioridad,
+                                "estado": estado,
+                                "avance": avance,
+                                "fecha_limite": fecha_limite.strftime("%Y-%m-%d"),
+                                "comentarios": "",
+                                "fecha_carga": date.today().strftime("%Y-%m-%d"),
+                                "creado_por": nombre_usuario,
+                                "fecha_actualizacion": date.today().strftime("%Y-%m-%d"),
+                                "actualizado_por": nombre_usuario,
+                            }
+
+                            objetivos_full = read_csv(OBJETIVOS_PATH, columnas)
+                            if objetivos_full is None or objetivos_full.empty:
+                                objetivos_full = pd.DataFrame(columns=columnas)
+
+                            for col in columnas:
+                                if col not in objetivos_full.columns:
+                                    objetivos_full[col] = ""
+
+                            actualizado = pd.concat(
+                                [objetivos_full[columnas], pd.DataFrame([nuevo])],
+                                ignore_index=True,
+                            )
+                            save_csv(actualizado, OBJETIVOS_PATH)
+                            st.success("Objetivo creado correctamente.")
+                            st.rerun()
+
+    # ------------------------------------------------------------
+    # Filtros.
+    # ------------------------------------------------------------
+    objetivos_vista = objetivos.copy()
+
+    if cliente:
+        objetivos_vista = objetivos_vista[
+            objetivos_vista["cliente"].astype(str) == str(cliente)
+        ].copy()
+
+    f1, f2, f3 = st.columns([1.4, 1.2, 1])
+
+    with f1:
+        if modo == "admin":
+            clientes_lista = sorted(objetivos_vista["cliente"].dropna().astype(str).unique().tolist())
+            cliente_filtro = st.selectbox(
+                "Cliente",
+                ["Todos"] + clientes_lista,
+                key=f"objetivos_cliente_filtro_{modo}_{cliente or 'admin'}",
             )
+
+            if cliente_filtro != "Todos":
+                objetivos_vista = objetivos_vista[
+                    objetivos_vista["cliente"].astype(str) == cliente_filtro
+                ].copy()
         else:
-            mes_hasta = ""
+            st.caption(f"Cliente: {cliente}")
 
-    with filtro_cols[2]:
-        estados_disponibles = ["Todos"]
-        if "estado" in vista.columns:
-            estados_disponibles += sorted(vista["estado"].dropna().astype(str).unique().tolist())
-
-        filtro_estado = st.selectbox(
+    with f2:
+        estado_filtro = st.selectbox(
             "Estado",
-            estados_disponibles,
-            key=f"objetivos_filtro_estado_{modo}_{cliente_fijo}",
+            ["Todos"] + estados,
+            key=f"objetivos_estado_filtro_{modo}_{cliente or 'admin'}",
         )
 
-    with filtro_cols[3]:
-        prioridades_disponibles = ["Todas"]
-        if "prioridad" in vista.columns:
-            prioridades_disponibles += sorted(vista["prioridad"].dropna().astype(str).unique().tolist())
-
-        filtro_prioridad = st.selectbox(
+    with f3:
+        prioridad_filtro = st.selectbox(
             "Prioridad",
-            prioridades_disponibles,
-            key=f"objetivos_filtro_prioridad_{modo}_{cliente_fijo}",
+            ["Todas"] + prioridades,
+            key=f"objetivos_prioridad_filtro_{modo}_{cliente or 'admin'}",
         )
 
-    if mes_desde and mes_hasta and "mes" in vista.columns:
-        desde = min(mes_desde, mes_hasta)
-        hasta = max(mes_desde, mes_hasta)
-        vista = vista[
-            (vista["mes"].astype(str) >= desde)
-            & (vista["mes"].astype(str) <= hasta)
-        ]
+    if estado_filtro != "Todos":
+        objetivos_vista = objetivos_vista[
+            objetivos_vista["estado"].astype(str) == estado_filtro
+        ].copy()
 
-    if filtro_estado != "Todos" and "estado" in vista.columns:
-        vista = vista[vista["estado"].astype(str) == filtro_estado]
+    if prioridad_filtro != "Todas":
+        objetivos_vista = objetivos_vista[
+            objetivos_vista["prioridad"].astype(str) == prioridad_filtro
+        ].copy()
 
-    if filtro_prioridad != "Todas" and "prioridad" in vista.columns:
-        vista = vista[vista["prioridad"].astype(str) == filtro_prioridad]
+    k1, k2, k3, k4 = st.columns(4)
+    k1.metric("Objetivos visibles", len(objetivos_vista))
+    k2.metric("Pendientes", len(objetivos_vista[objetivos_vista["estado"] == "Pendiente"]))
+    k3.metric("En curso", len(objetivos_vista[objetivos_vista["estado"] == "En curso"]))
+    k4.metric("Finalizados", len(objetivos_vista[objetivos_vista["estado"] == "Finalizado"]))
 
-    if vista.empty:
-        st.info("No hay objetivos para los filtros seleccionados.")
-        return
-
-    # --------------------------------------------------------
-    # KPIs
-    # --------------------------------------------------------
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Total", len(vista))
-    c2.metric("En curso", vista["estado"].astype(str).str.contains("En curso", case=False, na=False).sum())
-    c3.metric("Finalizados", vista["estado"].astype(str).str.contains("Finalizado", case=False, na=False).sum())
-
-    try:
-        avance_promedio = pd.to_numeric(vista["avance"], errors="coerce").fillna(0).mean()
-    except Exception:
-        avance_promedio = 0
-
-    c4.metric("Avance promedio", f"{avance_promedio:.0f}%")
-
-    # --------------------------------------------------------
-    # Kanban
-    # --------------------------------------------------------
     st.markdown("### Tablero de objetivos")
 
-    cols = st.columns(len(estados_orden))
+    if objetivos_vista.empty:
+        st.info("No hay objetivos cargados para los filtros seleccionados.")
+        return
 
-    for i, estado_col in enumerate(estados_orden):
-        with cols[i]:
-            subset = vista[vista["estado"].astype(str) == estado_col].copy() if "estado" in vista.columns else vista.iloc[0:0].copy()
+    cols = st.columns(len(estados))
 
-            st.markdown(f"#### {estado_col}")
+    puede_editar = modo == "admin" or role in ["admin_general", "admin"]
+
+    for idx, estado in enumerate(estados):
+        subset = objetivos_vista[objetivos_vista["estado"].astype(str) == estado].copy()
+
+        with cols[idx]:
+            st.markdown(f"#### {estado}")
             st.caption(f"{len(subset)} objetivo(s)")
 
             if subset.empty:
-                st.markdown(
-                    """
-                    <div style="
-                        border:1px dashed #CBD5E1;
-                        border-radius:14px;
-                        padding:16px;
-                        color:#667085;
-                        background:#F8FAFC;
-                        text-align:center;
-                        margin-bottom:12px;
-                    ">
-                        Sin tarjetas
-                    </div>
-                    """,
-                    unsafe_allow_html=True,
-                )
-            else:
-                if len(subset) > 8:
-                    st.caption("Mostrando 8 objetivos. Usá los filtros o el detalle para ver más.")
-                    subset_render = subset.head(8)
-                else:
-                    subset_render = subset
+                st.caption("Sin tarjetas.")
+                continue
 
-                for _, row in subset_render.iterrows():
-                    avance = row.get("avance", 0)
-                    try:
-                        avance_int = int(float(avance))
-                    except Exception:
-                        avance_int = 0
+            for _, row in subset.iterrows():
+                objetivo_id = str(row.get("id", ""))
+                cliente_txt = str(row.get("cliente", ""))
+                objetivo_txt = str(row.get("objetivo", "Sin objetivo"))
+                descripcion_txt = str(row.get("descripcion", ""))
+                responsable_txt = str(row.get("responsable", "AM Consultora"))
+                prioridad_txt = str(row.get("prioridad", "Media"))
+                avance_val = int(float(row.get("avance", 0) or 0))
+                fecha_limite_txt = str(row.get("fecha_limite", ""))
+                comentarios_txt = str(row.get("comentarios", ""))
 
-                    st.markdown(
-                        f"""
-                        <div style="
-                            background:white;
-                            border:1px solid #E5E7EB;
-                            border-radius:16px;
-                            padding:14px 15px;
-                            margin-bottom:12px;
-                            box-shadow:0 6px 16px rgba(16,24,40,0.05);
-                        ">
-                            <div style="font-size:0.78rem; color:#244777; font-weight:800; margin-bottom:4px;">
-                                {row.get('cliente', '')}
-                            </div>
-                            <div style="font-weight:850; color:#172033; margin-bottom:6px;">
-                                {row.get('objetivo', '')}
-                            </div>
-                            <div style="font-size:0.84rem; color:#667085; margin-bottom:8px;">
-                                {row.get('proxima_accion', '')}
-                            </div>
-                            <div style="font-size:0.8rem; color:#0788A6;">
-                                {row.get('prioridad', '')} · {avance_int}%
-                            </div>
-                        </div>
-                        """,
-                        unsafe_allow_html=True,
-                    )
+                with st.container(border=True):
+                    if modo == "admin":
+                        st.caption(cliente_txt)
 
-    # --------------------------------------------------------
-    # Actualización rápida
-    # --------------------------------------------------------
-    st.markdown("### Actualizar objetivo")
+                    st.markdown(f"**{objetivo_txt}**")
 
-    opciones_objetivos = []
-    mapa_objetivos = {}
+                    if descripcion_txt:
+                        st.write(descripcion_txt)
 
-    for _, row in vista.iterrows():
-        etiqueta = f"{row.get('id', '')} · {row.get('objetivo', '')}"
-        opciones_objetivos.append(etiqueta)
-        mapa_objetivos[etiqueta] = row.get("id", "")
+                    st.caption(f"Responsable: {responsable_txt}")
+                    st.caption(f"Prioridad: {prioridad_txt} · Límite: {fecha_limite_txt}")
+                    st.progress(avance_val / 100)
+                    st.caption(f"Avance: {avance_val}%")
 
-    if opciones_objetivos:
-        with st.form(f"form_actualizar_objetivo_{modo}_{cliente_fijo}"):
-            objetivo_sel = st.selectbox("Objetivo", opciones_objetivos)
+                    if comentarios_txt:
+                        with st.expander("Historial"):
+                            st.write(comentarios_txt)
 
-            a1, a2, a3 = st.columns(3)
+                    if puede_editar:
+                        with st.expander("Actualizar objetivo"):
+                            nuevo_estado = st.selectbox(
+                                "Estado",
+                                estados,
+                                index=estados.index(estado) if estado in estados else 0,
+                                key=f"estado_objetivo_{objetivo_id}",
+                            )
 
-            with a1:
-                nuevo_estado = st.selectbox("Nuevo estado", estados_orden)
+                            nuevo_avance = st.slider(
+                                "Avance",
+                                0,
+                                100,
+                                avance_val,
+                                key=f"avance_objetivo_{objetivo_id}",
+                            )
 
-            with a2:
-                nuevo_avance = st.slider("Nuevo avance", min_value=0, max_value=100, value=0, step=5, key=f"avance_update_{modo}_{cliente_fijo}")
+                            nuevo_comentario = st.text_area(
+                                "Comentario / actualización",
+                                value="",
+                                placeholder="Agregar una actualización breve...",
+                                key=f"comentario_objetivo_{objetivo_id}",
+                                height=90,
+                            )
 
-            with a3:
-                nueva_prioridad = st.selectbox("Prioridad", ["Alta", "Media", "Baja"])
+                            if st.button(
+                                "Guardar actualización",
+                                key=f"guardar_objetivo_{objetivo_id}",
+                                use_container_width=True,
+                            ):
+                                objetivos_full = read_csv(OBJETIVOS_PATH, columnas)
+                                if objetivos_full is None or objetivos_full.empty:
+                                    objetivos_full = pd.DataFrame(columns=columnas)
 
-            nueva_accion = st.text_input("Próxima acción actualizada")
-            nuevo_comentario = st.text_area("Comentario / actualización")
+                                for col in columnas:
+                                    if col not in objetivos_full.columns:
+                                        objetivos_full[col] = ""
 
-            actualizar = st.form_submit_button("Actualizar objetivo", use_container_width=True)
+                                objetivos_full = objetivos_full[columnas].fillna("")
+                                mask = objetivos_full["id"].astype(str) == objetivo_id
 
-            if actualizar:
-                obj_id = mapa_objetivos.get(objetivo_sel)
+                                if not mask.any():
+                                    st.error("No se encontró el objetivo.")
+                                else:
+                                    objetivos_full.loc[mask, "estado"] = nuevo_estado
+                                    objetivos_full.loc[mask, "avance"] = nuevo_avance
+                                    objetivos_full.loc[mask, "fecha_actualizacion"] = date.today().strftime("%Y-%m-%d")
+                                    objetivos_full.loc[mask, "actualizado_por"] = nombre_usuario
 
-                if not obj_id:
-                    st.error("No se pudo identificar el objetivo.")
-                else:
-                    objetivos_actualizado = cargar_objetivos()
-                    mask = objetivos_actualizado["id"].astype(str) == str(obj_id)
+                                    if nuevo_comentario.strip():
+                                        anterior = str(objetivos_full.loc[mask, "comentarios"].iloc[0] or "")
+                                        agregado = f"{date.today().strftime('%Y-%m-%d')} - {nombre_usuario}: {nuevo_comentario.strip()}"
+                                        objetivos_full.loc[mask, "comentarios"] = (anterior + "\n" + agregado).strip()
 
-                    objetivos_actualizado.loc[mask, "estado"] = nuevo_estado
-                    objetivos_actualizado.loc[mask, "avance"] = nuevo_avance
-                    objetivos_actualizado.loc[mask, "prioridad"] = nueva_prioridad
+                                    save_csv(objetivos_full, OBJETIVOS_PATH)
+                                    st.success("Objetivo actualizado.")
+                                    st.rerun()
 
-                    if nueva_accion.strip():
-                        objetivos_actualizado.loc[mask, "proxima_accion"] = nueva_accion.strip()
-
-                    if nuevo_comentario.strip():
-                        comentario_anterior = objetivos_actualizado.loc[mask, "comentarios"].astype(str).fillna("")
-                        objetivos_actualizado.loc[mask, "comentarios"] = comentario_anterior + "\n" + date.today().strftime("%Y-%m-%d") + " - " + nuevo_comentario.strip()
-
-                    save_csv(objetivos_actualizado, OBJETIVOS_PATH)
-                    st.success("Objetivo actualizado correctamente.")
-                    st.rerun()
-
-    # --------------------------------------------------------
-    # Detalle
-    # --------------------------------------------------------
-    with st.expander("Detalle en tabla"):
-        columnas = [
-            "cliente", "mes", "objetivo", "descripcion",
-            "responsable_am", "responsable_cliente", "prioridad", "estado",
-            "avance", "proxima_accion", "fecha_limite", "comentarios"
-        ]
-        columnas = [c for c in columnas if c in vista.columns]
-        st.dataframe(vista[columnas], use_container_width=True, hide_index=True)
-
-    if modo != "cliente":
-        with st.expander("Edición avanzada en tabla"):
-            edited = st.data_editor(
-                objetivos,
-                use_container_width=True,
-                hide_index=True,
-                num_rows="dynamic",
-                key="editor_objetivos_admin",
-            )
-
-            if st.button("Guardar edición avanzada de objetivos", use_container_width=True, key="guardar_objetivos_admin"):
-                save_csv(edited, OBJETIVOS_PATH)
-                st.success("Objetivos guardados.")
-                st.rerun()
 
 
 def render_documentos(cliente="", modo="cliente"):
