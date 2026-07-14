@@ -1580,6 +1580,8 @@ def menu_equipo_por_permisos():
 
     opciones += ["Tareas"]
 
+    opciones = [op for op in opciones if op != "Cuenta corriente"]
+
     limpio = []
     for opcion in opciones:
         if opcion not in limpio:
@@ -1604,6 +1606,8 @@ def menu_por_servicios_cliente_para_equipo(cliente_nombre):
         opciones += ["Cash Flow", "Objetivos"]
 
     opciones += ["Tareas"]
+
+    opciones = [op for op in opciones if op != "Cuenta corriente"]
 
     limpio = []
     for opcion in opciones:
@@ -3696,7 +3700,30 @@ def cargar_indicadores():
     )
 
 
+def puede_ver_cuenta_corriente():
+    role = st.session_state.get("role", "")
+    username = st.session_state.get("username", "")
+
+    # El cliente ve únicamente su propia cuenta corriente.
+    if role == "cliente":
+        return True
+
+    # Alan / admin general puede ver y gestionar cuenta corriente.
+    if role == "admin_general":
+        return True
+
+    # Fallback por si Alan quedó logueado con role admin.
+    if username == "alan":
+        return True
+
+    return False
+
+
+
 def render_resumen_cuenta_corriente_inicio(cliente):
+    if not puede_ver_cuenta_corriente():
+        return
+
     columnas = [
         "id",
         "cliente",
@@ -5303,6 +5330,10 @@ def render_cuenta_corriente_admin():
 
 
 def render_cuenta_corriente_cliente(cliente):
+    if not puede_ver_cuenta_corriente():
+        st.warning("No tenés permisos para ver cuenta corriente.")
+        return
+
     header("Cuenta corriente", f"Estado de honorarios y pagos | {cliente}")
 
     columnas = [
