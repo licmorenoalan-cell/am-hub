@@ -3874,6 +3874,7 @@ def render_inicio_cliente_ejecutivo(cliente):
         "prioridad",
         "estado",
         "avance",
+        "checklist",
         "fecha_limite",
         "comentarios",
         "fecha_carga",
@@ -4053,6 +4054,116 @@ def render_inicio_cliente_ejecutivo(cliente):
 
 
 
+def parsear_checklist_objetivo(valor):
+    import json
+
+    if valor is None:
+        return []
+
+    if isinstance(valor, list):
+        return valor
+
+    texto = str(valor).strip()
+
+    if not texto:
+        return []
+
+    try:
+        data = json.loads(texto)
+        if isinstance(data, list):
+            normalizado = []
+            for item in data:
+                if isinstance(item, dict):
+                    normalizado.append({
+                        "texto": str(item.get("texto", "")).strip(),
+                        "hecho": bool(item.get("hecho", False)),
+                    })
+                else:
+                    normalizado.append({
+                        "texto": str(item).strip(),
+                        "hecho": False,
+                    })
+            return [i for i in normalizado if i.get("texto")]
+    except Exception:
+        pass
+
+    items = []
+    for linea in texto.splitlines():
+        linea = linea.strip()
+        if not linea:
+            continue
+
+        hecho = False
+
+        if linea.lower().startswith(("[x]", "x ", "✅", "☑")):
+            hecho = True
+            linea = linea.replace("[x]", "", 1).replace("✅", "", 1).replace("☑", "", 1).strip()
+        elif linea.lower().startswith(("[ ]", "- [ ]", "☐")):
+            linea = linea.replace("[ ]", "", 1).replace("- [ ]", "", 1).replace("☐", "", 1).strip()
+        elif linea.startswith("-"):
+            linea = linea[1:].strip()
+
+        if linea:
+            items.append({"texto": linea, "hecho": hecho})
+
+    return items
+
+
+def serializar_checklist_objetivo(items):
+    import json
+
+    normalizado = []
+
+    for item in items or []:
+        if isinstance(item, dict):
+            texto = str(item.get("texto", "")).strip()
+            hecho = bool(item.get("hecho", False))
+        else:
+            texto = str(item).strip()
+            hecho = False
+
+        if texto:
+            normalizado.append({"texto": texto, "hecho": hecho})
+
+    return json.dumps(normalizado, ensure_ascii=False)
+
+
+def avance_desde_checklist_objetivo(items, avance_manual=0):
+    items = items or []
+
+    if not items:
+        try:
+            return int(float(avance_manual or 0))
+        except Exception:
+            return 0
+
+    total = len(items)
+    hechos = sum(1 for item in items if bool(item.get("hecho", False)))
+
+    if total == 0:
+        return 0
+
+    return int(round((hechos / total) * 100))
+
+
+def checklist_desde_textarea_objetivo(texto):
+    items = []
+
+    for linea in str(texto or "").splitlines():
+        linea = linea.strip()
+        if not linea:
+            continue
+
+        if linea.startswith("-"):
+            linea = linea[1:].strip()
+
+        if linea:
+            items.append({"texto": linea, "hecho": False})
+
+    return items
+
+
+
 def render_objetivos(cliente="", modo="cliente"):
     role = st.session_state.get("role", "")
     username = st.session_state.get("username", "")
@@ -4073,6 +4184,7 @@ def render_objetivos(cliente="", modo="cliente"):
         "prioridad",
         "estado",
         "avance",
+        "checklist",
         "fecha_limite",
         "comentarios",
         "fecha_carga",
@@ -4108,15 +4220,24 @@ def render_objetivos(cliente="", modo="cliente"):
     prioridades = ["Alta", "Media", "Baja"]
 
     # ------------------------------------------------------------
-    # Alta de objetivo: solo admin.
+    # Alta de objetivo: admin general o equipo.
+    # El equipo solo puede crear objetivos para clientes asignados.
     # ------------------------------------------------------------
-    if modo == "admin":
-        clientes_df = load_clientes()
+    puede_crear_objetivos = modo == "admin" or role in ["admin_general", "admin", "equipo"]
 
-        if clientes_df is None or clientes_df.empty or "cliente" not in clientes_df.columns:
-            clientes_opciones = []
+    if puede_crear_objetivos:
+        if role == "equipo":
+            if cliente:
+                clientes_opciones = [cliente]
+            else:
+                clientes_opciones = clientes_visibles_para_usuario()
         else:
-            clientes_opciones = sorted(clientes_df["cliente"].dropna().astype(str).unique().tolist())
+            clientes_df = load_clientes()
+
+            if clientes_df is None or clientes_df.empty or "cliente" not in clientes_df.columns:
+                clientes_opciones = []
+            else:
+                clientes_opciones = sorted(clientes_df["cliente"].dropna().astype(str).unique().tolist())
 
         with st.expander("Crear nuevo objetivo", expanded=False):
             if not clientes_opciones:
@@ -4126,16 +4247,25 @@ def render_objetivos(cliente="", modo="cliente"):
                     c1, c2 = st.columns([2, 1])
 
                     with c1:
-                        cliente_sel = st.selectbox("Cliente", clientes_opciones)
+                        if role == "equipo" and cliente:
+                            cliente_sel = cliente
+                            st.text_input("Cliente", value=cliente_sel, disabled=True)
+                        else:
+                            cliente_sel = st.selectbox("Cliente", clientes_opciones)
+
                         objetivo_txt = st.text_input("Objetivo", placeholder="Ejemplo: análisis de régimen PADIC")
                         descripcion = st.text_area("Descripción", placeholder="Detalle del objetivo, alcance o entregable esperado.")
+                        checklist_txt = st.text_area(
+                            "Checklist / workflow",
+                            placeholder="Un paso por línea. Ejemplo:\nRelevar información inicial\nAnalizar normativa\nPreparar informe\nRevisar con cliente",
+                            height=140,
+                        )
 
                     with c2:
                         mes_ref = st.text_input("Mes", value=date.today().strftime("%Y-%m"))
                         responsable = st.text_input("Responsable", value="AM Consultora")
                         prioridad = st.selectbox("Prioridad", prioridades, index=1)
                         estado = st.selectbox("Estado inicial", estados)
-                        avance = st.slider("Avance", 0, 100, 0)
                         fecha_limite = st.date_input("Fecha límite", value=date.today())
 
                     crear = st.form_submit_button("Crear objetivo", use_container_width=True)
@@ -4144,6 +4274,9 @@ def render_objetivos(cliente="", modo="cliente"):
                         if not objetivo_txt.strip():
                             st.error("El objetivo no puede estar vacío.")
                         else:
+                            checklist_items = checklist_desde_textarea_objetivo(checklist_txt)
+                            avance_auto = avance_desde_checklist_objetivo(checklist_items, 0)
+
                             nuevo = {
                                 "id": f"OBJ-{pd.Timestamp.now().strftime('%Y%m%d%H%M%S')}",
                                 "cliente": cliente_sel,
@@ -4153,7 +4286,8 @@ def render_objetivos(cliente="", modo="cliente"):
                                 "responsable": responsable.strip() or "AM Consultora",
                                 "prioridad": prioridad,
                                 "estado": estado,
-                                "avance": avance,
+                                "avance": avance_auto,
+                                "checklist": serializar_checklist_objetivo(checklist_items),
                                 "fecha_limite": fecha_limite.strftime("%Y-%m-%d"),
                                 "comentarios": "",
                                 "fecha_carga": date.today().strftime("%Y-%m-%d"),
@@ -4244,7 +4378,7 @@ def render_objetivos(cliente="", modo="cliente"):
 
     cols = st.columns(len(estados))
 
-    puede_editar = modo == "admin" or role in ["admin_general", "admin"]
+    puede_editar = modo == "admin" or role in ["admin_general", "admin", "cliente", "equipo"]
 
     for idx, estado in enumerate(estados):
         subset = objetivos_vista[objetivos_vista["estado"].astype(str) == estado].copy()
@@ -4264,9 +4398,11 @@ def render_objetivos(cliente="", modo="cliente"):
                 descripcion_txt = str(row.get("descripcion", ""))
                 responsable_txt = str(row.get("responsable", "AM Consultora"))
                 prioridad_txt = str(row.get("prioridad", "Media"))
-                avance_val = int(float(row.get("avance", 0) or 0))
                 fecha_limite_txt = str(row.get("fecha_limite", ""))
                 comentarios_txt = str(row.get("comentarios", ""))
+
+                checklist_items = parsear_checklist_objetivo(row.get("checklist", ""))
+                avance_val = avance_desde_checklist_objetivo(checklist_items, row.get("avance", 0))
 
                 with st.container(border=True):
                     if modo == "admin":
@@ -4279,8 +4415,39 @@ def render_objetivos(cliente="", modo="cliente"):
 
                     st.caption(f"Responsable: {responsable_txt}")
                     st.caption(f"Prioridad: {prioridad_txt} · Límite: {fecha_limite_txt}")
+
                     st.progress(avance_val / 100)
                     st.caption(f"Avance: {avance_val}%")
+
+                    if checklist_items:
+                        st.markdown("**Checklist**")
+
+                        checklist_actualizado = []
+                        for i, item in enumerate(checklist_items):
+                            texto_item = str(item.get("texto", ""))
+                            hecho_item = bool(item.get("hecho", False))
+
+                            if puede_editar:
+                                hecho_nuevo = st.checkbox(
+                                    texto_item,
+                                    value=hecho_item,
+                                    key=f"check_objetivo_{objetivo_id}_{i}",
+                                )
+                            else:
+                                hecho_nuevo = st.checkbox(
+                                    texto_item,
+                                    value=hecho_item,
+                                    key=f"check_objetivo_cliente_{objetivo_id}_{i}",
+                                    disabled=True,
+                                )
+
+                            checklist_actualizado.append({
+                                "texto": texto_item,
+                                "hecho": hecho_nuevo,
+                            })
+                    else:
+                        checklist_actualizado = []
+                        st.caption("Sin checklist cargado.")
 
                     if comentarios_txt:
                         with st.expander("Historial"):
@@ -4295,12 +4462,12 @@ def render_objetivos(cliente="", modo="cliente"):
                                 key=f"estado_objetivo_{objetivo_id}",
                             )
 
-                            nuevo_avance = st.slider(
-                                "Avance",
-                                0,
-                                100,
-                                avance_val,
-                                key=f"avance_objetivo_{objetivo_id}",
+                            nuevo_checklist_txt = st.text_area(
+                                "Agregar nuevos ítems al checklist",
+                                value="",
+                                placeholder="Un ítem por línea",
+                                key=f"nuevo_checklist_objetivo_{objetivo_id}",
+                                height=90,
                             )
 
                             nuevo_comentario = st.text_area(
@@ -4330,8 +4497,13 @@ def render_objetivos(cliente="", modo="cliente"):
                                 if not mask.any():
                                     st.error("No se encontró el objetivo.")
                                 else:
+                                    nuevos_items = checklist_desde_textarea_objetivo(nuevo_checklist_txt)
+                                    checklist_final = checklist_actualizado + nuevos_items
+                                    avance_final = avance_desde_checklist_objetivo(checklist_final, avance_val)
+
                                     objetivos_full.loc[mask, "estado"] = nuevo_estado
-                                    objetivos_full.loc[mask, "avance"] = nuevo_avance
+                                    objetivos_full.loc[mask, "avance"] = avance_final
+                                    objetivos_full.loc[mask, "checklist"] = serializar_checklist_objetivo(checklist_final)
                                     objetivos_full.loc[mask, "fecha_actualizacion"] = date.today().strftime("%Y-%m-%d")
                                     objetivos_full.loc[mask, "actualizado_por"] = nombre_usuario
 
