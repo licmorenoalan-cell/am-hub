@@ -5580,6 +5580,55 @@ def banner_cliente_equipo():
     )
 
 
+def banner_cliente_global():
+    role = st.session_state.get("role", "")
+
+    if role == "cliente":
+        cliente = st.session_state.get("cliente", "")
+        etiqueta = "Portal cliente"
+    elif role == "equipo":
+        cliente = st.session_state.get("cliente_equipo_visible") or st.session_state.get("cliente_equipo_activo", "")
+        etiqueta = "Cliente activo"
+    else:
+        return
+
+    if not cliente:
+        return
+
+    st.markdown(
+        f"""
+        <div style="
+            margin: 0 0 24px 0;
+            padding: 28px 32px;
+            border-radius: 24px;
+            background: linear-gradient(135deg, #244A7C 0%, #3B94A8 100%);
+            box-shadow: 0 10px 28px rgba(23, 50, 77, 0.12);
+        ">
+            <div style="
+                font-size: 0.82rem;
+                text-transform: uppercase;
+                letter-spacing: .08em;
+                color: rgba(255,255,255,0.82);
+                font-weight: 750;
+                margin-bottom: 10px;
+            ">
+                {etiqueta}
+            </div>
+            <div style="
+                font-size: 1.85rem;
+                line-height: 1.15;
+                font-weight: 900;
+                color: #FFFFFF;
+            ">
+                {cliente}
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+
 def main():
     ensure_data_dir()
     seed_data()
@@ -5595,7 +5644,7 @@ def main():
         return
 
     menu = sidebar()
-    banner_cliente_equipo()
+    banner_cliente_global()
     inicio_menu_perf = perf_start()
     if os.getenv("PERF_DEBUG", "0") == "1":
         print(f"[PERF] MENU START role={st.session_state.get('role')} menu={menu}")
