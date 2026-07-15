@@ -1039,12 +1039,18 @@ def load_reportes(cliente=""):
         "estado",
         "que_funciono",
         "proximo_foco",
+        "pdf_nombre",
+        "pdf_tipo",
+        "pdf_base64",
+        "fecha_carga",
+        "cargado_por",
     ]
 
     if cliente:
         return read_csv_cliente(REPORTES_PATH, columns, cliente)
 
     return read_csv(REPORTES_PATH, columns)
+
 
 
 def load_tareas(cliente=""):
@@ -2741,91 +2747,163 @@ def render_campanias(cliente, campanias):
 
 
 
-def render_reportes(cliente, reportes):
-    header("Reportería", f"Resultados mensuales y lectura estratégica | {cliente}")
+def render_reportes(cliente, reportes=None):
+    import base64
 
-    df = filter_cliente(reportes, cliente)
+    header("Reportería", f"Resultados mensuales y documentos | {cliente}")
 
-    if df.empty:
+    if reportes is None:
+        df = load_reportes(cliente)
+    else:
+        df = filter_cliente(reportes, cliente)
+
+    if df is None or df.empty:
         st.info("No hay reportes cargados.")
         return
 
-    reporte = st.selectbox(
+    df = df.copy().fillna("")
+
+    columnas = [
+        "id",
+        "cliente",
+        "mes",
+        "alcance",
+        "interacciones",
+        "consultas",
+        "inversion",
+        "estado",
+        "que_funciono",
+        "proximo_foco",
+        "pdf_nombre",
+        "pdf_tipo",
+        "pdf_base64",
+        "fecha_carga",
+        "cargado_por",
+    ]
+
+    for col in columnas:
+        if col not in df.columns:
+            df[col] = ""
+
+    opciones = []
+
+    for idx, row in df.iterrows():
+        mes = str(row.get("mes", "") or "Sin período")
+        estado = str(row.get("estado", "") or "")
+        etiqueta = f"{mes} · {estado}" if estado else mes
+        opciones.append((idx, etiqueta))
+
+    indice_sel = st.selectbox(
         "Seleccionar reporte",
-        df["mes"].astype(str).tolist(),
-        key="reporte_cliente_mes",
+        options=[item[0] for item in opciones],
+        format_func=lambda valor: dict(opciones).get(valor, str(valor)),
+        key=f"reporte_cliente_selector_{cliente}",
     )
 
-    row = df[df["mes"].astype(str) == reporte].iloc[0]
+    row = df.loc[indice_sel]
 
-    st.markdown(
-        f"""
-        <div style="
-            background: #FFFFFF;
-            border: 1px solid #E5E7EB;
-            border-radius: 22px;
-            padding: 24px 28px;
-            margin-bottom: 22px;
-            box-shadow: 0 12px 30px rgba(16, 24, 40, 0.05);
-        ">
-            <div style="font-size:0.9rem; color:#667085; margin-bottom:6px;">
-                Reporte seleccionado
-            </div>
-            <div style="font-size:1.75rem; font-weight:850; color:#244777; letter-spacing:-0.035em;">
-                {row.get('mes', '')}
-            </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
+    mes = str(row.get("mes", "") or "Sin período")
+    estado = str(row.get("estado", "") or "Sin estado")
 
-    c1, c2, c3, c4 = st.columns(4)
+    with st.container(border=True):
+        c1, c2 = st.columns([3, 1])
 
-    c1.metric("Alcance", f"{int(float(row.get('alcance', 0))):,}".replace(",", "."))
-    c2.metric("Interacciones", f"{int(float(row.get('interacciones', 0))):,}".replace(",", "."))
-    c3.metric("Consultas", int(float(row.get("consultas", 0))))
-    c4.metric("Inversión", money(row.get("inversion", 0)))
+        with c1:
+            st.caption("REPORTE SELECCIONADO")
+            st.markdown(f"## {mes}")
 
-    st.markdown("<div style='height: 14px;'></div>", unsafe_allow_html=True)
+        with c2:
+            st.info(estado)
 
-    col_left, col_right = st.columns([0.52, 0.48], gap="large")
+    def numero_entero(valor):
+        try:
+            return int(float(valor or 0))
+        except Exception:
+            return 0
 
-    with col_left:
+    def numero_decimal(valor):
+        try:
+            return float(valor or 0)
+        except Exception:
+            return 0.0
+
+    alcance = numero_entero(row.get("alcance", 0))
+    interacciones = numero_entero(row.get("interacciones", 0))
+    consultas = numero_entero(row.get("consultas", 0))
+    inversion = numero_decimal(row.get("inversion", 0))
+
+    k1, k2, k3, k4 = st.columns(4)
+    k1.metric("Alcance", f"{alcance:,}".replace(",", "."))
+    k2.metric("Interacciones", f"{interacciones:,}".replace(",", "."))
+    k3.metric("Consultas", consultas)
+    k4.metric("Inversión", money(inversion))
+
+    col_izq, col_der = st.columns([1, 1])
+
+    with col_izq:
         st.markdown("### Lectura estratégica")
 
         with st.container(border=True):
             st.markdown("**Qué funcionó**")
-            st.write(row.get("que_funciono", ""))
+            st.write(row.get("que_funciono", "") or "Sin información cargada.")
 
             st.markdown("**Próximo foco**")
-            st.write(row.get("proximo_foco", ""))
+            st.write(row.get("proximo_foco", "") or "Sin información cargada.")
 
-            st.markdown("**Estado del reporte**")
-            st.markdown(status_badge(row.get("estado", "")), unsafe_allow_html=True)
+    with col_der:
+        st.markdown("### Documento del reporte")
 
-    with col_right:
-        st.markdown("### Resumen ejecutivo")
+        pdf_nombre = str(row.get("pdf_nombre", "") or "")
+        pdf_tipo = str(row.get("pdf_tipo", "") or "application/pdf")
+        pdf_base64 = str(row.get("pdf_base64", "") or "")
 
-        alcance = int(float(row.get("alcance", 0)))
-        interacciones = int(float(row.get("interacciones", 0)))
-        consultas = int(float(row.get("consultas", 0)))
-        inversion = float(row.get("inversion", 0) or 0)
+        if pdf_nombre and pdf_base64:
+            try:
+                pdf_bytes = base64.b64decode(pdf_base64)
 
-        costo_consulta = inversion / consultas if consultas else 0
+                with st.container(border=True):
+                    st.markdown(f"**{pdf_nombre}**")
 
-        with st.container(border=True):
-            st.write(f"Durante **{row.get('mes', '')}**, la gestión alcanzó aproximadamente **{alcance:,} personas**.".replace(",", "."))
-            st.write(f"Se registraron **{interacciones:,} interacciones** y **{consultas} consultas**.".replace(",", "."))
-            if inversion > 0:
-                st.write(f"La inversión publicitaria fue de **{money(inversion)}**, con un costo estimado por consulta de **{money(costo_consulta)}**.")
-            else:
-                st.write("No se registró inversión publicitaria para este período.")
+                    fecha_carga = str(row.get("fecha_carga", "") or "")
+                    if fecha_carga:
+                        st.caption(f"Cargado el {fecha_carga}")
 
-    st.markdown("### Historial de reportes")
+                    st.download_button(
+                        "Descargar PDF",
+                        data=pdf_bytes,
+                        file_name=pdf_nombre,
+                        mime=pdf_tipo,
+                        use_container_width=True,
+                        key=f"descargar_reporte_{row.get('id', indice_sel)}",
+                    )
 
-    cols = ["mes", "alcance", "interacciones", "consultas", "inversion", "estado"]
-    cols = [c for c in cols if c in df.columns]
-    st.dataframe(df[cols], use_container_width=True, hide_index=True)
+            except Exception:
+                st.error("El archivo PDF guardado no pudo ser leído.")
+        else:
+            st.info("Este reporte no tiene un PDF adjunto.")
+
+    st.markdown("### Historial")
+
+    columnas_historial = [
+        "mes",
+        "alcance",
+        "interacciones",
+        "consultas",
+        "inversion",
+        "estado",
+        "pdf_nombre",
+    ]
+
+    columnas_historial = [
+        col for col in columnas_historial if col in df.columns
+    ]
+
+    st.dataframe(
+        df[columnas_historial],
+        use_container_width=True,
+        hide_index=True,
+    )
+
 
 
 def render_gestion_clientes():
@@ -5109,6 +5187,8 @@ def columnas_por_path(path):
         "reportes.csv": [
             "id", "cliente", "mes", "alcance", "interacciones", "consultas",
             "inversion", "estado", "que_funciono", "proximo_foco",
+            "pdf_nombre", "pdf_tipo", "pdf_base64", "fecha_carga",
+            "cargado_por",
         ],
         "tareas.csv": [
             "id",
@@ -5731,6 +5811,371 @@ def render_admin_dashboard(clientes, contenidos, materiales, campanias, reportes
 
 
 
+def columnas_reportes_completas():
+    return [
+        "id",
+        "cliente",
+        "mes",
+        "alcance",
+        "interacciones",
+        "consultas",
+        "inversion",
+        "estado",
+        "que_funciono",
+        "proximo_foco",
+        "pdf_nombre",
+        "pdf_tipo",
+        "pdf_base64",
+        "fecha_carga",
+        "cargado_por",
+    ]
+
+
+def render_reportes_gestion(cliente_fijo="", modo="admin"):
+    import base64
+
+    role = st.session_state.get("role", "")
+    username = st.session_state.get("username", "")
+    nombre_usuario = st.session_state.get("name", username)
+
+    if modo == "equipo":
+        header(
+            "Reportes",
+            f"Carga y seguimiento de reportes | {cliente_fijo}",
+        )
+    else:
+        header(
+            "Reportes",
+            "Carga y administración de reportes por cliente.",
+        )
+
+    columnas = columnas_reportes_completas()
+    reportes_full = read_csv(REPORTES_PATH, columnas)
+
+    if reportes_full is None or reportes_full.empty:
+        reportes_full = pd.DataFrame(columns=columnas)
+
+    reportes_full = reportes_full.copy().fillna("")
+
+    for col in columnas:
+        if col not in reportes_full.columns:
+            reportes_full[col] = ""
+
+    reportes_full = reportes_full[columnas]
+
+    clientes_df = load_clientes()
+
+    if clientes_df is None or clientes_df.empty:
+        clientes_opciones = []
+    else:
+        clientes_opciones = sorted(
+            clientes_df["cliente"]
+            .dropna()
+            .astype(str)
+            .unique()
+            .tolist()
+        )
+
+    if modo == "equipo":
+        clientes_permitidos = clientes_visibles_para_usuario()
+
+        if cliente_fijo:
+            if cliente_fijo not in clientes_permitidos:
+                st.error("No tenés permisos sobre este cliente.")
+                return
+
+            clientes_opciones = [cliente_fijo]
+        else:
+            clientes_opciones = clientes_permitidos
+
+    if not clientes_opciones:
+        st.info("No hay clientes disponibles.")
+        return
+
+    with st.expander("Cargar nuevo reporte", expanded=True):
+        with st.form(
+            f"form_nuevo_reporte_{modo}_{cliente_fijo or 'general'}"
+        ):
+            c1, c2 = st.columns([1.2, 1])
+
+            with c1:
+                if modo == "equipo" and cliente_fijo:
+                    cliente_sel = cliente_fijo
+                    st.text_input(
+                        "Cliente",
+                        value=cliente_sel,
+                        disabled=True,
+                    )
+                else:
+                    cliente_sel = st.selectbox(
+                        "Cliente",
+                        clientes_opciones,
+                    )
+
+                mes = st.text_input(
+                    "Período",
+                    value=date.today().strftime("%Y-%m"),
+                    placeholder="2026-07",
+                )
+
+                estado = st.selectbox(
+                    "Estado",
+                    [
+                        "Borrador",
+                        "En revisión",
+                        "Publicado",
+                        "Archivado",
+                    ],
+                    index=2,
+                )
+
+                que_funciono = st.text_area(
+                    "Qué funcionó",
+                    height=110,
+                )
+
+                proximo_foco = st.text_area(
+                    "Próximo foco",
+                    height=110,
+                )
+
+            with c2:
+                alcance = st.number_input(
+                    "Alcance",
+                    min_value=0,
+                    step=1,
+                )
+
+                interacciones = st.number_input(
+                    "Interacciones",
+                    min_value=0,
+                    step=1,
+                )
+
+                consultas = st.number_input(
+                    "Consultas",
+                    min_value=0,
+                    step=1,
+                )
+
+                inversion = st.number_input(
+                    "Inversión",
+                    min_value=0.0,
+                    step=1000.0,
+                )
+
+                pdf = st.file_uploader(
+                    "Reporte PDF",
+                    type=["pdf"],
+                    help="Tamaño máximo: 5 MB.",
+                    key=f"pdf_nuevo_reporte_{modo}_{cliente_fijo}",
+                )
+
+            guardar = st.form_submit_button(
+                "Guardar reporte",
+                use_container_width=True,
+            )
+
+            if guardar:
+                if not mes.strip():
+                    st.error("Indicá el período del reporte.")
+                elif pdf is not None and pdf.size > 5 * 1024 * 1024:
+                    st.error("El PDF supera el límite de 5 MB.")
+                else:
+                    pdf_nombre = ""
+                    pdf_tipo = ""
+                    pdf_base64 = ""
+
+                    if pdf is not None:
+                        pdf_bytes = pdf.getvalue()
+                        pdf_nombre = pdf.name
+                        pdf_tipo = pdf.type or "application/pdf"
+                        pdf_base64 = base64.b64encode(
+                            pdf_bytes
+                        ).decode("utf-8")
+
+                    nuevo = {
+                        "id": (
+                            "REP-"
+                            + pd.Timestamp.now().strftime(
+                                "%Y%m%d%H%M%S%f"
+                            )
+                        ),
+                        "cliente": cliente_sel,
+                        "mes": mes.strip(),
+                        "alcance": int(alcance),
+                        "interacciones": int(interacciones),
+                        "consultas": int(consultas),
+                        "inversion": float(inversion),
+                        "estado": estado,
+                        "que_funciono": que_funciono.strip(),
+                        "proximo_foco": proximo_foco.strip(),
+                        "pdf_nombre": pdf_nombre,
+                        "pdf_tipo": pdf_tipo,
+                        "pdf_base64": pdf_base64,
+                        "fecha_carga": date.today().strftime("%Y-%m-%d"),
+                        "cargado_por": nombre_usuario,
+                    }
+
+                    actualizado = pd.concat(
+                        [
+                            reportes_full,
+                            pd.DataFrame([nuevo]),
+                        ],
+                        ignore_index=True,
+                    )
+
+                    save_csv(actualizado, REPORTES_PATH)
+                    st.success("Reporte guardado.")
+                    st.rerun()
+
+    if modo == "equipo":
+        vista = reportes_full[
+            reportes_full["cliente"]
+            .astype(str)
+            .isin(clientes_opciones)
+        ].copy()
+    else:
+        vista = reportes_full.copy()
+
+    st.markdown("### Reportes cargados")
+
+    if vista.empty:
+        st.info("Todavía no hay reportes cargados.")
+        return
+
+    filtro_cliente = st.selectbox(
+        "Filtrar por cliente",
+        (
+            clientes_opciones
+            if len(clientes_opciones) == 1
+            else ["Todos"] + clientes_opciones
+        ),
+        key=f"filtro_reportes_gestion_{modo}_{cliente_fijo}",
+    )
+
+    if filtro_cliente != "Todos":
+        vista = vista[
+            vista["cliente"].astype(str) == filtro_cliente
+        ].copy()
+
+    columnas_editor = [
+        "id",
+        "cliente",
+        "mes",
+        "alcance",
+        "interacciones",
+        "consultas",
+        "inversion",
+        "estado",
+        "que_funciono",
+        "proximo_foco",
+        "pdf_nombre",
+        "fecha_carga",
+        "cargado_por",
+    ]
+
+    edited = st.data_editor(
+        vista[columnas_editor],
+        use_container_width=True,
+        hide_index=True,
+        num_rows="fixed",
+        disabled=[
+            "id",
+            "cliente",
+            "pdf_nombre",
+            "fecha_carga",
+            "cargado_por",
+        ],
+        key=f"editor_reportes_gestion_{modo}_{cliente_fijo}",
+    )
+
+    if st.button(
+        "Guardar modificaciones",
+        use_container_width=True,
+        key=f"guardar_reportes_gestion_{modo}_{cliente_fijo}",
+    ):
+        base = reportes_full.copy()
+
+        for _, fila in edited.iterrows():
+            reporte_id = str(fila.get("id", ""))
+            mask = base["id"].astype(str) == reporte_id
+
+            if not mask.any():
+                continue
+
+            for col in [
+                "mes",
+                "alcance",
+                "interacciones",
+                "consultas",
+                "inversion",
+                "estado",
+                "que_funciono",
+                "proximo_foco",
+            ]:
+                base.loc[mask, col] = fila.get(col, "")
+
+        save_csv(base, REPORTES_PATH)
+        st.success("Reportes actualizados.")
+        st.rerun()
+
+    st.markdown("### Reemplazar PDF")
+
+    ids_vista = vista["id"].astype(str).tolist()
+
+    reporte_id_sel = st.selectbox(
+        "Reporte",
+        ids_vista,
+        format_func=lambda reporte_id: (
+            f"{vista[vista['id'].astype(str) == reporte_id].iloc[0].get('cliente', '')}"
+            f" · {vista[vista['id'].astype(str) == reporte_id].iloc[0].get('mes', '')}"
+        ),
+        key=f"reporte_pdf_selector_{modo}_{cliente_fijo}",
+    )
+
+    nuevo_pdf = st.file_uploader(
+        "Seleccionar nuevo PDF",
+        type=["pdf"],
+        key=f"reemplazar_pdf_{modo}_{cliente_fijo}_{reporte_id_sel}",
+    )
+
+    if st.button(
+        "Guardar PDF",
+        use_container_width=True,
+        key=f"guardar_pdf_{modo}_{cliente_fijo}",
+    ):
+        if nuevo_pdf is None:
+            st.error("Seleccioná un archivo PDF.")
+        elif nuevo_pdf.size > 5 * 1024 * 1024:
+            st.error("El PDF supera el límite de 5 MB.")
+        else:
+            base = reportes_full.copy()
+            mask = base["id"].astype(str) == reporte_id_sel
+
+            if not mask.any():
+                st.error("No se encontró el reporte.")
+            else:
+                base.loc[mask, "pdf_nombre"] = nuevo_pdf.name
+                base.loc[mask, "pdf_tipo"] = (
+                    nuevo_pdf.type or "application/pdf"
+                )
+                base.loc[mask, "pdf_base64"] = (
+                    base64.b64encode(
+                        nuevo_pdf.getvalue()
+                    ).decode("utf-8")
+                )
+                base.loc[mask, "fecha_carga"] = (
+                    date.today().strftime("%Y-%m-%d")
+                )
+                base.loc[mask, "cargado_por"] = nombre_usuario
+
+                save_csv(base, REPORTES_PATH)
+                st.success("PDF actualizado.")
+                st.rerun()
+
+
+
 def render_crud_table_cliente_seguro(title, path, columns, cliente):
     render_crud_table(title, path, df=None, cliente_preview=cliente)
 
@@ -6274,22 +6719,9 @@ def main():
                     cliente_equipo,
                 )
             elif menu == "Reportes":
-                render_crud_table_cliente_seguro(
-                    "Reportes",
-                    REPORTES_PATH,
-                    [
-                        "id",
-                        "cliente",
-                        "mes",
-                        "alcance",
-                        "interacciones",
-                        "consultas",
-                        "inversion",
-                        "estado",
-                        "que_funciono",
-                        "proximo_foco",
-                    ],
-                    cliente_equipo,
+                render_reportes_gestion(
+                    cliente_fijo=cliente_equipo,
+                    modo="equipo",
                 )
             elif menu == "Tareas":
                 render_tareas_internas(cliente_fijo=cliente_equipo, modo="equipo")
@@ -6318,7 +6750,7 @@ def main():
             elif menu == "Campañas":
                 render_crud_table("Campañas", CAMPANIAS_PATH)
             elif menu == "Reportes":
-                render_crud_table("Reportes", REPORTES_PATH)
+                render_reportes_gestion(modo="admin")
             elif menu == "Tareas":
                 render_tareas_internas(modo="admin")
             elif menu == "Vista cliente":
