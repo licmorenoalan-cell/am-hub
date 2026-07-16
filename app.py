@@ -986,8 +986,8 @@ def load_contenidos(cliente=""):
     return read_csv(CONTENIDOS_PATH, columns)
 
 
-def load_materiales(cliente=""):
-    columns = [
+def columnas_materiales_completas():
+    return [
         "id",
         "cliente",
         "solicitud",
@@ -995,16 +995,28 @@ def load_materiales(cliente=""):
         "fecha_limite",
         "estado",
         "observacion",
+        "formato_sugerido",
+        "referencia",
         "link_entrega",
         "medio_envio",
         "comentario_cliente",
         "fecha_envio_cliente",
+        "observacion_am",
+        "fecha_carga",
+        "creado_por",
+        "fecha_actualizacion",
+        "actualizado_por",
     ]
+
+
+def load_materiales(cliente=""):
+    columns = columnas_materiales_completas()
 
     if cliente:
         return read_csv_cliente(MATERIALES_PATH, columns, cliente)
 
     return read_csv(MATERIALES_PATH, columns)
+
 
 
 def load_campanias(cliente=""):
@@ -2554,161 +2566,345 @@ def render_aprobaciones(cliente, contenidos):
         )
 
 
-def render_materiales(cliente, materiales):
-    header("Materiales", f"Solicitudes de grabación y envío de material | {cliente}")
+def render_materiales(cliente, materiales=None):
+    header(
+        "Pedidos de material",
+        f"Solicitudes de grabación y entrega de contenidos | {cliente}",
+    )
 
-    if materiales is None or materiales.empty:
-        st.info("No hay materiales solicitados.")
+    columnas = columnas_materiales_completas()
+
+    if materiales is None:
+        df_all = load_materiales()
+    else:
+        df_all = materiales.copy()
+
+    if df_all is None or df_all.empty:
+        st.info("No hay pedidos de material cargados.")
         return
 
-    df_all = materiales.copy()
+    df_all = df_all.copy().fillna("")
 
-    # Columnas nuevas para que el cliente pueda responder desde el portal.
-    columnas_extra = {
-        "link_entrega": "",
-        "medio_envio": "",
-        "comentario_cliente": "",
-        "fecha_envio_cliente": "",
-    }
-
-    for col, default in columnas_extra.items():
+    for col in columnas:
         if col not in df_all.columns:
-            df_all[col] = default
+            df_all[col] = ""
 
-    df = filter_cliente(df_all, cliente)
+    df_all = df_all[columnas].fillna("")
+
+    df = df_all[
+        df_all["cliente"].astype(str) == str(cliente)
+    ].copy()
 
     if df.empty:
-        st.info("No hay materiales solicitados para este cliente.")
+        st.info("No hay pedidos de material para este cliente.")
         return
 
-    estados_cerrados = "Recibido|Enviado para publicar|Usado|Cancelado"
+    estados_finales = [
+        "Aprobado",
+        "Publicado",
+        "Cancelado",
+    ]
+
     pendientes = df[
-        ~df["estado"].astype(str).str.contains(estados_cerrados, case=False, na=False)
+        ~df["estado"].astype(str).isin(estados_finales)
+    ].copy()
+
+    cerrados = df[
+        df["estado"].astype(str).isin(estados_finales)
     ].copy()
 
     enviados = df[
-        df["estado"].astype(str).str.contains("Enviado para publicar|Recibido|Usado", case=False, na=False)
+        df["estado"].astype(str).isin(
+            [
+                "Enviado por cliente",
+                "En revisión",
+                "Requiere cambios",
+                "Aprobado",
+                "Publicado",
+            ]
+        )
     ].copy()
 
-    c1, c2, c3 = st.columns(3)
-    c1.metric("Materiales solicitados", len(df))
-    c2.metric("Pendientes de envío", len(pendientes))
-    c3.metric("Enviados / recibidos", len(enviados))
+    k1, k2, k3 = st.columns(3)
+    k1.metric("Pedidos totales", len(df))
+    k2.metric("Pendientes", len(pendientes))
+    k3.metric("Entregados", len(enviados))
 
-    st.markdown("### Materiales pendientes")
+    st.markdown("### Pedidos activos")
 
     if pendientes.empty:
-        st.success("No tenés materiales pendientes de envío.")
+        st.success("No tenés pedidos de material pendientes.")
     else:
         st.caption(
-            "Revisá cada solicitud, cargá el link del material o indicá si lo enviás por WhatsApp. "
-            "Al enviarlo queda marcado para que AM lo pueda producir o publicar."
+            "Revisá las indicaciones, grabá el material y compartí el link "
+            "cuando esté listo. También podés dejar comentarios o avisar si "
+            "necesitás una aclaración."
+        )
+
+        pendientes = pendientes.sort_values(
+            "fecha_limite",
+            ascending=True,
         )
 
         for idx, row in pendientes.iterrows():
             material_id = str(row.get("id", idx))
-            titulo = str(row.get("titulo", "") or row.get("tipo", "") or row.get("material", "") or row.get("descripcion", "Material solicitado"))
-            estado = str(row.get("estado", "Solicitado"))
-            fecha_limite = str(row.get("fecha_limite", "") or row.get("fecha", "") or "")
-            descripcion = str(row.get("descripcion", "") or row.get("detalle", "") or row.get("pedido", ""))
-            objetivo = str(row.get("objetivo", "") or row.get("uso", "") or row.get("destino", ""))
-            referencia = str(row.get("link_referencia", "") or row.get("referencia", "") or "")
+            solicitud = str(
+                row.get("solicitud", "") or "Material solicitado"
+            )
+            estado = str(
+                row.get("estado", "") or "Solicitado"
+            )
+            fecha_limite = str(
+                row.get("fecha_limite", "") or ""
+            )
+            responsable = str(
+                row.get("responsable_cliente", "") or ""
+            )
+            indicaciones = str(
+                row.get("observacion", "") or ""
+            )
+            formato = str(
+                row.get("formato_sugerido", "") or ""
+            )
+            referencia = str(
+                row.get("referencia", "") or ""
+            )
+            observacion_am = str(
+                row.get("observacion_am", "") or ""
+            )
 
-            with st.expander(f"{titulo} · {estado}", expanded=True):
-                col_a, col_b = st.columns([2, 1])
+            with st.container(border=True):
+                encabezado_1, encabezado_2 = st.columns([3, 1])
 
-                with col_a:
-                    if descripcion:
-                        st.markdown("**Qué necesitamos:**")
-                        st.write(descripcion)
+                with encabezado_1:
+                    st.markdown(f"### {solicitud}")
 
-                    if objetivo:
-                        st.markdown("**Uso previsto:**")
-                        st.write(objetivo)
+                    if responsable:
+                        st.caption(
+                            f"Responsable sugerido: {responsable}"
+                        )
 
-                    if referencia:
-                        st.markdown("**Referencia / guía:**")
-                        st.write(referencia)
+                with encabezado_2:
+                    if estado == "Requiere cambios":
+                        st.warning(estado)
+                    elif estado in [
+                        "Enviado por cliente",
+                        "En revisión",
+                    ]:
+                        st.info(estado)
+                    else:
+                        st.caption(f"Estado: {estado}")
 
-                with col_b:
-                    if fecha_limite:
-                        st.markdown("**Fecha límite:**")
-                        st.write(fecha_limite)
+                if fecha_limite:
+                    st.caption(f"Fecha límite: {fecha_limite}")
 
-                    st.markdown("**Estado actual:**")
-                    st.write(estado)
+                if indicaciones:
+                    st.markdown("**Indicaciones de AM Consultora**")
+                    st.write(indicaciones)
 
-                st.markdown("#### Enviar material")
+                if formato:
+                    st.markdown("**Formato sugerido**")
+                    st.write(formato)
+
+                if referencia:
+                    st.markdown("**Referencia o ejemplo**")
+                    st.write(referencia)
+
+                    if referencia.startswith(("http://", "https://")):
+                        st.link_button(
+                            "Abrir referencia",
+                            referencia,
+                            use_container_width=True,
+                        )
+
+                if observacion_am:
+                    st.markdown("**Última devolución de AM**")
+                    st.warning(observacion_am)
+
+                st.divider()
+                st.markdown("#### Entrega del material")
+
+                medio_actual = str(
+                    row.get("medio_envio", "") or "Link cargado acá"
+                )
+
+                opciones_medio = [
+                    "Link cargado acá",
+                    "Drive",
+                    "WeTransfer",
+                    "Dropbox",
+                    "Canva",
+                    "WhatsApp",
+                    "Mail",
+                    "Otro",
+                ]
+
+                if medio_actual not in opciones_medio:
+                    opciones_medio.append(medio_actual)
 
                 medio = st.selectbox(
-                    "Cómo lo vas a enviar",
-                    [
-                        "Link cargado acá",
-                        "Lo mando por WhatsApp",
-                        "Lo subo a Drive",
-                        "Lo envío por mail",
-                        "Otro",
-                    ],
-                    key=f"medio_material_{material_id}_{idx}",
+                    "Medio de entrega",
+                    opciones_medio,
+                    index=opciones_medio.index(medio_actual),
+                    key=f"medio_material_cliente_{material_id}",
                 )
 
                 link_entrega = st.text_input(
-                    "Link del material",
-                    value=str(row.get("link_entrega", "") or ""),
-                    placeholder="Pegá link de Drive, Dropbox, WeTransfer, Canva, etc.",
-                    key=f"link_material_{material_id}_{idx}",
+                    "Link del video o archivo",
+                    value=str(
+                        row.get("link_entrega", "") or ""
+                    ),
+                    placeholder=(
+                        "Pegá un enlace de Drive, WeTransfer, "
+                        "Dropbox, Canva, etc."
+                    ),
+                    key=f"link_material_cliente_{material_id}",
                 )
 
                 comentario = st.text_area(
-                    "Comentario para AM",
-                    value=str(row.get("comentario_cliente", "") or ""),
-                    placeholder="Ej: lo mando por WhatsApp, falta grabar una parte, está en tal carpeta, etc.",
-                    key=f"comentario_material_{material_id}_{idx}",
-                    height=90,
+                    "Comentario para AM Consultora",
+                    value=str(
+                        row.get("comentario_cliente", "") or ""
+                    ),
+                    placeholder=(
+                        "Ejemplo: falta una toma, lo grabé en dos partes, "
+                        "necesito confirmar una indicación..."
+                    ),
+                    height=100,
+                    key=f"comentario_material_cliente_{material_id}",
                 )
 
-                puede_enviar = bool(link_entrega.strip()) or medio != "Link cargado acá" or bool(comentario.strip())
+                b1, b2 = st.columns(2)
 
-                if st.button(
-                    "Marcar como enviado para publicar",
-                    key=f"enviar_material_{material_id}_{idx}",
-                    use_container_width=True,
-                    disabled=not puede_enviar,
-                ):
-                    df_all.loc[idx, "estado"] = "Enviado para publicar"
-                    df_all.loc[idx, "medio_envio"] = medio
-                    df_all.loc[idx, "link_entrega"] = link_entrega.strip()
-                    df_all.loc[idx, "comentario_cliente"] = comentario.strip()
-                    df_all.loc[idx, "fecha_envio_cliente"] = date.today().strftime("%Y-%m-%d")
+                with b1:
+                    if st.button(
+                        "Guardar avance",
+                        key=f"guardar_avance_material_{material_id}",
+                        use_container_width=True,
+                    ):
+                        materiales_full = load_materiales()
+                        mask = (
+                            materiales_full["id"].astype(str)
+                            == material_id
+                        )
 
-                    save_csv(df_all, MATERIALES_PATH)
-                    st.success("Material enviado. Quedó marcado para revisión y publicación.")
-                    st.rerun()
+                        if not mask.any():
+                            st.error("No se encontró el pedido.")
+                        else:
+                            materiales_full.loc[
+                                mask, "medio_envio"
+                            ] = medio
+                            materiales_full.loc[
+                                mask, "link_entrega"
+                            ] = link_entrega.strip()
+                            materiales_full.loc[
+                                mask, "comentario_cliente"
+                            ] = comentario.strip()
 
-    st.markdown("### Materiales enviados")
+                            if estado == "Solicitado":
+                                materiales_full.loc[
+                                    mask, "estado"
+                                ] = "En preparación"
 
-    if enviados.empty:
-        st.info("Todavía no hay materiales enviados.")
+                            materiales_full.loc[
+                                mask, "fecha_actualizacion"
+                            ] = date.today().strftime("%Y-%m-%d")
+                            materiales_full.loc[
+                                mask, "actualizado_por"
+                            ] = st.session_state.get(
+                                "name",
+                                st.session_state.get(
+                                    "username",
+                                    "Cliente",
+                                ),
+                            )
+
+                            save_csv(
+                                materiales_full,
+                                MATERIALES_PATH,
+                            )
+                            st.success("Avance guardado.")
+                            st.rerun()
+
+                with b2:
+                    puede_entregar = bool(
+                        link_entrega.strip()
+                        or comentario.strip()
+                        or medio in ["WhatsApp", "Mail"]
+                    )
+
+                    if st.button(
+                        "Marcar como entregado",
+                        key=f"entregar_material_{material_id}",
+                        use_container_width=True,
+                        disabled=not puede_entregar,
+                    ):
+                        materiales_full = load_materiales()
+                        mask = (
+                            materiales_full["id"].astype(str)
+                            == material_id
+                        )
+
+                        if not mask.any():
+                            st.error("No se encontró el pedido.")
+                        else:
+                            materiales_full.loc[
+                                mask, "estado"
+                            ] = "Enviado por cliente"
+                            materiales_full.loc[
+                                mask, "medio_envio"
+                            ] = medio
+                            materiales_full.loc[
+                                mask, "link_entrega"
+                            ] = link_entrega.strip()
+                            materiales_full.loc[
+                                mask, "comentario_cliente"
+                            ] = comentario.strip()
+                            materiales_full.loc[
+                                mask, "fecha_envio_cliente"
+                            ] = date.today().strftime("%Y-%m-%d")
+                            materiales_full.loc[
+                                mask, "fecha_actualizacion"
+                            ] = date.today().strftime("%Y-%m-%d")
+                            materiales_full.loc[
+                                mask, "actualizado_por"
+                            ] = st.session_state.get(
+                                "name",
+                                st.session_state.get(
+                                    "username",
+                                    "Cliente",
+                                ),
+                            )
+
+                            save_csv(
+                                materiales_full,
+                                MATERIALES_PATH,
+                            )
+                            st.success(
+                                "Material entregado para revisión."
+                            )
+                            st.rerun()
+
+    st.markdown("### Historial de pedidos")
+
+    if cerrados.empty:
+        st.caption("Todavía no hay pedidos cerrados.")
     else:
-        columnas = [
-            "id",
-            "fecha",
+        columnas_historial = [
+            "solicitud",
             "fecha_limite",
-            "tipo",
-            "material",
-            "descripcion",
             "estado",
             "medio_envio",
             "link_entrega",
-            "comentario_cliente",
             "fecha_envio_cliente",
         ]
-        columnas = [c for c in columnas if c in enviados.columns]
+
         st.dataframe(
-            enviados[columnas].sort_index(ascending=False),
+            cerrados[columnas_historial],
             use_container_width=True,
             hide_index=True,
         )
+
 
 
 def render_campanias(cliente, campanias):
@@ -5176,9 +5372,24 @@ def columnas_por_path(path):
             "copy", "link_canva", "estado", "comentario_cliente",
         ],
         "materiales.csv": [
-            "id", "cliente", "solicitud", "responsable_cliente", "fecha_limite",
-            "estado", "observacion", "link_entrega", "medio_envio",
-            "comentario_cliente", "fecha_envio_cliente",
+            "id",
+            "cliente",
+            "solicitud",
+            "responsable_cliente",
+            "fecha_limite",
+            "estado",
+            "observacion",
+            "formato_sugerido",
+            "referencia",
+            "link_entrega",
+            "medio_envio",
+            "comentario_cliente",
+            "fecha_envio_cliente",
+            "observacion_am",
+            "fecha_carga",
+            "creado_por",
+            "fecha_actualizacion",
+            "actualizado_por",
         ],
         "campanias.csv": [
             "id", "cliente", "campania", "plataforma", "objetivo", "presupuesto",
@@ -6176,6 +6387,428 @@ def render_reportes_gestion(cliente_fijo="", modo="admin"):
 
 
 
+def render_materiales_gestion(cliente_fijo="", modo="admin"):
+    role = st.session_state.get("role", "")
+    username = st.session_state.get("username", "")
+    nombre_usuario = st.session_state.get("name", username)
+
+    if modo == "equipo":
+        header(
+            "Pedidos de material",
+            f"Gestión de solicitudes | {cliente_fijo}",
+        )
+    else:
+        header(
+            "Pedidos de material",
+            "Creación, seguimiento y revisión de entregas.",
+        )
+
+    columnas = columnas_materiales_completas()
+    materiales_full = load_materiales()
+
+    if materiales_full is None or materiales_full.empty:
+        materiales_full = pd.DataFrame(columns=columnas)
+
+    materiales_full = materiales_full.copy().fillna("")
+
+    for col in columnas:
+        if col not in materiales_full.columns:
+            materiales_full[col] = ""
+
+    materiales_full = materiales_full[columnas].fillna("")
+
+    if modo == "equipo":
+        clientes_permitidos = clientes_visibles_para_usuario()
+
+        if cliente_fijo:
+            if cliente_fijo not in clientes_permitidos:
+                st.error("No tenés permisos sobre este cliente.")
+                return
+
+            clientes_opciones = [cliente_fijo]
+        else:
+            clientes_opciones = clientes_permitidos
+    else:
+        clientes_df = load_clientes()
+
+        if (
+            clientes_df is None
+            or clientes_df.empty
+            or "cliente" not in clientes_df.columns
+        ):
+            clientes_opciones = []
+        else:
+            clientes_opciones = sorted(
+                clientes_df["cliente"]
+                .dropna()
+                .astype(str)
+                .unique()
+                .tolist()
+            )
+
+    if not clientes_opciones:
+        st.info("No hay clientes disponibles.")
+        return
+
+    estados = [
+        "Solicitado",
+        "En preparación",
+        "Enviado por cliente",
+        "En revisión",
+        "Requiere cambios",
+        "Aprobado",
+        "Publicado",
+        "Cancelado",
+    ]
+
+    with st.expander(
+        "Crear nuevo pedido de material",
+        expanded=True,
+    ):
+        with st.form(
+            f"nuevo_material_{modo}_{cliente_fijo or 'general'}"
+        ):
+            c1, c2 = st.columns([1.5, 1])
+
+            with c1:
+                if modo == "equipo" and cliente_fijo:
+                    cliente_sel = cliente_fijo
+                    st.text_input(
+                        "Cliente",
+                        value=cliente_sel,
+                        disabled=True,
+                    )
+                else:
+                    cliente_sel = st.selectbox(
+                        "Cliente",
+                        clientes_opciones,
+                    )
+
+                solicitud = st.text_input(
+                    "Pedido de grabación",
+                    placeholder=(
+                        "Ejemplo: video explicando entrenamiento híbrido"
+                    ),
+                )
+
+                indicaciones = st.text_area(
+                    "Indicaciones para grabar",
+                    placeholder=(
+                        "Explicá qué debe decir, cómo grabarlo, "
+                        "qué planos realizar y cualquier detalle necesario."
+                    ),
+                    height=150,
+                )
+
+                referencia = st.text_input(
+                    "Link de referencia",
+                    placeholder=(
+                        "Instagram, TikTok, Drive, Canva u otro ejemplo"
+                    ),
+                )
+
+            with c2:
+                responsable_cliente = st.text_input(
+                    "Responsable del cliente",
+                    placeholder="Ejemplo: Leyla, Mishel, equipo comercial",
+                )
+
+                formato_sugerido = st.text_area(
+                    "Formato sugerido",
+                    placeholder=(
+                        "Ejemplo: vertical 9:16, buena luz, "
+                        "sin música, versión corta y larga"
+                    ),
+                    height=100,
+                )
+
+                fecha_limite = st.date_input(
+                    "Fecha límite",
+                    value=date.today(),
+                )
+
+                estado_inicial = st.selectbox(
+                    "Estado inicial",
+                    estados,
+                    index=0,
+                )
+
+            crear = st.form_submit_button(
+                "Crear pedido",
+                use_container_width=True,
+            )
+
+            if crear:
+                if not solicitud.strip():
+                    st.error(
+                        "El pedido de grabación no puede estar vacío."
+                    )
+                else:
+                    nuevo = {
+                        "id": (
+                            "MAT-"
+                            + pd.Timestamp.now().strftime(
+                                "%Y%m%d%H%M%S%f"
+                            )
+                        ),
+                        "cliente": cliente_sel,
+                        "solicitud": solicitud.strip(),
+                        "responsable_cliente": (
+                            responsable_cliente.strip()
+                        ),
+                        "fecha_limite": (
+                            fecha_limite.strftime("%Y-%m-%d")
+                        ),
+                        "estado": estado_inicial,
+                        "observacion": indicaciones.strip(),
+                        "formato_sugerido": (
+                            formato_sugerido.strip()
+                        ),
+                        "referencia": referencia.strip(),
+                        "link_entrega": "",
+                        "medio_envio": "",
+                        "comentario_cliente": "",
+                        "fecha_envio_cliente": "",
+                        "observacion_am": "",
+                        "fecha_carga": (
+                            date.today().strftime("%Y-%m-%d")
+                        ),
+                        "creado_por": nombre_usuario,
+                        "fecha_actualizacion": (
+                            date.today().strftime("%Y-%m-%d")
+                        ),
+                        "actualizado_por": nombre_usuario,
+                    }
+
+                    actualizado = pd.concat(
+                        [
+                            materiales_full,
+                            pd.DataFrame([nuevo]),
+                        ],
+                        ignore_index=True,
+                    )
+
+                    save_csv(
+                        actualizado,
+                        MATERIALES_PATH,
+                    )
+                    st.success("Pedido creado.")
+                    st.rerun()
+
+    if modo == "equipo":
+        vista = materiales_full[
+            materiales_full["cliente"]
+            .astype(str)
+            .isin(clientes_opciones)
+        ].copy()
+    else:
+        vista = materiales_full.copy()
+
+    st.markdown("### Seguimiento de pedidos")
+
+    filtro_1, filtro_2 = st.columns(2)
+
+    with filtro_1:
+        opciones_filtro_cliente = (
+            clientes_opciones
+            if len(clientes_opciones) == 1
+            else ["Todos"] + clientes_opciones
+        )
+
+        cliente_filtro = st.selectbox(
+            "Cliente",
+            opciones_filtro_cliente,
+            key=f"filtro_material_cliente_{modo}_{cliente_fijo}",
+        )
+
+    with filtro_2:
+        estado_filtro = st.selectbox(
+            "Estado",
+            ["Todos"] + estados,
+            key=f"filtro_material_estado_{modo}_{cliente_fijo}",
+        )
+
+    if cliente_filtro != "Todos":
+        vista = vista[
+            vista["cliente"].astype(str) == cliente_filtro
+        ].copy()
+
+    if estado_filtro != "Todos":
+        vista = vista[
+            vista["estado"].astype(str) == estado_filtro
+        ].copy()
+
+    if vista.empty:
+        st.info("No hay pedidos para los filtros seleccionados.")
+        return
+
+    vista = vista.sort_values(
+        ["fecha_limite", "fecha_carga"],
+        ascending=[True, False],
+    )
+
+    for idx, row in vista.iterrows():
+        material_id = str(row.get("id", idx))
+        solicitud = str(
+            row.get("solicitud", "") or "Material solicitado"
+        )
+        cliente_txt = str(row.get("cliente", ""))
+        estado_actual = str(
+            row.get("estado", "") or "Solicitado"
+        )
+        link_entrega = str(
+            row.get("link_entrega", "") or ""
+        )
+        comentario_cliente = str(
+            row.get("comentario_cliente", "") or ""
+        )
+        medio_envio = str(
+            row.get("medio_envio", "") or ""
+        )
+        fecha_envio = str(
+            row.get("fecha_envio_cliente", "") or ""
+        )
+
+        with st.container(border=True):
+            c_titulo, c_estado = st.columns([3, 1])
+
+            with c_titulo:
+                st.markdown(f"### {solicitud}")
+                st.caption(
+                    f"{cliente_txt} · límite "
+                    f"{row.get('fecha_limite', '')}"
+                )
+
+            with c_estado:
+                if estado_actual == "Requiere cambios":
+                    st.warning(estado_actual)
+                elif estado_actual in [
+                    "Enviado por cliente",
+                    "En revisión",
+                ]:
+                    st.info(estado_actual)
+                elif estado_actual in [
+                    "Aprobado",
+                    "Publicado",
+                ]:
+                    st.success(estado_actual)
+                else:
+                    st.caption(estado_actual)
+
+            if row.get("observacion", ""):
+                st.markdown("**Indicaciones enviadas**")
+                st.write(row.get("observacion", ""))
+
+            if row.get("formato_sugerido", ""):
+                st.markdown("**Formato sugerido**")
+                st.write(row.get("formato_sugerido", ""))
+
+            if comentario_cliente:
+                st.markdown("**Comentario del cliente**")
+                st.write(comentario_cliente)
+
+            if medio_envio:
+                st.caption(
+                    f"Medio de entrega: {medio_envio}"
+                    + (
+                        f" · Fecha: {fecha_envio}"
+                        if fecha_envio
+                        else ""
+                    )
+                )
+
+            if link_entrega:
+                st.link_button(
+                    "Abrir material entregado",
+                    link_entrega,
+                    use_container_width=True,
+                )
+
+            with st.expander("Revisar y actualizar pedido"):
+                nuevo_estado = st.selectbox(
+                    "Estado",
+                    estados,
+                    index=(
+                        estados.index(estado_actual)
+                        if estado_actual in estados
+                        else 0
+                    ),
+                    key=f"estado_material_am_{material_id}",
+                )
+
+                nuevas_indicaciones = st.text_area(
+                    "Indicaciones originales",
+                    value=str(
+                        row.get("observacion", "") or ""
+                    ),
+                    height=120,
+                    key=f"indicaciones_material_am_{material_id}",
+                )
+
+                nuevo_formato = st.text_area(
+                    "Formato sugerido",
+                    value=str(
+                        row.get("formato_sugerido", "") or ""
+                    ),
+                    height=80,
+                    key=f"formato_material_am_{material_id}",
+                )
+
+                devolucion_am = st.text_area(
+                    "Devolución para el cliente",
+                    value=str(
+                        row.get("observacion_am", "") or ""
+                    ),
+                    placeholder=(
+                        "Ejemplo: volver a grabar con mejor luz, "
+                        "sumar una toma, corregir el audio..."
+                    ),
+                    height=100,
+                    key=f"devolucion_material_am_{material_id}",
+                )
+
+                if st.button(
+                    "Guardar actualización",
+                    use_container_width=True,
+                    key=f"guardar_material_am_{material_id}",
+                ):
+                    materiales_actualizados = load_materiales()
+                    mask = (
+                        materiales_actualizados["id"].astype(str)
+                        == material_id
+                    )
+
+                    if not mask.any():
+                        st.error("No se encontró el pedido.")
+                    else:
+                        materiales_actualizados.loc[
+                            mask, "estado"
+                        ] = nuevo_estado
+                        materiales_actualizados.loc[
+                            mask, "observacion"
+                        ] = nuevas_indicaciones.strip()
+                        materiales_actualizados.loc[
+                            mask, "formato_sugerido"
+                        ] = nuevo_formato.strip()
+                        materiales_actualizados.loc[
+                            mask, "observacion_am"
+                        ] = devolucion_am.strip()
+                        materiales_actualizados.loc[
+                            mask, "fecha_actualizacion"
+                        ] = date.today().strftime("%Y-%m-%d")
+                        materiales_actualizados.loc[
+                            mask, "actualizado_por"
+                        ] = nombre_usuario
+
+                        save_csv(
+                            materiales_actualizados,
+                            MATERIALES_PATH,
+                        )
+                        st.success("Pedido actualizado.")
+                        st.rerun()
+
+
+
 def render_crud_table_cliente_seguro(title, path, columns, cliente):
     render_crud_table(title, path, df=None, cliente_preview=cliente)
 
@@ -6682,23 +7315,9 @@ def main():
             elif menu == "Contenidos":
                 render_contenidos_equipo(cliente_equipo)
             elif menu == "Materiales":
-                render_crud_table_cliente_seguro(
-                    "Materiales",
-                    MATERIALES_PATH,
-                    [
-                        "id",
-                        "cliente",
-                        "solicitud",
-                        "responsable_cliente",
-                        "fecha_limite",
-                        "estado",
-                        "observacion",
-                        "link_entrega",
-                        "medio_envio",
-                        "comentario_cliente",
-                        "fecha_envio_cliente",
-                    ],
-                    cliente_equipo,
+                render_materiales_gestion(
+                    cliente_fijo=cliente_equipo,
+                    modo="equipo",
                 )
             elif menu == "Campañas":
                 render_crud_table_cliente_seguro(
@@ -6746,7 +7365,7 @@ def main():
             elif menu == "Contenidos":
                 render_crud_table("Contenidos", CONTENIDOS_PATH)
             elif menu == "Materiales":
-                render_crud_table("Materiales", MATERIALES_PATH)
+                render_materiales_gestion(modo="admin")
             elif menu == "Campañas":
                 render_crud_table("Campañas", CAMPANIAS_PATH)
             elif menu == "Reportes":
