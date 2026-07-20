@@ -7801,6 +7801,222 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
         )
         return
 
+    def actualizar_estado_rapido_tarea(
+        row_tarea,
+        nuevo_estado,
+    ):
+        tarea_id_rapido = str(
+            row_tarea.get("id", "")
+        )
+
+        tareas_actualizadas = normalizar_tareas_internas(
+            cargar_tareas_internas()
+        )
+
+        mask = (
+            tareas_actualizadas["id"]
+            .astype(str)
+            == tarea_id_rapido
+        )
+
+        if not mask.any():
+            return False, "No se encontró la tarea."
+
+        estado_anterior = str(
+            tareas_actualizadas
+            .loc[mask, "estado"]
+            .iloc[0]
+        )
+
+        tareas_actualizadas.loc[
+            mask, "estado"
+        ] = nuevo_estado
+
+        tareas_actualizadas.loc[
+            mask, "fecha_actualizacion"
+        ] = date.today().strftime("%Y-%m-%d")
+
+        tareas_actualizadas.loc[
+            mask, "actualizado_por"
+        ] = nombre_usuario
+
+        recurrente_rapido = str(
+            row_tarea.get("recurrente", "No")
+        )
+
+        debe_generar = (
+            recurrente_rapido == "Sí"
+            and nuevo_estado == "Finalizada"
+            and estado_anterior != "Finalizada"
+        )
+
+        if debe_generar:
+            serie_id_rapido = str(
+                row_tarea.get("serie_id", "")
+            )
+
+            try:
+                ocurrencia_actual = int(
+                    row_tarea.get("ocurrencia", 1) or 1
+                )
+            except (TypeError, ValueError):
+                ocurrencia_actual = 1
+
+            proxima_ocurrencia = ocurrencia_actual + 1
+            ya_existe = False
+
+            if serie_id_rapido:
+                ya_existe = (
+                    (
+                        tareas_actualizadas["serie_id"]
+                        .astype(str)
+                        == serie_id_rapido
+                    )
+                    & (
+                        pd.to_numeric(
+                            tareas_actualizadas["ocurrencia"],
+                            errors="coerce",
+                        )
+                        .fillna(1)
+                        .astype(int)
+                        == proxima_ocurrencia
+                    )
+                ).any()
+
+            if not ya_existe:
+                checklist_actual = parsear_checklist_tarea(
+                    row_tarea.get("checklist", "")
+                )
+
+                checklist_reiniciado = [
+                    {
+                        "texto": str(
+                            item.get("texto", "")
+                        ),
+                        "hecho": False,
+                    }
+                    for item in checklist_actual
+                    if str(
+                        item.get("texto", "")
+                    ).strip()
+                ]
+
+                try:
+                    intervalo_rapido = int(
+                        row_tarea.get("intervalo", 1) or 1
+                    )
+                except (TypeError, ValueError):
+                    intervalo_rapido = 1
+
+                siguiente_fecha = siguiente_fecha_tarea(
+                    str(
+                        row_tarea.get(
+                            "fecha_limite",
+                            "",
+                        )
+                    ),
+                    str(
+                        row_tarea.get(
+                            "frecuencia",
+                            "",
+                        )
+                    ),
+                    intervalo_rapido,
+                )
+
+                nueva_id = (
+                    "TAR-"
+                    + pd.Timestamp.now().strftime(
+                        "%Y%m%d%H%M%S%f"
+                    )
+                )
+
+                nueva_ocurrencia = {
+                    "id": nueva_id,
+                    "proyecto": str(
+                        row_tarea.get(
+                            "proyecto",
+                            "Sin proyecto",
+                        )
+                    ),
+                    "cliente": str(
+                        row_tarea.get("cliente", "")
+                    ),
+                    "tarea": str(
+                        row_tarea.get("tarea", "")
+                    ),
+                    "descripcion": str(
+                        row_tarea.get("descripcion", "")
+                    ),
+                    "responsable_am": str(
+                        row_tarea.get(
+                            "responsable_am",
+                            "Sin asignar",
+                        )
+                    ),
+                    "prioridad": str(
+                        row_tarea.get(
+                            "prioridad",
+                            "Media",
+                        )
+                    ),
+                    "estado": "Pendiente",
+                    "fecha_limite": siguiente_fecha,
+                    "checklist": serializar_checklist_tarea(
+                        checklist_reiniciado
+                    ),
+                    "avance": 0,
+                    "recurrente": "Sí",
+                    "frecuencia": str(
+                        row_tarea.get(
+                            "frecuencia",
+                            "",
+                        )
+                    ),
+                    "intervalo": intervalo_rapido,
+                    "serie_id": serie_id_rapido,
+                    "ocurrencia": proxima_ocurrencia,
+                    "comentarios": "",
+                    "origen": str(
+                        row_tarea.get(
+                            "origen",
+                            "AM Hub",
+                        )
+                    ),
+                    "id_externo": "",
+                    "categoria": str(
+                        row_tarea.get(
+                            "categoria",
+                            "",
+                        )
+                    ),
+                    "fecha_carga": (
+                        date.today().strftime("%Y-%m-%d")
+                    ),
+                    "creado_por": "Generación automática",
+                    "fecha_actualizacion": (
+                        date.today().strftime("%Y-%m-%d")
+                    ),
+                    "actualizado_por": nombre_usuario,
+                }
+
+                tareas_actualizadas = pd.concat(
+                    [
+                        tareas_actualizadas,
+                        pd.DataFrame(
+                            [nueva_ocurrencia]
+                        ),
+                    ],
+                    ignore_index=True,
+                )
+
+        save_csv(
+            tareas_actualizadas,
+            TAREAS_PATH,
+        )
+
+        return True, ""
+
     # ========================================================
     # Organización dinámica del tablero
     # ========================================================
@@ -7993,9 +8209,51 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
                 )
 
                 with st.container(border=True):
-                    st.markdown(
-                        f"**{tarea_titulo}**"
+                    titulo_col, finalizar_col = st.columns(
+                        [4, 1]
                     )
+
+                    with titulo_col:
+                        st.markdown(
+                            f"**{tarea_titulo}**"
+                        )
+
+                    with finalizar_col:
+                        esta_finalizada = (
+                            estado_actual == "Finalizada"
+                        )
+
+                        finalizar_rapido = st.checkbox(
+                            "Finalizada",
+                            value=esta_finalizada,
+                            key=(
+                                f"finalizar_rapido_"
+                                f"{tarea_id}"
+                            ),
+                            help=(
+                                "Marcar o desmarcar la tarea "
+                                "como finalizada."
+                            ),
+                        )
+
+                    if finalizar_rapido != esta_finalizada:
+                        estado_destino_rapido = (
+                            "Finalizada"
+                            if finalizar_rapido
+                            else "Pendiente"
+                        )
+
+                        ok, mensaje = (
+                            actualizar_estado_rapido_tarea(
+                                row,
+                                estado_destino_rapido,
+                            )
+                        )
+
+                        if ok:
+                            st.rerun()
+                        else:
+                            st.error(mensaje)
 
                     st.caption(f"Proyecto: {proyecto_txt}")
 
@@ -8017,6 +8275,56 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
                         f"Prioridad: {prioridad_txt} "
                         f"· Límite: {fecha_txt}"
                     )
+
+                    mover_col, boton_mover_col = st.columns(
+                        [3, 1]
+                    )
+
+                    with mover_col:
+                        estado_destino = st.selectbox(
+                            "Mover a",
+                            estados_kanban,
+                            index=(
+                                estados_kanban.index(
+                                    estado_actual
+                                )
+                                if estado_actual
+                                in estados_kanban
+                                else 0
+                            ),
+                            key=(
+                                f"mover_estado_"
+                                f"{tarea_id}"
+                            ),
+                            label_visibility="collapsed",
+                        )
+
+                    with boton_mover_col:
+                        mover_tarea = st.button(
+                            "Mover",
+                            key=(
+                                f"boton_mover_"
+                                f"{tarea_id}"
+                            ),
+                            use_container_width=True,
+                        )
+
+                    if (
+                        mover_tarea
+                        and estado_destino
+                        != estado_actual
+                    ):
+                        ok, mensaje = (
+                            actualizar_estado_rapido_tarea(
+                                row,
+                                estado_destino,
+                            )
+                        )
+
+                        if ok:
+                            st.rerun()
+                        else:
+                            st.error(mensaje)
 
                     if recurrente_txt == "Sí":
                         st.info(
