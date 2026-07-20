@@ -5403,6 +5403,7 @@ def columnas_por_path(path):
         ],
         "tareas.csv": [
             "id",
+            "proyecto",
             "cliente",
             "tarea",
             "descripcion",
@@ -5418,6 +5419,9 @@ def columnas_por_path(path):
             "serie_id",
             "ocurrencia",
             "comentarios",
+            "origen",
+            "id_externo",
+            "categoria",
             "fecha_carga",
             "creado_por",
             "fecha_actualizacion",
@@ -6998,6 +7002,7 @@ def banner_cliente_global():
 def columnas_tareas_internas():
     return [
         "id",
+        "proyecto",
         "cliente",
         "tarea",
         "descripcion",
@@ -7013,6 +7018,9 @@ def columnas_tareas_internas():
         "serie_id",
         "ocurrencia",
         "comentarios",
+        "origen",
+        "id_externo",
+        "categoria",
         "fecha_carga",
         "creado_por",
         "fecha_actualizacion",
@@ -7195,8 +7203,28 @@ def normalizar_tareas_internas(df):
 
     df = df[columnas].fillna("")
 
+    df["proyecto"] = (
+        df["proyecto"]
+        .astype(str)
+        .str.strip()
+        .replace("", "Sin proyecto")
+    )
+
     df["cliente"] = (
         df["cliente"]
+        .astype(str)
+        .str.strip()
+    )
+
+    df["origen"] = (
+        df["origen"]
+        .astype(str)
+        .str.strip()
+        .replace("", "AM Hub")
+    )
+
+    df["categoria"] = (
+        df["categoria"]
         .astype(str)
         .str.strip()
     )
@@ -7268,8 +7296,8 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
     )
 
     header(
-        "Tareas internas",
-        "Tablero operativo por cliente, responsable y workflow.",
+        "Centro de tareas",
+        "Gestión operativa por proyecto, cliente, responsable y workflow.",
     )
 
     estados_kanban = [
@@ -7332,13 +7360,42 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
     if modo == "equipo":
         clientes_permitidos = set(clientes_opciones)
 
+        # El equipo ve:
+        # - tareas de sus clientes asignados;
+        # - tareas internas de proyecto sin cliente asociado.
         tareas_vista_base = tareas_full[
-            tareas_full["cliente"]
-            .astype(str)
-            .isin(clientes_permitidos)
+            tareas_full["cliente"].astype(str).isin(clientes_permitidos)
+            | tareas_full["cliente"].astype(str).eq("")
         ].copy()
     else:
         tareas_vista_base = tareas_full.copy()
+
+    proyectos_existentes = sorted(
+        [
+            proyecto
+            for proyecto in tareas_full["proyecto"]
+            .dropna()
+            .astype(str)
+            .str.strip()
+            .unique()
+            .tolist()
+            if proyecto
+        ]
+    )
+
+    proyectos_base = [
+        "AM Consultora",
+        "Comunidad",
+        "Estudios",
+        "Pendientes",
+        "Varios",
+    ]
+
+    proyectos_opciones = []
+
+    for proyecto in proyectos_base + proyectos_existentes:
+        if proyecto and proyecto not in proyectos_opciones:
+            proyectos_opciones.append(proyecto)
 
     # ========================================================
     # Alta de tarea
@@ -7354,20 +7411,42 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
             col_1, col_2 = st.columns([1.5, 1])
 
             with col_1:
-                if modo == "equipo" and cliente_fijo:
-                    cliente_sel = cliente_fijo
+                proyecto_sel = st.selectbox(
+                    "Proyecto",
+                    proyectos_opciones + ["Otro proyecto"],
+                    key=f"tarea_proyecto_{modo}_{cliente_fijo}",
+                )
 
-                    st.text_input(
-                        "Cliente",
-                        value=cliente_sel,
-                        disabled=True,
+                if proyecto_sel == "Otro proyecto":
+                    proyecto_nuevo = st.text_input(
+                        "Nombre del nuevo proyecto",
+                        placeholder="Ejemplo: Automatización de facturación",
+                        key=f"tarea_proyecto_nuevo_{modo}_{cliente_fijo}",
                     )
                 else:
-                    cliente_sel = st.selectbox(
-                        "Cliente",
-                        clientes_opciones,
-                        key=f"tarea_cliente_{modo}",
-                    )
+                    proyecto_nuevo = ""
+
+                if modo == "equipo":
+                    opciones_cliente_tarea = ["Sin cliente"] + clientes_opciones
+                else:
+                    opciones_cliente_tarea = ["Sin cliente"] + clientes_opciones
+
+                cliente_elegido = st.selectbox(
+                    "Cliente relacionado — opcional",
+                    opciones_cliente_tarea,
+                    index=(
+                        opciones_cliente_tarea.index(cliente_fijo)
+                        if cliente_fijo in opciones_cliente_tarea
+                        else 0
+                    ),
+                    key=f"tarea_cliente_{modo}_{cliente_fijo}",
+                )
+
+                cliente_sel = (
+                    ""
+                    if cliente_elegido == "Sin cliente"
+                    else cliente_elegido
+                )
 
                 tarea_txt = st.text_input(
                     "Tarea",
@@ -7469,8 +7548,18 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
                         )
                     )
 
+                    proyecto_final = (
+                        proyecto_nuevo.strip()
+                        if proyecto_sel == "Otro proyecto"
+                        else proyecto_sel
+                    )
+
+                    if not proyecto_final:
+                        proyecto_final = "Sin proyecto"
+
                     nueva = {
                         "id": tarea_id,
+                        "proyecto": proyecto_final,
                         "cliente": cliente_sel,
                         "tarea": tarea_txt.strip(),
                         "descripcion": descripcion.strip(),
@@ -7504,6 +7593,9 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
                         ),
                         "ocurrencia": 1,
                         "comentarios": "",
+                        "origen": "AM Hub",
+                        "id_externo": "",
+                        "categoria": "",
                         "fecha_carga": (
                             date.today().strftime("%Y-%m-%d")
                         ),
@@ -7538,24 +7630,45 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
 
     st.markdown("### Tablero Kanban")
 
-    f1, f2, f3, f4 = st.columns(
-        [2, 1.5, 1, 1]
-    )
+    f1, f2, f3 = st.columns([1.5, 1.5, 1.2])
 
     with f1:
-        if modo == "equipo" and cliente_fijo:
-            cliente_filtro = cliente_fijo
-            st.caption(
-                f"Cliente activo: {cliente_filtro}"
-            )
-        else:
-            cliente_filtro = st.selectbox(
-                "Filtrar por cliente",
-                ["Todos"] + clientes_opciones,
-                key=f"filtro_cliente_tareas_{modo}",
-            )
+        proyectos_filtro_opciones = sorted(
+            tareas_vista_base["proyecto"]
+            .dropna()
+            .astype(str)
+            .replace("", "Sin proyecto")
+            .unique()
+            .tolist()
+        )
+
+        proyecto_filtro = st.selectbox(
+            "Proyecto",
+            ["Todos"] + proyectos_filtro_opciones,
+            key=f"filtro_proyecto_tareas_{modo}_{cliente_fijo}",
+        )
 
     with f2:
+        clientes_en_tareas = sorted(
+            [
+                valor
+                for valor in tareas_vista_base["cliente"]
+                .dropna()
+                .astype(str)
+                .str.strip()
+                .unique()
+                .tolist()
+                if valor
+            ]
+        )
+
+        cliente_filtro = st.selectbox(
+            "Cliente relacionado",
+            ["Todos", "Sin cliente"] + clientes_en_tareas,
+            key=f"filtro_cliente_tareas_{modo}_{cliente_fijo}",
+        )
+
+    with f3:
         responsables_disponibles = sorted(
             tareas_vista_base["responsable_am"]
             .dropna()
@@ -7568,26 +7681,54 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
         responsable_filtro = st.selectbox(
             "Responsable",
             ["Todos"] + responsables_disponibles,
-            key=f"filtro_responsable_tareas_{modo}",
+            key=f"filtro_responsable_tareas_{modo}_{cliente_fijo}",
         )
 
-    with f3:
+    f4, f5, f6 = st.columns(3)
+
+    with f4:
         prioridad_filtro = st.selectbox(
             "Prioridad",
             ["Todas"] + prioridades,
-            key=f"filtro_prioridad_tareas_{modo}",
+            key=f"filtro_prioridad_tareas_{modo}_{cliente_fijo}",
         )
 
-    with f4:
+    with f5:
         recurrencia_filtro = st.selectbox(
             "Recurrencia",
             ["Todas", "Recurrentes", "No recurrentes"],
-            key=f"filtro_recurrencia_tareas_{modo}",
+            key=f"filtro_recurrencia_tareas_{modo}_{cliente_fijo}",
+        )
+
+    with f6:
+        origenes_disponibles = sorted(
+            tareas_vista_base["origen"]
+            .dropna()
+            .astype(str)
+            .replace("", "AM Hub")
+            .unique()
+            .tolist()
+        )
+
+        origen_filtro = st.selectbox(
+            "Origen",
+            ["Todos"] + origenes_disponibles,
+            key=f"filtro_origen_tareas_{modo}_{cliente_fijo}",
         )
 
     tareas_vista = tareas_vista_base.copy()
 
-    if cliente_filtro != "Todos":
+    if proyecto_filtro != "Todos":
+        tareas_vista = tareas_vista[
+            tareas_vista["proyecto"].astype(str)
+            == str(proyecto_filtro)
+        ].copy()
+
+    if cliente_filtro == "Sin cliente":
+        tareas_vista = tareas_vista[
+            tareas_vista["cliente"].astype(str).str.strip() == ""
+        ].copy()
+    elif cliente_filtro != "Todos":
         tareas_vista = tareas_vista[
             tareas_vista["cliente"].astype(str)
             == str(cliente_filtro)
@@ -7612,6 +7753,12 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
     elif recurrencia_filtro == "No recurrentes":
         tareas_vista = tareas_vista[
             tareas_vista["recurrente"] != "Sí"
+        ].copy()
+
+    if origen_filtro != "Todos":
+        tareas_vista = tareas_vista[
+            tareas_vista["origen"].astype(str)
+            == str(origen_filtro)
         ].copy()
 
     k1, k2, k3, k4 = st.columns(4)
@@ -7683,8 +7830,17 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
                 tarea_titulo = str(
                     row.get("tarea", "Sin título")
                 )
+                proyecto_txt = str(
+                    row.get("proyecto", "") or "Sin proyecto"
+                )
                 cliente_txt = str(
                     row.get("cliente", "")
+                )
+                origen_txt = str(
+                    row.get("origen", "") or "AM Hub"
+                )
+                categoria_txt = str(
+                    row.get("categoria", "") or ""
                 )
                 responsable_txt = str(
                     row.get(
@@ -7734,10 +7890,23 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
                     st.markdown(
                         f"**{tarea_titulo}**"
                     )
-                    st.caption(cliente_txt)
+
+                    st.caption(f"Proyecto: {proyecto_txt}")
+
+                    if cliente_txt:
+                        st.caption(f"Cliente: {cliente_txt}")
+                    else:
+                        st.caption("Tarea interna sin cliente asociado")
+
                     st.caption(
                         f"Responsable: {responsable_txt}"
                     )
+
+                    detalle_origen = f"Origen: {origen_txt}"
+                    if categoria_txt:
+                        detalle_origen += f" · Categoría: {categoria_txt}"
+
+                    st.caption(detalle_origen)
                     st.caption(
                         f"Prioridad: {prioridad_txt} "
                         f"· Límite: {fecha_txt}"
@@ -8013,6 +8182,7 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
 
                                         nueva_ocurrencia = {
                                             "id": nueva_id,
+                                            "proyecto": proyecto_txt,
                                             "cliente": cliente_txt,
                                             "tarea": tarea_titulo,
                                             "descripcion": (
@@ -8046,6 +8216,9 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
                                                 proxima_ocurrencia
                                             ),
                                             "comentarios": "",
+                                            "origen": origen_txt,
+                                            "id_externo": "",
+                                            "categoria": categoria_txt,
                                             "fecha_carga": (
                                                 date.today()
                                                 .strftime(
