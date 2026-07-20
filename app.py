@@ -7802,20 +7802,122 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
         return
 
     # ========================================================
-    # Kanban
+    # Organización dinámica del tablero
     # ========================================================
 
+    criterio_columnas = st.radio(
+        "Organizar columnas por",
+        [
+            "Estado",
+            "Fecha de vencimiento",
+            "Proyecto",
+            "Cliente",
+        ],
+        horizontal=True,
+        key=f"criterio_columnas_tareas_{modo}_{cliente_fijo}",
+    )
+
+    def grupo_vencimiento_tarea(valor):
+        fecha = pd.to_datetime(
+            str(valor or "").strip(),
+            errors="coerce",
+        )
+
+        if pd.isna(fecha):
+            return "Sin fecha"
+
+        fecha_tarea = fecha.date()
+        hoy = date.today()
+
+        if fecha_tarea < hoy:
+            return "Vencidas"
+
+        if fecha_tarea == hoy:
+            return "Vencen hoy"
+
+        return "Futuras"
+
+    if criterio_columnas == "Estado":
+        grupos_kanban = estados_kanban
+
+    elif criterio_columnas == "Fecha de vencimiento":
+        grupos_kanban = [
+            "Vencidas",
+            "Vencen hoy",
+            "Futuras",
+            "Sin fecha",
+        ]
+
+    elif criterio_columnas == "Proyecto":
+        grupos_kanban = sorted(
+            tareas_vista["proyecto"]
+            .fillna("")
+            .astype(str)
+            .str.strip()
+            .replace("", "Sin proyecto")
+            .unique()
+            .tolist()
+        )
+
+    else:
+        grupos_kanban = sorted(
+            tareas_vista["cliente"]
+            .fillna("")
+            .astype(str)
+            .str.strip()
+            .replace("", "Sin cliente")
+            .unique()
+            .tolist()
+        )
+
     columnas_kanban = st.columns(
-        len(estados_kanban)
+        len(grupos_kanban)
     )
 
     for idx_estado, estado in enumerate(
-        estados_kanban
+        grupos_kanban
     ):
-        subset = tareas_vista[
-            tareas_vista["estado"].astype(str)
-            == estado
-        ].copy()
+        if criterio_columnas == "Estado":
+            subset = tareas_vista[
+                tareas_vista["estado"].astype(str)
+                == estado
+            ].copy()
+
+        elif criterio_columnas == "Fecha de vencimiento":
+            clasificacion_vencimiento = (
+                tareas_vista["fecha_limite"]
+                .apply(grupo_vencimiento_tarea)
+            )
+
+            subset = tareas_vista[
+                clasificacion_vencimiento == estado
+            ].copy()
+
+        elif criterio_columnas == "Proyecto":
+            proyectos_normalizados = (
+                tareas_vista["proyecto"]
+                .fillna("")
+                .astype(str)
+                .str.strip()
+                .replace("", "Sin proyecto")
+            )
+
+            subset = tareas_vista[
+                proyectos_normalizados == estado
+            ].copy()
+
+        else:
+            clientes_normalizados = (
+                tareas_vista["cliente"]
+                .fillna("")
+                .astype(str)
+                .str.strip()
+                .replace("", "Sin cliente")
+            )
+
+            subset = tareas_vista[
+                clientes_normalizados == estado
+            ].copy()
 
         with columnas_kanban[idx_estado]:
             st.markdown(f"#### {estado}")
@@ -7826,6 +7928,10 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
                 continue
 
             for _, row in subset.iterrows():
+                estado_actual = str(
+                    row.get("estado", "") or "Pendiente"
+                )
+
                 tarea_id = str(row.get("id", ""))
                 tarea_titulo = str(
                     row.get("tarea", "Sin título")
@@ -7976,8 +8082,10 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
                             "Estado",
                             estados_kanban,
                             index=(
-                                estados_kanban.index(estado)
-                                if estado in estados_kanban
+                                estados_kanban.index(
+                                    estado_actual
+                                )
+                                if estado_actual in estados_kanban
                                 else 0
                             ),
                             key=f"estado_tarea_{tarea_id}",
