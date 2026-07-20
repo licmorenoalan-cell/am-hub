@@ -7360,12 +7360,32 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
     if modo == "equipo":
         clientes_permitidos = set(clientes_opciones)
 
-        # El equipo ve:
-        # - tareas de sus clientes asignados;
-        # - tareas internas de proyecto sin cliente asociado.
+        responsable_normalizado = (
+            tareas_full["responsable_am"]
+            .fillna("")
+            .astype(str)
+            .str.strip()
+        )
+
+        cliente_normalizado = (
+            tareas_full["cliente"]
+            .fillna("")
+            .astype(str)
+            .str.strip()
+        )
+
+        # El integrante ve:
+        # - toda tarea asignada directamente a su username;
+        # - tareas todavía sin asignar de sus clientes habilitados.
         tareas_vista_base = tareas_full[
-            tareas_full["cliente"].astype(str).isin(clientes_permitidos)
-            | tareas_full["cliente"].astype(str).eq("")
+            responsable_normalizado.eq(str(username))
+            |
+            (
+                cliente_normalizado.isin(clientes_permitidos)
+                & responsable_normalizado.isin(
+                    ["", "Sin asignar"]
+                )
+            )
         ].copy()
     else:
         tareas_vista_base = tareas_full.copy()
@@ -8210,7 +8230,8 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
 
                 with st.container(border=True):
                     titulo_col, finalizar_col = st.columns(
-                        [4, 1]
+                        [6, 1],
+                        vertical_alignment="center",
                     )
 
                     with titulo_col:
@@ -8219,41 +8240,31 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
                         )
 
                     with finalizar_col:
-                        esta_finalizada = (
-                            estado_actual == "Finalizada"
-                        )
-
-                        finalizar_rapido = st.checkbox(
-                            "Finalizada",
-                            value=esta_finalizada,
-                            key=(
-                                f"finalizar_rapido_"
-                                f"{tarea_id}"
-                            ),
-                            help=(
-                                "Marcar o desmarcar la tarea "
-                                "como finalizada."
-                            ),
-                        )
-
-                    if finalizar_rapido != esta_finalizada:
-                        estado_destino_rapido = (
-                            "Finalizada"
-                            if finalizar_rapido
-                            else "Pendiente"
-                        )
-
-                        ok, mensaje = (
-                            actualizar_estado_rapido_tarea(
-                                row,
-                                estado_destino_rapido,
+                        if estado_actual != "Finalizada":
+                            finalizar_rapido = st.button(
+                                "✓",
+                                key=(
+                                    f"finalizar_rapido_"
+                                    f"{tarea_id}"
+                                ),
+                                help="Marcar como finalizada",
+                                use_container_width=True,
                             )
-                        )
 
-                        if ok:
-                            st.rerun()
+                            if finalizar_rapido:
+                                ok, mensaje = (
+                                    actualizar_estado_rapido_tarea(
+                                        row,
+                                        "Finalizada",
+                                    )
+                                )
+
+                                if ok:
+                                    st.rerun()
+                                else:
+                                    st.error(mensaje)
                         else:
-                            st.error(mensaje)
+                            st.caption("✓")
 
                     st.caption(f"Proyecto: {proyecto_txt}")
 
@@ -8275,56 +8286,6 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
                         f"Prioridad: {prioridad_txt} "
                         f"· Límite: {fecha_txt}"
                     )
-
-                    mover_col, boton_mover_col = st.columns(
-                        [3, 1]
-                    )
-
-                    with mover_col:
-                        estado_destino = st.selectbox(
-                            "Mover a",
-                            estados_kanban,
-                            index=(
-                                estados_kanban.index(
-                                    estado_actual
-                                )
-                                if estado_actual
-                                in estados_kanban
-                                else 0
-                            ),
-                            key=(
-                                f"mover_estado_"
-                                f"{tarea_id}"
-                            ),
-                            label_visibility="collapsed",
-                        )
-
-                    with boton_mover_col:
-                        mover_tarea = st.button(
-                            "Mover",
-                            key=(
-                                f"boton_mover_"
-                                f"{tarea_id}"
-                            ),
-                            use_container_width=True,
-                        )
-
-                    if (
-                        mover_tarea
-                        and estado_destino
-                        != estado_actual
-                    ):
-                        ok, mensaje = (
-                            actualizar_estado_rapido_tarea(
-                                row,
-                                estado_destino,
-                            )
-                        )
-
-                        if ok:
-                            st.rerun()
-                        else:
-                            st.error(mensaje)
 
                     if recurrente_txt == "Sí":
                         st.info(
@@ -8387,7 +8348,7 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
                         "Actualizar tarea"
                     ):
                         nuevo_estado = st.selectbox(
-                            "Estado",
+                            "Estado / columna",
                             estados_kanban,
                             index=(
                                 estados_kanban.index(
@@ -8397,6 +8358,35 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
                                 else 0
                             ),
                             key=f"estado_tarea_{tarea_id}",
+                        )
+
+                        responsables_actualizacion = list(
+                            responsables
+                        )
+
+                        if (
+                            responsable_txt
+                            not in responsables_actualizacion
+                        ):
+                            responsables_actualizacion.append(
+                                responsable_txt
+                            )
+
+                        nuevo_responsable = st.selectbox(
+                            "Asignar a",
+                            responsables_actualizacion,
+                            index=(
+                                responsables_actualizacion.index(
+                                    responsable_txt
+                                )
+                                if responsable_txt
+                                in responsables_actualizacion
+                                else 0
+                            ),
+                            key=(
+                                f"responsable_tarea_"
+                                f"{tarea_id}"
+                            ),
                         )
 
                         nuevos_items_txt = st.text_area(
@@ -8474,6 +8464,10 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
                                 tareas_actualizadas.loc[
                                     mask, "estado"
                                 ] = nuevo_estado
+
+                                tareas_actualizadas.loc[
+                                    mask, "responsable_am"
+                                ] = nuevo_responsable
 
                                 tareas_actualizadas.loc[
                                     mask, "checklist"
