@@ -7303,6 +7303,7 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
     )
 
     estados_kanban = [
+        "A priorizar",
         "Pendiente",
         "En curso",
         "En revisión",
@@ -7683,6 +7684,161 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
         )
 
         return True, ""
+
+    # ========================================================
+    # Captura rápida / Bandeja de entrada
+    # ========================================================
+
+    with st.container(border=True):
+        st.markdown("### 📥 Captura rápida")
+        st.caption(
+            "Anotá o pegá un pendiente. Después podés abrir "
+            "la tarjeta para clasificarlo."
+        )
+
+        captura_rapida = st.text_area(
+            "¿Qué tenés pendiente?",
+            placeholder=(
+                "Ejemplo: revisar el presupuesto de pauta de Ritual"
+            ),
+            height=90,
+            key=f"captura_rapida_tareas_{modo}_{cliente_fijo}",
+            label_visibility="collapsed",
+        )
+
+        captura_opciones, captura_boton = st.columns(
+            [2, 1],
+            vertical_alignment="bottom",
+        )
+
+        with captura_opciones:
+            una_por_linea = st.checkbox(
+                "Crear una tarjeta por cada línea",
+                value=False,
+                key=f"captura_por_linea_{modo}_{cliente_fijo}",
+            )
+
+        with captura_boton:
+            crear_captura = st.button(
+                "Crear tarjeta",
+                type="primary",
+                use_container_width=True,
+                key=f"crear_captura_{modo}_{cliente_fijo}",
+            )
+
+        if crear_captura:
+            texto_captura = captura_rapida.strip()
+
+            if not texto_captura:
+                st.warning(
+                    "Escribí un pendiente antes de crear la tarjeta."
+                )
+            else:
+                if una_por_linea:
+                    pendientes = [
+                        linea.strip()
+                        for linea in texto_captura.splitlines()
+                        if linea.strip()
+                    ]
+                else:
+                    pendientes = [texto_captura]
+
+                nuevas_tareas = []
+                ahora_base = pd.Timestamp.now()
+
+                for indice, pendiente in enumerate(pendientes):
+                    ahora_id = (
+                        ahora_base
+                        + pd.Timedelta(
+                            microseconds=indice
+                        )
+                    ).strftime("%Y%m%d%H%M%S%f")
+
+                    if una_por_linea:
+                        titulo_captura = pendiente
+                        descripcion_captura = ""
+                    else:
+                        lineas_captura = [
+                            linea.strip()
+                            for linea in pendiente.splitlines()
+                            if linea.strip()
+                        ]
+
+                        titulo_captura = (
+                            lineas_captura[0]
+                            if lineas_captura
+                            else pendiente
+                        )
+
+                        descripcion_captura = (
+                            pendiente
+                            if len(lineas_captura) > 1
+                            else ""
+                        )
+
+                    nuevas_tareas.append({
+                        "id": f"TAR-{ahora_id}",
+                        "unidad": "AM Consultora",
+                        "proyecto": "AM Consultora",
+                        "cliente": "",
+                        "tarea": titulo_captura[:250],
+                        "descripcion": descripcion_captura,
+                        "responsable_am": "Sin asignar",
+                        "prioridad": "Media",
+                        "estado": "Pendiente",
+                        "fecha_limite": "",
+                        "checklist": "[]",
+                        "avance": 0,
+                        "recurrente": "No",
+                        "frecuencia": "",
+                        "intervalo": 1,
+                        "serie_id": "",
+                        "ocurrencia": 1,
+                        "comentarios": "",
+                        "origen": "Captura rápida",
+                        "id_externo": "",
+                        "categoria": "Bandeja de entrada",
+                        "fecha_carga": (
+                            date.today().strftime("%Y-%m-%d")
+                        ),
+                        "creado_por": nombre_usuario,
+                        "fecha_actualizacion": (
+                            date.today().strftime("%Y-%m-%d")
+                        ),
+                        "actualizado_por": nombre_usuario,
+                    })
+
+                tareas_actualizadas = pd.concat(
+                    [
+                        tareas_full,
+                        pd.DataFrame(nuevas_tareas),
+                    ],
+                    ignore_index=True,
+                )
+
+                save_csv(
+                    tareas_actualizadas,
+                    TAREAS_PATH,
+                )
+
+                cantidad = len(nuevas_tareas)
+
+                st.session_state[
+                    f"captura_rapida_tareas_{modo}_{cliente_fijo}"
+                ] = ""
+
+                st.success(
+                    (
+                        "Tarjeta creada en la Bandeja de entrada."
+                        if cantidad == 1
+                        else (
+                            f"{cantidad} tarjetas creadas en "
+                            "la Bandeja de entrada."
+                        )
+                    )
+                )
+
+                st.rerun()
 
     # ========================================================
     # Alta de tarea
