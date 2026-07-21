@@ -301,6 +301,82 @@ def cargar_tareas():
         ).fillna("")
 
 
+@st.cache_data(
+    ttl=120,
+    show_spinner=False,
+)
+def cargar_usuarios_equipo():
+    engine = get_engine()
+
+    consulta = text(
+        """
+        SELECT
+            username,
+            name
+        FROM usuarios
+        WHERE
+            LOWER(TRIM(COALESCE(role, ''))) = 'equipo'
+            AND LOWER(TRIM(COALESCE(activo, 'Sí'))) IN (
+                'sí',
+                'si',
+                'yes',
+                'true',
+                '1',
+                'activo'
+            )
+            AND TRIM(COALESCE(username, '')) <> ''
+        ORDER BY
+            COALESCE(
+                NULLIF(TRIM(name), ''),
+                username
+            )
+        """
+    )
+
+    with engine.connect() as conn:
+        usuarios = pd.read_sql(
+            consulta,
+            conn,
+        ).fillna("")
+
+    resultado = []
+
+    for _, row in usuarios.iterrows():
+        username = str(
+            row.get("username", "")
+        ).strip()
+
+        nombre = str(
+            row.get("name", "")
+        ).strip()
+
+        if not username:
+            continue
+
+        resultado.append({
+            "username": username,
+            "nombre": nombre or username,
+        })
+
+    return resultado
+
+
+def mapa_responsables_equipo():
+    usuarios = cargar_usuarios_equipo()
+
+    mapa = {
+        "Sin asignar": "Sin asignar",
+    }
+
+    for usuario in usuarios:
+        username = usuario["username"]
+        nombre = usuario["nombre"]
+
+        mapa[username] = nombre
+
+    return mapa
+
+
 def limpiar_cache():
     cargar_tareas.clear()
 
@@ -787,7 +863,9 @@ if pagina_pocket == "📋 Mi tablero":
         if valor
     ])
 
-    responsables_disponibles = sorted([
+    responsables_mapa = mapa_responsables_equipo()
+
+    responsables_asignados = [
         valor
         for valor in (
             tareas["responsable_am"]
@@ -799,7 +877,17 @@ if pagina_pocket == "📋 Mi tablero":
             .tolist()
         )
         if valor
-    ])
+    ]
+
+    for responsable_existente in responsables_asignados:
+        if responsable_existente not in responsables_mapa:
+            responsables_mapa[
+                responsable_existente
+            ] = responsable_existente
+
+    responsables_disponibles = list(
+        responsables_mapa.keys()
+    )
 
     prioridades_disponibles = [
         prioridad
@@ -873,6 +961,14 @@ if pagina_pocket == "📋 Mi tablero":
             responsable_filtro = st.selectbox(
                 "Responsable",
                 ["Todos"] + responsables_disponibles,
+                format_func=lambda valor: (
+                    "Todos"
+                    if valor == "Todos"
+                    else responsables_mapa.get(
+                        valor,
+                        valor,
+                    )
+                ),
                 key="pocket_filtro_responsable",
             )
 
@@ -1252,27 +1348,41 @@ if pagina_pocket == "📋 Mi tablero":
                         "Sin checklist cargado."
                     )
 
-                responsables_opciones = [
-                    "Sin asignar",
-                    "alan",
-                    "equipo",
-                ]
+                responsables_tarjeta_mapa = (
+                    mapa_responsables_equipo()
+                )
 
-                if responsable not in responsables_opciones:
-                    responsables_opciones.append(
+                if (
+                    responsable
+                    and responsable
+                    not in responsables_tarjeta_mapa
+                ):
+                    responsables_tarjeta_mapa[
                         responsable
-                    )
+                    ] = responsable
+
+                responsables_opciones = list(
+                    responsables_tarjeta_mapa.keys()
+                )
+
+                responsable_actual = (
+                    responsable
+                    if responsable
+                    in responsables_opciones
+                    else "Sin asignar"
+                )
 
                 responsable_editado = st.selectbox(
                     "Responsable",
                     responsables_opciones,
-                    index=(
-                        responsables_opciones.index(
-                            responsable
+                    index=responsables_opciones.index(
+                        responsable_actual
+                    ),
+                    format_func=lambda valor: (
+                        responsables_tarjeta_mapa.get(
+                            valor,
+                            valor,
                         )
-                        if responsable
-                        in responsables_opciones
-                        else 0
                     ),
                     key=(
                         f"pocket_responsable_"
