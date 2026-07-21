@@ -769,35 +769,34 @@ pagina_pocket = st.radio(
 )
 
 if pagina_pocket == "📥 Capturar":
-    if st.session_state.pop(
-        "pocket_limpiar_captura",
-        False,
+    with st.form(
+        "pocket_form_captura",
+        clear_on_submit=True,
+        border=False,
     ):
-        st.session_state.pop(
-            "pocket_captura",
-            None,
+        pendiente = st.text_area(
+            "¿Qué tenés pendiente?",
+            placeholder="Escribí o dictá un pendiente...",
+            height=145,
+            key="pocket_captura_form",
         )
 
-    pendiente = st.text_area(
-        "¿Qué tenés pendiente?",
-        placeholder=(
-            "Escribí o dictá un pendiente..."
-        ),
-        height=145,
-        key="pocket_captura",
-    )
+        una_por_linea = st.checkbox(
+            "Crear una tarjeta por línea",
+            value=False,
+            key="pocket_una_por_linea_form",
+        )
 
-    una_por_linea = st.checkbox(
-        "Crear una tarjeta por línea",
-        value=False,
-    )
+        crear_tarea = st.form_submit_button(
+            "Crear tarea",
+            type="primary",
+            use_container_width=True,
+        )
 
-    if st.button(
-        "Crear tarea",
-        type="primary",
-        use_container_width=True,
-    ):
-        contenido = pendiente.strip()
+    if crear_tarea:
+        contenido = str(
+            pendiente or ""
+        ).strip()
 
         if not contenido:
             st.warning(
@@ -813,25 +812,32 @@ if pagina_pocket == "📥 Capturar":
             else:
                 textos = [contenido]
 
-            cantidad = insertar_tareas(
-                textos,
-                una_por_linea,
-            )
-
-            if cantidad:
-                st.session_state[
-                    "pocket_limpiar_captura"
-                ] = True
-
-                st.success(
-                    (
-                        "Tarea creada."
-                        if cantidad == 1
-                        else f"{cantidad} tareas creadas."
-                    )
+            try:
+                cantidad = insertar_tareas(
+                    textos,
+                    una_por_linea,
                 )
 
-                st.rerun()
+                if cantidad == 1:
+                    st.success(
+                        "Tarea creada en A priorizar."
+                    )
+                elif cantidad > 1:
+                    st.success(
+                        f"{cantidad} tareas creadas "
+                        "en A priorizar."
+                    )
+                else:
+                    st.warning(
+                        "No se creó ninguna tarea."
+                    )
+
+            except Exception as exc:
+                st.error(
+                    "No se pudo crear la tarea."
+                )
+                st.exception(exc)
+
 
 if pagina_pocket == "📋 Mi tablero":
     tareas = cargar_tareas()
