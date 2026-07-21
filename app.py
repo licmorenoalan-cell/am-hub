@@ -5403,6 +5403,7 @@ def columnas_por_path(path):
         ],
         "tareas.csv": [
             "id",
+            "unidad",
             "proyecto",
             "cliente",
             "tarea",
@@ -7002,6 +7003,7 @@ def banner_cliente_global():
 def columnas_tareas_internas():
     return [
         "id",
+        "unidad",
         "proyecto",
         "cliente",
         "tarea",
@@ -7297,7 +7299,7 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
 
     header(
         "Centro de tareas",
-        "Gestión operativa por proyecto, cliente, responsable y workflow.",
+        "Gestión operativa por unidad, cliente, responsable y estado.",
     )
 
     estados_kanban = [
@@ -7320,46 +7322,106 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
         "Mensual",
     ]
 
+    unidades_base = [
+        "AM Consultora",
+        "Comunidad",
+        "BRC Trading",
+    ]
+
+    colores_unidad = {
+        "AM Consultora": "🟦",
+        "Comunidad": "🟩",
+        "BRC Trading": "🟧",
+    }
+
     usuarios_equipo = usuarios_equipo_disponibles()
     responsables = ["Sin asignar"] + usuarios_equipo
-
-    if modo == "equipo":
-        clientes_opciones = (
-            [cliente_fijo]
-            if cliente_fijo
-            else clientes_visibles_para_usuario()
-        )
-    else:
-        clientes_df = load_clientes()
-
-        if (
-            clientes_df is None
-            or clientes_df.empty
-            or "cliente" not in clientes_df.columns
-        ):
-            clientes_opciones = []
-        else:
-            clientes_opciones = sorted(
-                clientes_df["cliente"]
-                .dropna()
-                .astype(str)
-                .unique()
-                .tolist()
-            )
-
-    if not clientes_opciones:
-        st.info(
-            "No hay clientes disponibles para cargar tareas."
-        )
-        return
 
     tareas_full = normalizar_tareas_internas(
         cargar_tareas_internas()
     )
 
-    if modo == "equipo":
-        clientes_permitidos = set(clientes_opciones)
+    if "unidad" not in tareas_full.columns:
+        tareas_full["unidad"] = ""
 
+    tareas_full["unidad"] = (
+        tareas_full["unidad"]
+        .fillna("")
+        .astype(str)
+        .str.strip()
+    )
+
+    tareas_full["cliente"] = (
+        tareas_full["cliente"]
+        .fillna("")
+        .astype(str)
+        .str.strip()
+    )
+
+    tareas_full["proyecto"] = (
+        tareas_full["proyecto"]
+        .fillna("")
+        .astype(str)
+        .str.strip()
+    )
+
+    # Compatibilidad con tareas anteriores.
+    tareas_full.loc[
+        tareas_full["unidad"].eq("")
+        & tareas_full["cliente"].ne(""),
+        "unidad",
+    ] = "AM Consultora"
+
+    tareas_full.loc[
+        tareas_full["unidad"].eq("")
+        & tareas_full["proyecto"].eq("Comunidad"),
+        "unidad",
+    ] = "Comunidad"
+
+    tareas_full.loc[
+        tareas_full["unidad"].eq("")
+        & tareas_full["proyecto"].eq("BRC Trading"),
+        "unidad",
+    ] = "BRC Trading"
+
+    tareas_full.loc[
+        tareas_full["unidad"].eq(""),
+        "unidad",
+    ] = "AM Consultora"
+
+    # --------------------------------------------------------
+    # Clientes disponibles
+    # --------------------------------------------------------
+
+    clientes_df = load_clientes()
+
+    if (
+        clientes_df is None
+        or clientes_df.empty
+        or "cliente" not in clientes_df.columns
+    ):
+        todos_clientes = []
+    else:
+        todos_clientes = sorted(
+            clientes_df["cliente"]
+            .dropna()
+            .astype(str)
+            .str.strip()
+            .loc[lambda serie: serie.ne("")]
+            .unique()
+            .tolist()
+        )
+
+    if modo == "equipo":
+        clientes_permitidos = clientes_visibles_para_usuario()
+    else:
+        clientes_permitidos = todos_clientes
+
+    # --------------------------------------------------------
+    # Visibilidad de tareas para equipo
+    # --------------------------------------------------------
+
+    if modo == "equipo":
         responsable_normalizado = (
             tareas_full["responsable_am"]
             .fillna("")
@@ -7374,14 +7436,13 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
             .str.strip()
         )
 
-        # El integrante ve:
-        # - toda tarea asignada directamente a su username;
-        # - tareas todavía sin asignar de sus clientes habilitados.
         tareas_vista_base = tareas_full[
             responsable_normalizado.eq(str(username))
             |
             (
-                cliente_normalizado.isin(clientes_permitidos)
+                cliente_normalizado.isin(
+                    set(clientes_permitidos)
+                )
                 & responsable_normalizado.isin(
                     ["", "Sin asignar"]
                 )
@@ -7390,436 +7451,25 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
     else:
         tareas_vista_base = tareas_full.copy()
 
-    proyectos_existentes = sorted(
-        [
-            proyecto
-            for proyecto in tareas_full["proyecto"]
-            .dropna()
-            .astype(str)
-            .str.strip()
-            .unique()
-            .tolist()
-            if proyecto
-        ]
+    unidades_existentes = sorted(
+        tareas_full["unidad"]
+        .dropna()
+        .astype(str)
+        .str.strip()
+        .loc[lambda serie: serie.ne("")]
+        .unique()
+        .tolist()
     )
 
-    proyectos_base = [
-        "AM Consultora",
-        "Comunidad",
-        "Estudios",
-        "Pendientes",
-        "Varios",
-    ]
+    unidades_opciones = []
 
-    proyectos_opciones = []
-
-    for proyecto in proyectos_base + proyectos_existentes:
-        if proyecto and proyecto not in proyectos_opciones:
-            proyectos_opciones.append(proyecto)
+    for unidad in unidades_base + unidades_existentes:
+        if unidad and unidad not in unidades_opciones:
+            unidades_opciones.append(unidad)
 
     # ========================================================
-    # Alta de tarea
+    # Helper: cambio rápido de estado
     # ========================================================
-
-    with st.expander(
-        "Crear nueva tarea interna",
-        expanded=(modo == "admin"),
-    ):
-        with st.form(
-            f"form_nueva_tarea_interna_{modo}_{cliente_fijo or 'admin'}"
-        ):
-            col_1, col_2 = st.columns([1.5, 1])
-
-            with col_1:
-                proyecto_sel = st.selectbox(
-                    "Proyecto",
-                    proyectos_opciones + ["Otro proyecto"],
-                    key=f"tarea_proyecto_{modo}_{cliente_fijo}",
-                )
-
-                if proyecto_sel == "Otro proyecto":
-                    proyecto_nuevo = st.text_input(
-                        "Nombre del nuevo proyecto",
-                        placeholder="Ejemplo: Automatización de facturación",
-                        key=f"tarea_proyecto_nuevo_{modo}_{cliente_fijo}",
-                    )
-                else:
-                    proyecto_nuevo = ""
-
-                if modo == "equipo":
-                    opciones_cliente_tarea = ["Sin cliente"] + clientes_opciones
-                else:
-                    opciones_cliente_tarea = ["Sin cliente"] + clientes_opciones
-
-                cliente_elegido = st.selectbox(
-                    "Cliente relacionado — opcional",
-                    opciones_cliente_tarea,
-                    index=(
-                        opciones_cliente_tarea.index(cliente_fijo)
-                        if cliente_fijo in opciones_cliente_tarea
-                        else 0
-                    ),
-                    key=f"tarea_cliente_{modo}_{cliente_fijo}",
-                )
-
-                cliente_sel = (
-                    ""
-                    if cliente_elegido == "Sin cliente"
-                    else cliente_elegido
-                )
-
-                tarea_txt = st.text_input(
-                    "Tarea",
-                    placeholder="Ejemplo: preparar reporte mensual",
-                )
-
-                descripcion = st.text_area(
-                    "Descripción / detalle operativo",
-                    placeholder=(
-                        "Indicaciones, links, contexto y "
-                        "entregables esperados."
-                    ),
-                    height=120,
-                )
-
-                checklist_txt = st.text_area(
-                    "Checklist / workflow",
-                    placeholder=(
-                        "Un paso por línea. Ejemplo:\n"
-                        "Relevar información\n"
-                        "Preparar borrador\n"
-                        "Revisar internamente\n"
-                        "Enviar al cliente"
-                    ),
-                    height=140,
-                )
-
-            with col_2:
-                responsable_sel = st.selectbox(
-                    "Responsable",
-                    responsables,
-                    key=f"tarea_responsable_{modo}",
-                )
-
-                prioridad_sel = st.selectbox(
-                    "Prioridad",
-                    prioridades,
-                    index=1,
-                    key=f"tarea_prioridad_{modo}",
-                )
-
-                fecha_limite = st.date_input(
-                    "Fecha límite",
-                    value=date.today(),
-                )
-
-                estado_sel = st.selectbox(
-                    "Estado inicial",
-                    estados_kanban,
-                    key=f"tarea_estado_inicial_{modo}",
-                )
-
-                es_recurrente = st.checkbox(
-                    "Tarea recurrente",
-                    value=False,
-                )
-
-                if es_recurrente:
-                    frecuencia_sel = st.selectbox(
-                        "Frecuencia",
-                        frecuencias,
-                    )
-
-                    intervalo_sel = st.number_input(
-                        "Repetir cada",
-                        min_value=1,
-                        max_value=24,
-                        value=1,
-                        step=1,
-                        help=(
-                            "Ejemplo: cada 1 semana o "
-                            "cada 3 meses."
-                        ),
-                    )
-                else:
-                    frecuencia_sel = ""
-                    intervalo_sel = 1
-
-            crear = st.form_submit_button(
-                "Crear tarea",
-                use_container_width=True,
-            )
-
-            if crear:
-                if not tarea_txt.strip():
-                    st.error(
-                        "La tarea no puede estar vacía."
-                    )
-                else:
-                    ahora_id = pd.Timestamp.now().strftime(
-                        "%Y%m%d%H%M%S%f"
-                    )
-
-                    tarea_id = f"TAR-{ahora_id}"
-
-                    checklist_items = (
-                        checklist_tarea_desde_texto(
-                            checklist_txt
-                        )
-                    )
-
-                    proyecto_final = (
-                        proyecto_nuevo.strip()
-                        if proyecto_sel == "Otro proyecto"
-                        else proyecto_sel
-                    )
-
-                    if not proyecto_final:
-                        proyecto_final = "Sin proyecto"
-
-                    nueva = {
-                        "id": tarea_id,
-                        "proyecto": proyecto_final,
-                        "cliente": cliente_sel,
-                        "tarea": tarea_txt.strip(),
-                        "descripcion": descripcion.strip(),
-                        "responsable_am": responsable_sel,
-                        "prioridad": prioridad_sel,
-                        "estado": estado_sel,
-                        "fecha_limite": (
-                            fecha_limite.strftime("%Y-%m-%d")
-                        ),
-                        "checklist": (
-                            serializar_checklist_tarea(
-                                checklist_items
-                            )
-                        ),
-                        "avance": (
-                            avance_checklist_tarea(
-                                checklist_items
-                            )
-                        ),
-                        "recurrente": (
-                            "Sí"
-                            if es_recurrente
-                            else "No"
-                        ),
-                        "frecuencia": frecuencia_sel,
-                        "intervalo": int(intervalo_sel),
-                        "serie_id": (
-                            f"SER-{ahora_id}"
-                            if es_recurrente
-                            else ""
-                        ),
-                        "ocurrencia": 1,
-                        "comentarios": "",
-                        "origen": "AM Hub",
-                        "id_externo": "",
-                        "categoria": "",
-                        "fecha_carga": (
-                            date.today().strftime("%Y-%m-%d")
-                        ),
-                        "creado_por": nombre_usuario,
-                        "fecha_actualizacion": (
-                            date.today().strftime("%Y-%m-%d")
-                        ),
-                        "actualizado_por": nombre_usuario,
-                    }
-
-                    actualizado = pd.concat(
-                        [
-                            tareas_full,
-                            pd.DataFrame([nueva]),
-                        ],
-                        ignore_index=True,
-                    )
-
-                    save_csv(
-                        actualizado,
-                        TAREAS_PATH,
-                    )
-
-                    st.success(
-                        "Tarea creada correctamente."
-                    )
-                    st.rerun()
-
-    # ========================================================
-    # Filtros
-    # ========================================================
-
-    st.markdown("### Tablero Kanban")
-
-    f1, f2, f3 = st.columns([1.5, 1.5, 1.2])
-
-    with f1:
-        proyectos_filtro_opciones = sorted(
-            tareas_vista_base["proyecto"]
-            .dropna()
-            .astype(str)
-            .replace("", "Sin proyecto")
-            .unique()
-            .tolist()
-        )
-
-        proyecto_filtro = st.selectbox(
-            "Proyecto",
-            ["Todos"] + proyectos_filtro_opciones,
-            key=f"filtro_proyecto_tareas_{modo}_{cliente_fijo}",
-        )
-
-    with f2:
-        clientes_en_tareas = sorted(
-            [
-                valor
-                for valor in tareas_vista_base["cliente"]
-                .dropna()
-                .astype(str)
-                .str.strip()
-                .unique()
-                .tolist()
-                if valor
-            ]
-        )
-
-        cliente_filtro = st.selectbox(
-            "Cliente relacionado",
-            ["Todos", "Sin cliente"] + clientes_en_tareas,
-            key=f"filtro_cliente_tareas_{modo}_{cliente_fijo}",
-        )
-
-    with f3:
-        responsables_disponibles = sorted(
-            tareas_vista_base["responsable_am"]
-            .dropna()
-            .astype(str)
-            .replace("", "Sin asignar")
-            .unique()
-            .tolist()
-        )
-
-        responsable_filtro = st.selectbox(
-            "Responsable",
-            ["Todos"] + responsables_disponibles,
-            key=f"filtro_responsable_tareas_{modo}_{cliente_fijo}",
-        )
-
-    f4, f5, f6 = st.columns(3)
-
-    with f4:
-        prioridad_filtro = st.selectbox(
-            "Prioridad",
-            ["Todas"] + prioridades,
-            key=f"filtro_prioridad_tareas_{modo}_{cliente_fijo}",
-        )
-
-    with f5:
-        recurrencia_filtro = st.selectbox(
-            "Recurrencia",
-            ["Todas", "Recurrentes", "No recurrentes"],
-            key=f"filtro_recurrencia_tareas_{modo}_{cliente_fijo}",
-        )
-
-    with f6:
-        origenes_disponibles = sorted(
-            tareas_vista_base["origen"]
-            .dropna()
-            .astype(str)
-            .replace("", "AM Hub")
-            .unique()
-            .tolist()
-        )
-
-        origen_filtro = st.selectbox(
-            "Origen",
-            ["Todos"] + origenes_disponibles,
-            key=f"filtro_origen_tareas_{modo}_{cliente_fijo}",
-        )
-
-    tareas_vista = tareas_vista_base.copy()
-
-    if proyecto_filtro != "Todos":
-        tareas_vista = tareas_vista[
-            tareas_vista["proyecto"].astype(str)
-            == str(proyecto_filtro)
-        ].copy()
-
-    if cliente_filtro == "Sin cliente":
-        tareas_vista = tareas_vista[
-            tareas_vista["cliente"].astype(str).str.strip() == ""
-        ].copy()
-    elif cliente_filtro != "Todos":
-        tareas_vista = tareas_vista[
-            tareas_vista["cliente"].astype(str)
-            == str(cliente_filtro)
-        ].copy()
-
-    if responsable_filtro != "Todos":
-        tareas_vista = tareas_vista[
-            tareas_vista["responsable_am"].astype(str)
-            == str(responsable_filtro)
-        ].copy()
-
-    if prioridad_filtro != "Todas":
-        tareas_vista = tareas_vista[
-            tareas_vista["prioridad"].astype(str)
-            == str(prioridad_filtro)
-        ].copy()
-
-    if recurrencia_filtro == "Recurrentes":
-        tareas_vista = tareas_vista[
-            tareas_vista["recurrente"] == "Sí"
-        ].copy()
-    elif recurrencia_filtro == "No recurrentes":
-        tareas_vista = tareas_vista[
-            tareas_vista["recurrente"] != "Sí"
-        ].copy()
-
-    if origen_filtro != "Todos":
-        tareas_vista = tareas_vista[
-            tareas_vista["origen"].astype(str)
-            == str(origen_filtro)
-        ].copy()
-
-    k1, k2, k3, k4 = st.columns(4)
-
-    k1.metric(
-        "Tareas visibles",
-        len(tareas_vista),
-    )
-
-    k2.metric(
-        "Pendientes",
-        len(
-            tareas_vista[
-                tareas_vista["estado"] == "Pendiente"
-            ]
-        ),
-    )
-
-    k3.metric(
-        "En curso",
-        len(
-            tareas_vista[
-                tareas_vista["estado"] == "En curso"
-            ]
-        ),
-    )
-
-    k4.metric(
-        "Recurrentes",
-        len(
-            tareas_vista[
-                tareas_vista["recurrente"] == "Sí"
-            ]
-        ),
-    )
-
-    if tareas_vista.empty:
-        st.info(
-            "No hay tareas para los filtros seleccionados."
-        )
-        return
 
     def actualizar_estado_rapido_tarea(
         row_tarea,
@@ -7832,6 +7482,9 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
         tareas_actualizadas = normalizar_tareas_internas(
             cargar_tareas_internas()
         )
+
+        if "unidad" not in tareas_actualizadas.columns:
+            tareas_actualizadas["unidad"] = ""
 
         mask = (
             tareas_actualizadas["id"]
@@ -7886,6 +7539,11 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
             ya_existe = False
 
             if serie_id_rapido:
+                ocurrencias = pd.to_numeric(
+                    tareas_actualizadas["ocurrencia"],
+                    errors="coerce",
+                ).fillna(1).astype(int)
+
                 ya_existe = (
                     (
                         tareas_actualizadas["serie_id"]
@@ -7893,12 +7551,7 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
                         == serie_id_rapido
                     )
                     & (
-                        pd.to_numeric(
-                            tareas_actualizadas["ocurrencia"],
-                            errors="coerce",
-                        )
-                        .fillna(1)
-                        .astype(int)
+                        ocurrencias
                         == proxima_ocurrencia
                     )
                 ).any()
@@ -7953,11 +7606,14 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
 
                 nueva_ocurrencia = {
                     "id": nueva_id,
-                    "proyecto": str(
+                    "unidad": str(
                         row_tarea.get(
-                            "proyecto",
-                            "Sin proyecto",
+                            "unidad",
+                            "AM Consultora",
                         )
+                    ),
+                    "proyecto": str(
+                        row_tarea.get("proyecto", "")
                     ),
                     "cliente": str(
                         row_tarea.get("cliente", "")
@@ -7988,27 +7644,18 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
                     "avance": 0,
                     "recurrente": "Sí",
                     "frecuencia": str(
-                        row_tarea.get(
-                            "frecuencia",
-                            "",
-                        )
+                        row_tarea.get("frecuencia", "")
                     ),
                     "intervalo": intervalo_rapido,
                     "serie_id": serie_id_rapido,
                     "ocurrencia": proxima_ocurrencia,
                     "comentarios": "",
                     "origen": str(
-                        row_tarea.get(
-                            "origen",
-                            "AM Hub",
-                        )
+                        row_tarea.get("origen", "AM Hub")
                     ),
                     "id_externo": "",
                     "categoria": str(
-                        row_tarea.get(
-                            "categoria",
-                            "",
-                        )
+                        row_tarea.get("categoria", "")
                     ),
                     "fecha_carga": (
                         date.today().strftime("%Y-%m-%d")
@@ -8038,7 +7685,375 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
         return True, ""
 
     # ========================================================
-    # Organización dinámica del tablero
+    # Alta de tarea
+    # ========================================================
+
+    with st.expander(
+        "Crear nueva tarea",
+        expanded=False,
+    ):
+        with st.form(
+            f"form_nueva_tarea_{modo}_{cliente_fijo or 'general'}"
+        ):
+            col_1, col_2 = st.columns([1.5, 1])
+
+            with col_1:
+                unidad_sel = st.selectbox(
+                    "Unidad",
+                    unidades_opciones
+                    + ["Agregar nueva unidad"],
+                    key=(
+                        f"nueva_tarea_unidad_"
+                        f"{modo}_{cliente_fijo}"
+                    ),
+                )
+
+                if unidad_sel == "Agregar nueva unidad":
+                    unidad_nueva = st.text_input(
+                        "Nombre de la nueva unidad",
+                        placeholder="Ejemplo: Nuevo proyecto",
+                    )
+                else:
+                    unidad_nueva = ""
+
+                unidad_provisoria = (
+                    unidad_nueva.strip()
+                    if unidad_sel == "Agregar nueva unidad"
+                    else unidad_sel
+                )
+
+                if unidad_provisoria == "AM Consultora":
+                    opciones_cliente = (
+                        ["Sin cliente"]
+                        + clientes_permitidos
+                    )
+
+                    cliente_elegido = st.selectbox(
+                        "Cliente — opcional",
+                        opciones_cliente,
+                        index=(
+                            opciones_cliente.index(cliente_fijo)
+                            if cliente_fijo
+                            in opciones_cliente
+                            else 0
+                        ),
+                    )
+
+                    cliente_sel = (
+                        ""
+                        if cliente_elegido == "Sin cliente"
+                        else cliente_elegido
+                    )
+                else:
+                    cliente_sel = ""
+                    st.caption(
+                        "Las unidades distintas de AM Consultora "
+                        "no requieren cliente."
+                    )
+
+                tarea_txt = st.text_input(
+                    "Tarea",
+                    placeholder="Ejemplo: preparar reporte mensual",
+                )
+
+                descripcion = st.text_area(
+                    "Descripción",
+                    placeholder=(
+                        "Contexto, indicaciones, links "
+                        "y entregables esperados."
+                    ),
+                    height=110,
+                )
+
+                checklist_txt = st.text_area(
+                    "Checklist",
+                    placeholder="Un paso por línea",
+                    height=110,
+                )
+
+                categoria_txt = st.text_input(
+                    "Categoría — opcional",
+                    placeholder=(
+                        "Ejemplo: Estudios, Administración, "
+                        "Facturación"
+                    ),
+                )
+
+            with col_2:
+                responsable_sel = st.selectbox(
+                    "Responsable",
+                    responsables,
+                )
+
+                prioridad_sel = st.selectbox(
+                    "Prioridad",
+                    prioridades,
+                    index=1,
+                )
+
+                fecha_limite = st.date_input(
+                    "Fecha límite",
+                    value=date.today(),
+                )
+
+                estado_sel = st.selectbox(
+                    "Estado inicial",
+                    estados_kanban,
+                )
+
+                es_recurrente = st.checkbox(
+                    "Tarea recurrente",
+                    value=False,
+                )
+
+                if es_recurrente:
+                    frecuencia_sel = st.selectbox(
+                        "Frecuencia",
+                        frecuencias,
+                    )
+
+                    intervalo_sel = st.number_input(
+                        "Repetir cada",
+                        min_value=1,
+                        max_value=24,
+                        value=1,
+                        step=1,
+                    )
+                else:
+                    frecuencia_sel = ""
+                    intervalo_sel = 1
+
+            crear = st.form_submit_button(
+                "Crear tarea",
+                use_container_width=True,
+            )
+
+            if crear:
+                unidad_final = (
+                    unidad_nueva.strip()
+                    if unidad_sel == "Agregar nueva unidad"
+                    else unidad_sel
+                )
+
+                if not unidad_final:
+                    st.error(
+                        "Ingresá el nombre de la nueva unidad."
+                    )
+                elif not tarea_txt.strip():
+                    st.error(
+                        "La tarea no puede estar vacía."
+                    )
+                else:
+                    ahora_id = pd.Timestamp.now().strftime(
+                        "%Y%m%d%H%M%S%f"
+                    )
+
+                    checklist_items = (
+                        checklist_tarea_desde_texto(
+                            checklist_txt
+                        )
+                    )
+
+                    nueva = {
+                        "id": f"TAR-{ahora_id}",
+                        "unidad": unidad_final,
+                        "proyecto": unidad_final,
+                        "cliente": cliente_sel,
+                        "tarea": tarea_txt.strip(),
+                        "descripcion": descripcion.strip(),
+                        "responsable_am": responsable_sel,
+                        "prioridad": prioridad_sel,
+                        "estado": estado_sel,
+                        "fecha_limite": (
+                            fecha_limite.strftime("%Y-%m-%d")
+                        ),
+                        "checklist": (
+                            serializar_checklist_tarea(
+                                checklist_items
+                            )
+                        ),
+                        "avance": (
+                            avance_checklist_tarea(
+                                checklist_items
+                            )
+                        ),
+                        "recurrente": (
+                            "Sí"
+                            if es_recurrente
+                            else "No"
+                        ),
+                        "frecuencia": frecuencia_sel,
+                        "intervalo": int(intervalo_sel),
+                        "serie_id": (
+                            f"SER-{ahora_id}"
+                            if es_recurrente
+                            else ""
+                        ),
+                        "ocurrencia": 1,
+                        "comentarios": "",
+                        "origen": "AM Hub",
+                        "id_externo": "",
+                        "categoria": categoria_txt.strip(),
+                        "fecha_carga": (
+                            date.today().strftime("%Y-%m-%d")
+                        ),
+                        "creado_por": nombre_usuario,
+                        "fecha_actualizacion": (
+                            date.today().strftime("%Y-%m-%d")
+                        ),
+                        "actualizado_por": nombre_usuario,
+                    }
+
+                    actualizado = pd.concat(
+                        [
+                            tareas_full,
+                            pd.DataFrame([nueva]),
+                        ],
+                        ignore_index=True,
+                    )
+
+                    save_csv(
+                        actualizado,
+                        TAREAS_PATH,
+                    )
+
+                    st.success(
+                        "Tarea creada correctamente."
+                    )
+                    st.rerun()
+
+    # ========================================================
+    # Filtros
+    # ========================================================
+
+    st.markdown("### Tablero")
+
+    f1, f2, f3 = st.columns([1.3, 1.5, 1.2])
+
+    with f1:
+        unidad_filtro = st.selectbox(
+            "Unidad",
+            ["Todas"] + unidades_opciones,
+            key=f"filtro_unidad_tareas_{modo}",
+        )
+
+    base_para_clientes = tareas_vista_base.copy()
+
+    if unidad_filtro != "Todas":
+        base_para_clientes = base_para_clientes[
+            base_para_clientes["unidad"]
+            .astype(str)
+            == unidad_filtro
+        ].copy()
+
+    clientes_en_tareas = sorted(
+        [
+            valor
+            for valor in base_para_clientes["cliente"]
+            .dropna()
+            .astype(str)
+            .str.strip()
+            .unique()
+            .tolist()
+            if valor
+        ]
+    )
+
+    with f2:
+        cliente_filtro = st.selectbox(
+            "Cliente",
+            ["Todos", "Sin cliente"]
+            + clientes_en_tareas,
+            key=f"filtro_cliente_tareas_{modo}",
+        )
+
+    with f3:
+        responsables_disponibles = sorted(
+            tareas_vista_base["responsable_am"]
+            .dropna()
+            .astype(str)
+            .replace("", "Sin asignar")
+            .unique()
+            .tolist()
+        )
+
+        responsable_filtro = st.selectbox(
+            "Responsable",
+            ["Todos"] + responsables_disponibles,
+            key=f"filtro_responsable_tareas_{modo}",
+        )
+
+    f4, f5 = st.columns(2)
+
+    with f4:
+        prioridad_filtro = st.selectbox(
+            "Prioridad",
+            ["Todas"] + prioridades,
+            key=f"filtro_prioridad_tareas_{modo}",
+        )
+
+    with f5:
+        recurrencia_filtro = st.selectbox(
+            "Recurrencia",
+            [
+                "Todas",
+                "Recurrentes",
+                "No recurrentes",
+            ],
+            key=f"filtro_recurrencia_tareas_{modo}",
+        )
+
+    tareas_vista = tareas_vista_base.copy()
+
+    if unidad_filtro != "Todas":
+        tareas_vista = tareas_vista[
+            tareas_vista["unidad"].astype(str)
+            == unidad_filtro
+        ].copy()
+
+    if cliente_filtro == "Sin cliente":
+        tareas_vista = tareas_vista[
+            tareas_vista["cliente"]
+            .astype(str)
+            .str.strip()
+            .eq("")
+        ].copy()
+    elif cliente_filtro != "Todos":
+        tareas_vista = tareas_vista[
+            tareas_vista["cliente"].astype(str)
+            == cliente_filtro
+        ].copy()
+
+    if responsable_filtro != "Todos":
+        tareas_vista = tareas_vista[
+            tareas_vista["responsable_am"]
+            .astype(str)
+            == responsable_filtro
+        ].copy()
+
+    if prioridad_filtro != "Todas":
+        tareas_vista = tareas_vista[
+            tareas_vista["prioridad"].astype(str)
+            == prioridad_filtro
+        ].copy()
+
+    if recurrencia_filtro == "Recurrentes":
+        tareas_vista = tareas_vista[
+            tareas_vista["recurrente"] == "Sí"
+        ].copy()
+    elif recurrencia_filtro == "No recurrentes":
+        tareas_vista = tareas_vista[
+            tareas_vista["recurrente"] != "Sí"
+        ].copy()
+
+    if tareas_vista.empty:
+        st.info(
+            "No hay tareas para los filtros seleccionados."
+        )
+        return
+
+    # ========================================================
+    # Organización de columnas
     # ========================================================
 
     criterio_columnas = st.radio(
@@ -8046,14 +8061,14 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
         [
             "Estado",
             "Fecha de vencimiento",
-            "Proyecto",
+            "Unidad",
             "Cliente",
         ],
         horizontal=True,
-        key=f"criterio_columnas_tareas_{modo}_{cliente_fijo}",
+        key=f"criterio_tareas_{modo}",
     )
 
-    def grupo_vencimiento_tarea(valor):
+    def grupo_vencimiento(valor):
         fecha = pd.to_datetime(
             str(valor or "").strip(),
             errors="coerce",
@@ -8062,8 +8077,8 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
         if pd.isna(fecha):
             return "Sin fecha"
 
-        fecha_tarea = fecha.date()
         hoy = date.today()
+        fecha_tarea = fecha.date()
 
         if fecha_tarea < hoy:
             return "Vencidas"
@@ -8073,30 +8088,63 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
 
         return "Futuras"
 
+    def texto_vencimiento(valor):
+        fecha = pd.to_datetime(
+            str(valor or "").strip(),
+            errors="coerce",
+        )
+
+        if pd.isna(fecha):
+            return "⚪ Sin fecha"
+
+        hoy = date.today()
+        fecha_tarea = fecha.date()
+        fecha_txt = fecha.strftime("%d/%m")
+
+        if fecha_tarea < hoy:
+            return f"🔴 Vencida · {fecha_txt}"
+
+        if fecha_tarea == hoy:
+            return f"🟠 Hoy · {fecha_txt}"
+
+        return f"📅 {fecha_txt}"
+
+    def etiqueta_prioridad(valor):
+        prioridad = str(valor or "Media")
+
+        mapa = {
+            "Alta": "🔴 Alta",
+            "Media": "🟡 Media",
+            "Baja": "🟢 Baja",
+        }
+
+        return mapa.get(
+            prioridad,
+            f"⚪ {prioridad}",
+        )
+
     if criterio_columnas == "Estado":
-        grupos_kanban = estados_kanban
+        grupos = estados_kanban
 
     elif criterio_columnas == "Fecha de vencimiento":
-        grupos_kanban = [
+        grupos = [
             "Vencidas",
             "Vencen hoy",
             "Futuras",
             "Sin fecha",
         ]
 
-    elif criterio_columnas == "Proyecto":
-        grupos_kanban = sorted(
-            tareas_vista["proyecto"]
-            .fillna("")
+    elif criterio_columnas == "Unidad":
+        grupos = sorted(
+            tareas_vista["unidad"]
+            .fillna("AM Consultora")
             .astype(str)
-            .str.strip()
-            .replace("", "Sin proyecto")
             .unique()
             .tolist()
         )
 
     else:
-        grupos_kanban = sorted(
+        grupos = sorted(
             tareas_vista["cliente"]
             .fillna("")
             .astype(str)
@@ -8106,581 +8154,735 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
             .tolist()
         )
 
-    columnas_kanban = st.columns(
-        len(grupos_kanban)
-    )
+    max_columnas = 4
 
-    for idx_estado, estado in enumerate(
-        grupos_kanban
+    for inicio_grupo in range(
+        0,
+        len(grupos),
+        max_columnas,
     ):
-        if criterio_columnas == "Estado":
-            subset = tareas_vista[
-                tareas_vista["estado"].astype(str)
-                == estado
-            ].copy()
+        grupos_fila = grupos[
+            inicio_grupo:
+            inicio_grupo + max_columnas
+        ]
 
-        elif criterio_columnas == "Fecha de vencimiento":
-            clasificacion_vencimiento = (
-                tareas_vista["fecha_limite"]
-                .apply(grupo_vencimiento_tarea)
-            )
+        columnas = st.columns(
+            len(grupos_fila)
+        )
 
-            subset = tareas_vista[
-                clasificacion_vencimiento == estado
-            ].copy()
+        for indice, grupo in enumerate(grupos_fila):
+            if criterio_columnas == "Estado":
+                subset = tareas_vista[
+                    tareas_vista["estado"].astype(str)
+                    == grupo
+                ].copy()
 
-        elif criterio_columnas == "Proyecto":
-            proyectos_normalizados = (
-                tareas_vista["proyecto"]
-                .fillna("")
-                .astype(str)
-                .str.strip()
-                .replace("", "Sin proyecto")
-            )
+            elif criterio_columnas == "Fecha de vencimiento":
+                subset = tareas_vista[
+                    tareas_vista["fecha_limite"]
+                    .apply(grupo_vencimiento)
+                    == grupo
+                ].copy()
 
-            subset = tareas_vista[
-                proyectos_normalizados == estado
-            ].copy()
+            elif criterio_columnas == "Unidad":
+                subset = tareas_vista[
+                    tareas_vista["unidad"].astype(str)
+                    == grupo
+                ].copy()
 
-        else:
-            clientes_normalizados = (
-                tareas_vista["cliente"]
-                .fillna("")
-                .astype(str)
-                .str.strip()
-                .replace("", "Sin cliente")
-            )
-
-            subset = tareas_vista[
-                clientes_normalizados == estado
-            ].copy()
-
-        with columnas_kanban[idx_estado]:
-            st.markdown(f"#### {estado}")
-            st.caption(f"{len(subset)} tarea(s)")
-
-            if subset.empty:
-                st.caption("Sin tareas.")
-                continue
-
-            for _, row in subset.iterrows():
-                estado_actual = str(
-                    row.get("estado", "") or "Pendiente"
+            else:
+                clientes_normalizados = (
+                    tareas_vista["cliente"]
+                    .fillna("")
+                    .astype(str)
+                    .str.strip()
+                    .replace("", "Sin cliente")
                 )
 
-                tarea_id = str(row.get("id", ""))
-                tarea_titulo = str(
-                    row.get("tarea", "Sin título")
-                )
-                proyecto_txt = str(
-                    row.get("proyecto", "") or "Sin proyecto"
-                )
-                cliente_txt = str(
-                    row.get("cliente", "")
-                )
-                origen_txt = str(
-                    row.get("origen", "") or "AM Hub"
-                )
-                categoria_txt = str(
-                    row.get("categoria", "") or ""
-                )
-                responsable_txt = str(
-                    row.get(
-                        "responsable_am",
-                        "Sin asignar",
-                    )
-                )
-                prioridad_txt = str(
-                    row.get("prioridad", "Media")
-                )
-                fecha_txt = str(
-                    row.get("fecha_limite", "")
-                )
-                descripcion_txt = str(
-                    row.get("descripcion", "")
-                )
-                comentarios_txt = str(
-                    row.get("comentarios", "")
-                )
-                recurrente_txt = str(
-                    row.get("recurrente", "No")
-                )
-                frecuencia_txt = str(
-                    row.get("frecuencia", "")
-                )
-                intervalo_val = int(
-                    row.get("intervalo", 1) or 1
-                )
-                serie_id = str(
-                    row.get("serie_id", "")
-                )
-                ocurrencia_val = int(
-                    row.get("ocurrencia", 1) or 1
+                subset = tareas_vista[
+                    clientes_normalizados == grupo
+                ].copy()
+
+            orden_prioridad = {
+                "Alta": 1,
+                "Media": 2,
+                "Baja": 3,
+            }
+
+            if not subset.empty:
+                subset["_orden_prioridad"] = (
+                    subset["prioridad"]
+                    .map(orden_prioridad)
+                    .fillna(4)
                 )
 
-                checklist_items = (
-                    parsear_checklist_tarea(
-                        row.get("checklist", "")
-                    )
+                subset["_orden_fecha"] = pd.to_datetime(
+                    subset["fecha_limite"],
+                    errors="coerce",
                 )
 
-                avance_val = avance_checklist_tarea(
-                    checklist_items
+                subset = subset.sort_values(
+                    [
+                        "_orden_prioridad",
+                        "_orden_fecha",
+                    ],
+                    ascending=[True, True],
+                    na_position="last",
                 )
 
-                with st.container(border=True):
-                    titulo_col, finalizar_col = st.columns(
-                        [6, 1],
-                        vertical_alignment="center",
+            with columnas[indice]:
+                st.markdown(f"#### {grupo}")
+                st.caption(f"{len(subset)} tarea(s)")
+
+                if subset.empty:
+                    st.caption("Sin tareas.")
+                    continue
+
+                for _, row in subset.iterrows():
+                    tarea_id = str(
+                        row.get("id", "")
                     )
 
-                    with titulo_col:
-                        st.markdown(
-                            f"**{tarea_titulo}**"
+                    tarea_titulo = str(
+                        row.get(
+                            "tarea",
+                            "Sin título",
+                        )
+                    )
+
+                    unidad_txt = str(
+                        row.get(
+                            "unidad",
+                            "AM Consultora",
+                        )
+                        or "AM Consultora"
+                    )
+
+                    cliente_txt = str(
+                        row.get("cliente", "") or ""
+                    )
+
+                    categoria_txt = str(
+                        row.get("categoria", "") or ""
+                    )
+
+                    responsable_txt = str(
+                        row.get(
+                            "responsable_am",
+                            "Sin asignar",
+                        )
+                        or "Sin asignar"
+                    )
+
+                    prioridad_txt = str(
+                        row.get(
+                            "prioridad",
+                            "Media",
+                        )
+                    )
+
+                    estado_actual = str(
+                        row.get(
+                            "estado",
+                            "Pendiente",
+                        )
+                    )
+
+                    fecha_txt = str(
+                        row.get(
+                            "fecha_limite",
+                            "",
+                        )
+                    )
+
+                    descripcion_txt = str(
+                        row.get(
+                            "descripcion",
+                            "",
+                        )
+                        or ""
+                    )
+
+                    comentarios_txt = str(
+                        row.get(
+                            "comentarios",
+                            "",
+                        )
+                        or ""
+                    )
+
+                    checklist_items = (
+                        parsear_checklist_tarea(
+                            row.get("checklist", "")
+                        )
+                    )
+
+                    total_checklist = len(
+                        checklist_items
+                    )
+
+                    completos_checklist = sum(
+                        1
+                        for item in checklist_items
+                        if bool(
+                            item.get("hecho", False)
+                        )
+                    )
+
+                    color_unidad = colores_unidad.get(
+                        unidad_txt,
+                        "⬜",
+                    )
+
+                    tarjeta_abierta = (
+                        st.session_state.get(
+                            "tarea_abierta_id",
+                            "",
+                        )
+                        == tarea_id
+                    )
+
+                    with st.container(border=True):
+                        unidad_linea = (
+                            f"{color_unidad} {unidad_txt}"
                         )
 
-                    with finalizar_col:
-                        if estado_actual != "Finalizada":
-                            finalizar_rapido = st.button(
-                                "✓",
-                                key=(
-                                    f"finalizar_rapido_"
-                                    f"{tarea_id}"
-                                ),
-                                help="Marcar como finalizada",
-                                use_container_width=True,
+                        if cliente_txt:
+                            unidad_linea += (
+                                f" · {cliente_txt}"
                             )
 
-                            if finalizar_rapido:
-                                ok, mensaje = (
-                                    actualizar_estado_rapido_tarea(
-                                        row,
-                                        "Finalizada",
+                        st.caption(unidad_linea)
+
+                        titulo_col, check_col = st.columns(
+                            [6, 1],
+                            vertical_alignment="center",
+                        )
+
+                        with titulo_col:
+                            st.markdown(
+                                f"**{tarea_titulo}**"
+                            )
+
+                        with check_col:
+                            if estado_actual != "Finalizada":
+                                if st.button(
+                                    "✓",
+                                    key=(
+                                        f"finalizar_"
+                                        f"{tarea_id}"
+                                    ),
+                                    help=(
+                                        "Marcar como finalizada"
+                                    ),
+                                    use_container_width=True,
+                                ):
+                                    ok, mensaje = (
+                                        actualizar_estado_rapido_tarea(
+                                            row,
+                                            "Finalizada",
+                                        )
                                     )
-                                )
 
-                                if ok:
-                                    st.rerun()
-                                else:
-                                    st.error(mensaje)
-                        else:
-                            st.caption("✓")
+                                    if ok:
+                                        st.rerun()
+                                    else:
+                                        st.error(mensaje)
+                            else:
+                                st.caption("✓")
 
-                    st.caption(f"Proyecto: {proyecto_txt}")
-
-                    if cliente_txt:
-                        st.caption(f"Cliente: {cliente_txt}")
-                    else:
-                        st.caption("Tarea interna sin cliente asociado")
-
-                    st.caption(
-                        f"Responsable: {responsable_txt}"
-                    )
-
-                    detalle_origen = f"Origen: {origen_txt}"
-                    if categoria_txt:
-                        detalle_origen += f" · Categoría: {categoria_txt}"
-
-                    st.caption(detalle_origen)
-                    st.caption(
-                        f"Prioridad: {prioridad_txt} "
-                        f"· Límite: {fecha_txt}"
-                    )
-
-                    if recurrente_txt == "Sí":
-                        st.info(
-                            f"Recurrente: cada "
-                            f"{intervalo_val} "
-                            f"{frecuencia_txt.lower()}"
-                            + (
-                                f" · Ocurrencia {ocurrencia_val}"
-                                if ocurrencia_val
-                                else ""
-                            )
+                        datos_linea = (
+                            f"{etiqueta_prioridad(prioridad_txt)}"
+                            f" · {texto_vencimiento(fecha_txt)}"
                         )
 
-                    if descripcion_txt:
-                        st.write(descripcion_txt)
+                        st.caption(datos_linea)
 
-                    st.progress(
-                        avance_val / 100
-                    )
-                    st.caption(
-                        f"Avance: {avance_val}%"
-                    )
+                        resumen_linea = (
+                            f"👤 {responsable_txt}"
+                        )
 
-                    if checklist_items:
-                        st.markdown("**Checklist**")
-
-                        checklist_actualizado = []
-
-                        for i, item in enumerate(
-                            checklist_items
-                        ):
-                            marcado = st.checkbox(
-                                str(item.get("texto", "")),
-                                value=bool(
-                                    item.get("hecho", False)
-                                ),
-                                key=(
-                                    f"check_tarea_"
-                                    f"{tarea_id}_{i}"
-                                ),
+                        if total_checklist:
+                            resumen_linea += (
+                                f" · ☑ "
+                                f"{completos_checklist}/"
+                                f"{total_checklist}"
                             )
 
-                            checklist_actualizado.append({
-                                "texto": str(
-                                    item.get("texto", "")
-                                ),
-                                "hecho": marcado,
-                            })
-                    else:
-                        checklist_actualizado = []
-                        st.caption(
-                            "Sin checklist cargado."
-                        )
-
-                    if comentarios_txt:
-                        with st.expander("Historial"):
-                            st.write(comentarios_txt)
-
-                    with st.expander(
-                        "Actualizar tarea"
-                    ):
-                        nuevo_estado = st.selectbox(
-                            "Estado / columna",
-                            estados_kanban,
-                            index=(
-                                estados_kanban.index(
-                                    estado_actual
-                                )
-                                if estado_actual in estados_kanban
-                                else 0
-                            ),
-                            key=f"estado_tarea_{tarea_id}",
-                        )
-
-                        responsables_actualizacion = list(
-                            responsables
-                        )
-
-                        if (
-                            responsable_txt
-                            not in responsables_actualizacion
-                        ):
-                            responsables_actualizacion.append(
-                                responsable_txt
+                        if categoria_txt:
+                            resumen_linea += (
+                                f" · {categoria_txt}"
                             )
 
-                        nuevo_responsable = st.selectbox(
-                            "Asignar a",
-                            responsables_actualizacion,
-                            index=(
-                                responsables_actualizacion.index(
-                                    responsable_txt
-                                )
-                                if responsable_txt
-                                in responsables_actualizacion
-                                else 0
-                            ),
-                            key=(
-                                f"responsable_tarea_"
-                                f"{tarea_id}"
-                            ),
-                        )
+                        st.caption(resumen_linea)
 
-                        nuevos_items_txt = st.text_area(
-                            "Agregar ítems al checklist",
-                            value="",
-                            placeholder="Un ítem por línea",
-                            height=80,
-                            key=(
-                                f"nuevo_checklist_tarea_"
-                                f"{tarea_id}"
-                            ),
-                        )
-
-                        nuevo_comentario = st.text_area(
-                            "Comentario / avance",
-                            value="",
-                            placeholder=(
-                                "Agregar actualización breve..."
-                            ),
-                            key=(
-                                f"comentario_tarea_"
-                                f"{tarea_id}"
-                            ),
-                            height=90,
+                        texto_boton = (
+                            "Cerrar"
+                            if tarjeta_abierta
+                            else "Abrir"
                         )
 
                         if st.button(
-                            "Guardar avance",
-                            key=(
-                                f"guardar_tarea_"
-                                f"{tarea_id}"
-                            ),
+                            texto_boton,
+                            key=f"abrir_tarea_{tarea_id}",
                             use_container_width=True,
                         ):
-                            tareas_actualizadas = (
-                                normalizar_tareas_internas(
-                                    cargar_tareas_internas()
-                                )
+                            st.session_state[
+                                "tarea_abierta_id"
+                            ] = (
+                                ""
+                                if tarjeta_abierta
+                                else tarea_id
+                            )
+                            st.rerun()
+
+                        # Solo se construye el formulario de
+                        # la tarea actualmente seleccionada.
+                        if tarjeta_abierta:
+                            st.divider()
+
+                            if descripcion_txt:
+                                st.write(descripcion_txt)
+
+                            responsables_edicion = list(
+                                responsables
                             )
 
-                            mask = (
-                                tareas_actualizadas["id"]
-                                .astype(str)
-                                == tarea_id
+                            if (
+                                responsable_txt
+                                not in responsables_edicion
+                            ):
+                                responsables_edicion.append(
+                                    responsable_txt
+                                )
+
+                            nuevo_titulo = st.text_input(
+                                "Título",
+                                value=tarea_titulo,
+                                key=(
+                                    f"titulo_detalle_"
+                                    f"{tarea_id}"
+                                ),
                             )
 
-                            if not mask.any():
-                                st.error(
-                                    "No se encontró la tarea."
+                            unidades_edicion = list(
+                                unidades_opciones
+                            )
+
+                            if (
+                                unidad_txt
+                                not in unidades_edicion
+                            ):
+                                unidades_edicion.append(
+                                    unidad_txt
                                 )
+
+                            nueva_unidad = st.selectbox(
+                                "Unidad",
+                                unidades_edicion,
+                                index=(
+                                    unidades_edicion.index(
+                                        unidad_txt
+                                    )
+                                    if unidad_txt
+                                    in unidades_edicion
+                                    else 0
+                                ),
+                                key=(
+                                    f"unidad_detalle_"
+                                    f"{tarea_id}"
+                                ),
+                            )
+
+                            nueva_prioridad = st.selectbox(
+                                "Prioridad",
+                                prioridades,
+                                index=(
+                                    prioridades.index(
+                                        prioridad_txt
+                                    )
+                                    if prioridad_txt
+                                    in prioridades
+                                    else 1
+                                ),
+                                key=(
+                                    f"prioridad_detalle_"
+                                    f"{tarea_id}"
+                                ),
+                            )
+
+                            nuevo_estado = st.selectbox(
+                                "Estado / columna",
+                                estados_kanban,
+                                index=(
+                                    estados_kanban.index(
+                                        estado_actual
+                                    )
+                                    if estado_actual
+                                    in estados_kanban
+                                    else 0
+                                ),
+                                key=(
+                                    f"estado_detalle_"
+                                    f"{tarea_id}"
+                                ),
+                            )
+
+                            nueva_descripcion = st.text_area(
+                                "Descripción",
+                                value=descripcion_txt,
+                                height=100,
+                                key=(
+                                    f"descripcion_detalle_"
+                                    f"{tarea_id}"
+                                ),
+                            )
+
+                            nueva_categoria = st.text_input(
+                                "Categoría",
+                                value=categoria_txt,
+                                key=(
+                                    f"categoria_detalle_"
+                                    f"{tarea_id}"
+                                ),
+                            )
+
+                            nuevo_responsable = st.selectbox(
+                                "Asignar a",
+                                responsables_edicion,
+                                index=(
+                                    responsables_edicion.index(
+                                        responsable_txt
+                                    )
+                                    if responsable_txt
+                                    in responsables_edicion
+                                    else 0
+                                ),
+                                key=(
+                                    f"responsable_detalle_"
+                                    f"{tarea_id}"
+                                ),
+                            )
+
+                            fecha_parseada = pd.to_datetime(
+                                fecha_txt,
+                                errors="coerce",
+                            )
+
+                            fecha_actual = (
+                                fecha_parseada.date()
+                                if not pd.isna(
+                                    fecha_parseada
+                                )
+                                else date.today()
+                            )
+
+                            nueva_fecha = st.date_input(
+                                "Fecha límite",
+                                value=fecha_actual,
+                                key=(
+                                    f"fecha_detalle_"
+                                    f"{tarea_id}"
+                                ),
+                            )
+
+                            nuevo_cliente = ""
+
+                            if nueva_unidad == "AM Consultora":
+                                clientes_detalle = (
+                                    ["Sin cliente"]
+                                    + clientes_permitidos
+                                )
+
+                                if (
+                                    cliente_txt
+                                    and cliente_txt
+                                    not in clientes_detalle
+                                ):
+                                    clientes_detalle.append(
+                                        cliente_txt
+                                    )
+
+                                cliente_detalle = st.selectbox(
+                                    "Cliente",
+                                    clientes_detalle,
+                                    index=(
+                                        clientes_detalle.index(
+                                            cliente_txt
+                                        )
+                                        if cliente_txt
+                                        in clientes_detalle
+                                        else 0
+                                    ),
+                                    key=(
+                                        f"cliente_detalle_"
+                                        f"{tarea_id}"
+                                    ),
+                                )
+
+                                nuevo_cliente = (
+                                    ""
+                                    if cliente_detalle
+                                    == "Sin cliente"
+                                    else cliente_detalle
+                                )
+
+                            checklist_actualizado = []
+
+                            if checklist_items:
+                                st.markdown("**Checklist**")
+
+                                for i, item in enumerate(
+                                    checklist_items
+                                ):
+                                    marcado = st.checkbox(
+                                        str(
+                                            item.get(
+                                                "texto",
+                                                "",
+                                            )
+                                        ),
+                                        value=bool(
+                                            item.get(
+                                                "hecho",
+                                                False,
+                                            )
+                                        ),
+                                        key=(
+                                            f"check_detalle_"
+                                            f"{tarea_id}_{i}"
+                                        ),
+                                    )
+
+                                    checklist_actualizado.append({
+                                        "texto": str(
+                                            item.get(
+                                                "texto",
+                                                "",
+                                            )
+                                        ),
+                                        "hecho": marcado,
+                                    })
                             else:
-                                estado_anterior = str(
-                                    tareas_actualizadas
-                                    .loc[mask, "estado"]
-                                    .iloc[0]
-                                )
+                                checklist_actualizado = []
 
-                                nuevos_items = (
-                                    checklist_tarea_desde_texto(
-                                        nuevos_items_txt
+                            nuevos_items_txt = st.text_area(
+                                "Agregar ítems",
+                                placeholder="Un ítem por línea",
+                                height=70,
+                                key=(
+                                    f"agregar_items_"
+                                    f"{tarea_id}"
+                                ),
+                            )
+
+                            nuevo_comentario = st.text_area(
+                                "Comentario",
+                                placeholder=(
+                                    "Agregar actualización..."
+                                ),
+                                height=70,
+                                key=(
+                                    f"comentario_detalle_"
+                                    f"{tarea_id}"
+                                ),
+                            )
+
+                            if comentarios_txt:
+                                with st.expander(
+                                    "Historial"
+                                ):
+                                    st.write(
+                                        comentarios_txt
+                                    )
+
+                            if st.button(
+                                "Guardar cambios",
+                                key=(
+                                    f"guardar_detalle_"
+                                    f"{tarea_id}"
+                                ),
+                                use_container_width=True,
+                            ):
+                                tareas_actualizadas = (
+                                    normalizar_tareas_internas(
+                                        cargar_tareas_internas()
                                     )
                                 )
 
-                                checklist_final = (
-                                    checklist_actualizado
-                                    + nuevos_items
+                                if (
+                                    "unidad"
+                                    not in
+                                    tareas_actualizadas.columns
+                                ):
+                                    tareas_actualizadas[
+                                        "unidad"
+                                    ] = ""
+
+                                mask = (
+                                    tareas_actualizadas["id"]
+                                    .astype(str)
+                                    == tarea_id
                                 )
 
-                                avance_final = (
-                                    avance_checklist_tarea(
-                                        checklist_final
+                                if not mask.any():
+                                    st.error(
+                                        "No se encontró la tarea."
                                     )
-                                )
-
-                                tareas_actualizadas.loc[
-                                    mask, "estado"
-                                ] = nuevo_estado
-
-                                tareas_actualizadas.loc[
-                                    mask, "responsable_am"
-                                ] = nuevo_responsable
-
-                                tareas_actualizadas.loc[
-                                    mask, "checklist"
-                                ] = (
-                                    serializar_checklist_tarea(
-                                        checklist_final
-                                    )
-                                )
-
-                                tareas_actualizadas.loc[
-                                    mask, "avance"
-                                ] = avance_final
-
-                                tareas_actualizadas.loc[
-                                    mask,
-                                    "fecha_actualizacion",
-                                ] = date.today().strftime(
-                                    "%Y-%m-%d"
-                                )
-
-                                tareas_actualizadas.loc[
-                                    mask,
-                                    "actualizado_por",
-                                ] = nombre_usuario
-
-                                if nuevo_comentario.strip():
-                                    anterior = str(
-                                        tareas_actualizadas
-                                        .loc[
-                                            mask,
-                                            "comentarios",
-                                        ]
-                                        .iloc[0]
-                                        or ""
+                                else:
+                                    nuevos_items = (
+                                        checklist_tarea_desde_texto(
+                                            nuevos_items_txt
+                                        )
                                     )
 
-                                    agregado = (
-                                        f"{date.today().strftime('%Y-%m-%d')}"
-                                        f" - {nombre_usuario}: "
-                                        f"{nuevo_comentario.strip()}"
+                                    checklist_final = (
+                                        checklist_actualizado
+                                        + nuevos_items
+                                    )
+
+                                    avance_final = (
+                                        avance_checklist_tarea(
+                                            checklist_final
+                                        )
+                                    )
+
+                                    if not nuevo_titulo.strip():
+                                        st.error(
+                                            "El título no puede quedar vacío."
+                                        )
+                                        st.stop()
+
+                                    tareas_actualizadas.loc[
+                                        mask,
+                                        "tarea",
+                                    ] = nuevo_titulo.strip()
+
+                                    tareas_actualizadas.loc[
+                                        mask,
+                                        "unidad",
+                                    ] = nueva_unidad
+
+                                    tareas_actualizadas.loc[
+                                        mask,
+                                        "proyecto",
+                                    ] = nueva_unidad
+
+                                    tareas_actualizadas.loc[
+                                        mask,
+                                        "prioridad",
+                                    ] = nueva_prioridad
+
+                                    tareas_actualizadas.loc[
+                                        mask,
+                                        "estado",
+                                    ] = nuevo_estado
+
+                                    tareas_actualizadas.loc[
+                                        mask,
+                                        "descripcion",
+                                    ] = nueva_descripcion.strip()
+
+                                    tareas_actualizadas.loc[
+                                        mask,
+                                        "categoria",
+                                    ] = nueva_categoria.strip()
+
+                                    tareas_actualizadas.loc[
+                                        mask,
+                                        "responsable_am",
+                                    ] = nuevo_responsable
+
+                                    tareas_actualizadas.loc[
+                                        mask,
+                                        "cliente",
+                                    ] = nuevo_cliente
+
+                                    tareas_actualizadas.loc[
+                                        mask,
+                                        "fecha_limite",
+                                    ] = nueva_fecha.strftime(
+                                        "%Y-%m-%d"
                                     )
 
                                     tareas_actualizadas.loc[
                                         mask,
-                                        "comentarios",
+                                        "checklist",
                                     ] = (
-                                        anterior
-                                        + "\n"
-                                        + agregado
-                                    ).strip()
-
-                                # --------------------------------
-                                # Generar próxima ocurrencia
-                                # solo al finalizar por primera vez
-                                # --------------------------------
-
-                                debe_generar = (
-                                    recurrente_txt == "Sí"
-                                    and nuevo_estado == "Finalizada"
-                                    and estado_anterior != "Finalizada"
-                                )
-
-                                if debe_generar:
-                                    proxima_ocurrencia = (
-                                        ocurrencia_val + 1
+                                        serializar_checklist_tarea(
+                                            checklist_final
+                                        )
                                     )
 
-                                    ya_existe = False
+                                    tareas_actualizadas.loc[
+                                        mask,
+                                        "avance",
+                                    ] = avance_final
 
-                                    if serie_id:
-                                        ya_existe = (
-                                            (
-                                                tareas_actualizadas[
-                                                    "serie_id"
-                                                ].astype(str)
-                                                == serie_id
-                                            )
-                                            & (
-                                                tareas_actualizadas[
-                                                    "ocurrencia"
-                                                ].astype(int)
-                                                == proxima_ocurrencia
-                                            )
-                                        ).any()
-
-                                    if not ya_existe:
-                                        checklist_reiniciado = [
-                                            {
-                                                "texto": str(
-                                                    item.get(
-                                                        "texto",
-                                                        "",
-                                                    )
-                                                ),
-                                                "hecho": False,
-                                            }
-                                            for item
-                                            in checklist_final
-                                            if str(
-                                                item.get(
-                                                    "texto",
-                                                    "",
-                                                )
-                                            ).strip()
-                                        ]
-
-                                        siguiente_fecha = (
-                                            siguiente_fecha_tarea(
-                                                fecha_txt,
-                                                frecuencia_txt,
-                                                intervalo_val,
-                                            )
-                                        )
-
-                                        nueva_id = (
-                                            "TAR-"
-                                            + pd.Timestamp.now()
-                                            .strftime(
-                                                "%Y%m%d%H%M%S%f"
-                                            )
-                                        )
-
-                                        nueva_ocurrencia = {
-                                            "id": nueva_id,
-                                            "proyecto": proyecto_txt,
-                                            "cliente": cliente_txt,
-                                            "tarea": tarea_titulo,
-                                            "descripcion": (
-                                                descripcion_txt
-                                            ),
-                                            "responsable_am": (
-                                                responsable_txt
-                                            ),
-                                            "prioridad": (
-                                                prioridad_txt
-                                            ),
-                                            "estado": "Pendiente",
-                                            "fecha_limite": (
-                                                siguiente_fecha
-                                            ),
-                                            "checklist": (
-                                                serializar_checklist_tarea(
-                                                    checklist_reiniciado
-                                                )
-                                            ),
-                                            "avance": 0,
-                                            "recurrente": "Sí",
-                                            "frecuencia": (
-                                                frecuencia_txt
-                                            ),
-                                            "intervalo": (
-                                                intervalo_val
-                                            ),
-                                            "serie_id": serie_id,
-                                            "ocurrencia": (
-                                                proxima_ocurrencia
-                                            ),
-                                            "comentarios": "",
-                                            "origen": origen_txt,
-                                            "id_externo": "",
-                                            "categoria": categoria_txt,
-                                            "fecha_carga": (
-                                                date.today()
-                                                .strftime(
-                                                    "%Y-%m-%d"
-                                                )
-                                            ),
-                                            "creado_por": (
-                                                "Generación automática"
-                                            ),
-                                            "fecha_actualizacion": (
-                                                date.today()
-                                                .strftime(
-                                                    "%Y-%m-%d"
-                                                )
-                                            ),
-                                            "actualizado_por": (
-                                                nombre_usuario
-                                            ),
-                                        }
-
-                                        tareas_actualizadas = (
-                                            pd.concat(
-                                                [
-                                                    tareas_actualizadas,
-                                                    pd.DataFrame(
-                                                        [
-                                                            nueva_ocurrencia
-                                                        ]
-                                                    ),
-                                                ],
-                                                ignore_index=True,
-                                            )
-                                        )
-
-                                save_csv(
-                                    tareas_actualizadas,
-                                    TAREAS_PATH,
-                                )
-
-                                if debe_generar:
-                                    st.success(
-                                        "Tarea actualizada y próxima "
-                                        "ocurrencia generada."
+                                    tareas_actualizadas.loc[
+                                        mask,
+                                        "fecha_actualizacion",
+                                    ] = date.today().strftime(
+                                        "%Y-%m-%d"
                                     )
-                                else:
+
+                                    tareas_actualizadas.loc[
+                                        mask,
+                                        "actualizado_por",
+                                    ] = nombre_usuario
+
+                                    if nuevo_comentario.strip():
+                                        anterior = str(
+                                            tareas_actualizadas
+                                            .loc[
+                                                mask,
+                                                "comentarios",
+                                            ]
+                                            .iloc[0]
+                                            or ""
+                                        )
+
+                                        agregado = (
+                                            f"{date.today().strftime('%Y-%m-%d')}"
+                                            f" - {nombre_usuario}: "
+                                            f"{nuevo_comentario.strip()}"
+                                        )
+
+                                        tareas_actualizadas.loc[
+                                            mask,
+                                            "comentarios",
+                                        ] = (
+                                            anterior
+                                            + "\n"
+                                            + agregado
+                                        ).strip()
+
+                                    save_csv(
+                                        tareas_actualizadas,
+                                        TAREAS_PATH,
+                                    )
+
+                                    # Genera la próxima
+                                    # ocurrencia cuando corresponde.
+                                    if (
+                                        nuevo_estado
+                                        == "Finalizada"
+                                        and estado_actual
+                                        != "Finalizada"
+                                    ):
+                                        actualizar_estado_rapido_tarea(
+                                            row,
+                                            "Finalizada",
+                                        )
+
+                                    st.session_state[
+                                        "tarea_abierta_id"
+                                    ] = ""
+
                                     st.success(
                                         "Tarea actualizada."
                                     )
-
-                                st.rerun()
-
-
+                                    st.rerun()
 
 def main():
     ensure_data_dir()
