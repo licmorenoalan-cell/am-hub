@@ -681,16 +681,18 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-
-tab_captura, tab_tablero = st.tabs(
+pagina_pocket = st.radio(
+    "Vista",
     [
         "📥 Capturar",
         "📋 Mi tablero",
-    ]
+    ],
+    horizontal=True,
+    label_visibility="collapsed",
+    key="pocket_pagina",
 )
 
-
-with tab_captura:
+if pagina_pocket == "📥 Capturar":
     if st.session_state.pop(
         "pocket_limpiar_captura",
         False,
@@ -755,8 +757,7 @@ with tab_captura:
 
                 st.rerun()
 
-
-with tab_tablero:
+if pagina_pocket == "📋 Mi tablero":
     tareas = cargar_tareas()
 
     if tareas.empty:
