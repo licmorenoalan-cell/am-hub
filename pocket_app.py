@@ -395,7 +395,7 @@ def insertar_tareas(
     registros = []
 
     for indice, contenido in enumerate(textos):
-        contenido = contenido.strip()
+        contenido = str(contenido or "").strip()
 
         if not contenido:
             continue
@@ -405,6 +405,9 @@ def insertar_tareas(
             for linea in contenido.splitlines()
             if linea.strip()
         ]
+
+        if not lineas:
+            continue
 
         titulo = (
             contenido
@@ -433,7 +436,7 @@ def insertar_tareas(
             "cliente": "",
             "tarea": titulo[:250],
             "descripcion": descripcion,
-            "responsable_am": usuario,
+            "responsable_am": "Sin asignar",
             "prioridad": "Media",
             "estado": "A priorizar",
             "fecha_limite": "",
@@ -455,7 +458,7 @@ def insertar_tareas(
         })
 
     if not registros:
-        return 0
+        return []
 
     consulta = text(
         """
@@ -513,18 +516,26 @@ def insertar_tareas(
             :fecha_actualizacion,
             :actualizado_por
         )
+        RETURNING id
         """
     )
 
+    ids_creados = []
+
     with engine.begin() as conn:
-        conn.execute(
-            consulta,
-            registros,
-        )
+        for registro in registros:
+            id_creado = conn.execute(
+                consulta,
+                registro,
+            ).scalar_one()
 
-    limpiar_cache()
-    return len(registros)
+            ids_creados.append(
+                str(id_creado)
+            )
 
+    cargar_tareas.clear()
+
+    return ids_creados
 
 def actualizar_estado(
     tarea_id: str,
@@ -769,8 +780,19 @@ pagina_pocket = st.radio(
 )
 
 if pagina_pocket == "📥 Capturar":
+    mensaje_exito = st.session_state.pop(
+        "pocket_mensaje_exito",
+        "",
+    )
+
+    if mensaje_exito:
+        st.success(
+            mensaje_exito,
+            icon="✅",
+        )
+
     with st.form(
-        "pocket_form_captura",
+        "pocket_form_captura_confirmada",
         clear_on_submit=True,
         border=False,
     ):
@@ -778,13 +800,13 @@ if pagina_pocket == "📥 Capturar":
             "¿Qué tenés pendiente?",
             placeholder="Escribí o dictá un pendiente...",
             height=145,
-            key="pocket_captura_form",
+            key="pocket_captura_confirmada",
         )
 
         una_por_linea = st.checkbox(
             "Crear una tarjeta por línea",
             value=False,
-            key="pocket_una_por_linea_form",
+            key="pocket_una_por_linea_confirmada",
         )
 
         crear_tarea = st.form_submit_button(
@@ -800,7 +822,7 @@ if pagina_pocket == "📥 Capturar":
 
         if not contenido:
             st.warning(
-                "Escribí un pendiente."
+                "Escribí un pendiente antes de crear la tarea."
             )
         else:
             if una_por_linea:
@@ -813,24 +835,35 @@ if pagina_pocket == "📥 Capturar":
                 textos = [contenido]
 
             try:
-                cantidad = insertar_tareas(
-                    textos,
-                    una_por_linea,
-                )
-
-                if cantidad == 1:
-                    st.success(
-                        "Tarea creada en A priorizar."
+                with st.spinner(
+                    "Creando tarea..."
+                ):
+                    ids_creados = insertar_tareas(
+                        textos,
+                        una_por_linea,
                     )
-                elif cantidad > 1:
-                    st.success(
-                        f"{cantidad} tareas creadas "
-                        "en A priorizar."
+
+                cantidad = len(ids_creados)
+
+                if cantidad == 0:
+                    st.error(
+                        "La base no confirmó la creación de la tarea."
                     )
                 else:
-                    st.warning(
-                        "No se creó ninguna tarea."
+                    st.session_state[
+                        "pocket_mensaje_exito"
+                    ] = (
+                        "TAREA CREADA · "
+                        "Quedó guardada en A priorizar."
+                        if cantidad == 1
+                        else (
+                            f"{cantidad} TAREAS CREADAS · "
+                            "Quedaron guardadas en A priorizar."
+                        )
                     )
+
+                    cargar_tareas.clear()
+                    st.rerun()
 
             except Exception as exc:
                 st.error(
