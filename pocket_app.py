@@ -1128,6 +1128,21 @@ if pagina_pocket == "📋 Mi tablero":
             categoria_normalizada == categoria_filtro
         ].copy()
 
+    # Reforzar el filtro de finalización antes de evaluar fechas.
+    # Las finalizadas solo deben verse cuando el usuario elige
+    # "Finalizadas" o "Todas".
+    if estado_filtro not in [
+        "Finalizadas",
+        "Todas",
+    ]:
+        vista = vista[
+            vista["estado"]
+            .fillna("")
+            .astype(str)
+            .str.strip()
+            != "Finalizada"
+        ].copy()
+
     fechas_vista = pd.to_datetime(
         vista["fecha_limite"],
         errors="coerce",
