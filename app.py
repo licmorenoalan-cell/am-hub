@@ -8084,22 +8084,40 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
 
     st.markdown("### Tablero")
 
-    f1, f2, f3 = st.columns([1.3, 1.5, 1.2])
+    # Los multiselect vacíos equivalen a mostrar todos.
+    f1, f2, f3 = st.columns(3)
 
     with f1:
-        unidad_filtro = st.selectbox(
+        estados_filtro = st.multiselect(
+            "Estado",
+            [
+                "Activas",
+                "A priorizar",
+                "Pendiente",
+                "En curso",
+                "En revisión",
+                "Pausada",
+                "Finalizada",
+            ],
+            default=["Activas"],
+            key=f"filtro_estado_tareas_multi_{modo}",
+        )
+
+    with f2:
+        unidades_filtro = st.multiselect(
             "Unidad",
-            ["Todas"] + unidades_opciones,
-            key=f"filtro_unidad_tareas_{modo}",
+            unidades_opciones,
+            default=[],
+            key=f"filtro_unidad_tareas_multi_{modo}",
         )
 
     base_para_clientes = tareas_vista_base.copy()
 
-    if unidad_filtro != "Todas":
+    if unidades_filtro:
         base_para_clientes = base_para_clientes[
             base_para_clientes["unidad"]
             .astype(str)
-            == unidad_filtro
+            .isin(unidades_filtro)
         ].copy()
 
     clientes_en_tareas = sorted(
@@ -8115,91 +8133,194 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
         ]
     )
 
-    with f2:
-        cliente_filtro = st.selectbox(
-            "Cliente",
-            ["Todos", "Sin cliente"]
-            + clientes_en_tareas,
-            key=f"filtro_cliente_tareas_{modo}",
-        )
-
     with f3:
-        responsables_disponibles = sorted(
-            tareas_vista_base["responsable_am"]
-            .dropna()
-            .astype(str)
-            .replace("", "Sin asignar")
-            .unique()
-            .tolist()
+        clientes_filtro = st.multiselect(
+            "Cliente",
+            ["Sin cliente"] + clientes_en_tareas,
+            default=[],
+            key=f"filtro_cliente_tareas_multi_{modo}",
         )
 
-        responsable_filtro = st.selectbox(
-            "Responsable",
-            ["Todos"] + responsables_disponibles,
-            key=f"filtro_responsable_tareas_{modo}",
-        )
+    f4, f5, f6 = st.columns(3)
 
-    f4, f5 = st.columns(2)
+    responsables_disponibles = sorted(
+        tareas_vista_base["responsable_am"]
+        .dropna()
+        .astype(str)
+        .replace("", "Sin asignar")
+        .unique()
+        .tolist()
+    )
 
     with f4:
-        prioridad_filtro = st.selectbox(
-            "Prioridad",
-            ["Todas"] + prioridades,
-            key=f"filtro_prioridad_tareas_{modo}",
+        responsables_filtro = st.multiselect(
+            "Responsable",
+            responsables_disponibles,
+            default=[],
+            key=f"filtro_responsable_tareas_multi_{modo}",
         )
 
     with f5:
-        recurrencia_filtro = st.selectbox(
+        prioridades_filtro = st.multiselect(
+            "Prioridad",
+            prioridades,
+            default=[],
+            key=f"filtro_prioridad_tareas_multi_{modo}",
+        )
+
+    with f6:
+        recurrencias_filtro = st.multiselect(
             "Recurrencia",
             [
-                "Todas",
                 "Recurrentes",
                 "No recurrentes",
             ],
-            key=f"filtro_recurrencia_tareas_{modo}",
+            default=[],
+            key=f"filtro_recurrencia_tareas_multi_{modo}",
         )
 
     tareas_vista = tareas_vista_base.copy()
 
-    if unidad_filtro != "Todas":
-        tareas_vista = tareas_vista[
-            tareas_vista["unidad"].astype(str)
-            == unidad_filtro
-        ].copy()
+    # --------------------------------------------------------
+    # Estado
+    # --------------------------------------------------------
 
-    if cliente_filtro == "Sin cliente":
-        tareas_vista = tareas_vista[
-            tareas_vista["cliente"]
+    if estados_filtro:
+        estado_serie = (
+            tareas_vista["estado"]
+            .fillna("")
             .astype(str)
             .str.strip()
-            .eq("")
-        ].copy()
-    elif cliente_filtro != "Todos":
+        )
+
+        mascara_estado = pd.Series(
+            False,
+            index=tareas_vista.index,
+        )
+
+        if "Activas" in estados_filtro:
+            mascara_estado |= estado_serie.ne(
+                "Finalizada"
+            )
+
+        estados_concretos = [
+            valor
+            for valor in estados_filtro
+            if valor != "Activas"
+        ]
+
+        if estados_concretos:
+            mascara_estado |= estado_serie.isin(
+                estados_concretos
+            )
+
         tareas_vista = tareas_vista[
-            tareas_vista["cliente"].astype(str)
-            == cliente_filtro
+            mascara_estado
         ].copy()
 
-    if responsable_filtro != "Todos":
+    # --------------------------------------------------------
+    # Unidad
+    # --------------------------------------------------------
+
+    if unidades_filtro:
+        tareas_vista = tareas_vista[
+            tareas_vista["unidad"]
+            .fillna("")
+            .astype(str)
+            .isin(unidades_filtro)
+        ].copy()
+
+    # --------------------------------------------------------
+    # Cliente
+    # --------------------------------------------------------
+
+    if clientes_filtro:
+        cliente_serie = (
+            tareas_vista["cliente"]
+            .fillna("")
+            .astype(str)
+            .str.strip()
+        )
+
+        mascara_cliente = pd.Series(
+            False,
+            index=tareas_vista.index,
+        )
+
+        if "Sin cliente" in clientes_filtro:
+            mascara_cliente |= cliente_serie.eq("")
+
+        clientes_concretos = [
+            valor
+            for valor in clientes_filtro
+            if valor != "Sin cliente"
+        ]
+
+        if clientes_concretos:
+            mascara_cliente |= cliente_serie.isin(
+                clientes_concretos
+            )
+
+        tareas_vista = tareas_vista[
+            mascara_cliente
+        ].copy()
+
+    # --------------------------------------------------------
+    # Responsable
+    # --------------------------------------------------------
+
+    if responsables_filtro:
         tareas_vista = tareas_vista[
             tareas_vista["responsable_am"]
+            .fillna("")
             .astype(str)
-            == responsable_filtro
+            .str.strip()
+            .replace("", "Sin asignar")
+            .isin(responsables_filtro)
         ].copy()
 
-    if prioridad_filtro != "Todas":
+    # --------------------------------------------------------
+    # Prioridad
+    # --------------------------------------------------------
+
+    if prioridades_filtro:
         tareas_vista = tareas_vista[
-            tareas_vista["prioridad"].astype(str)
-            == prioridad_filtro
+            tareas_vista["prioridad"]
+            .fillna("")
+            .astype(str)
+            .str.strip()
+            .isin(prioridades_filtro)
         ].copy()
 
-    if recurrencia_filtro == "Recurrentes":
+    # --------------------------------------------------------
+    # Recurrencia
+    # --------------------------------------------------------
+
+    if recurrencias_filtro:
+        recurrente_serie = (
+            tareas_vista["recurrente"]
+            .fillna("")
+            .astype(str)
+            .str.strip()
+        )
+
+        mascara_recurrencia = pd.Series(
+            False,
+            index=tareas_vista.index,
+        )
+
+        if "Recurrentes" in recurrencias_filtro:
+            mascara_recurrencia |= (
+                recurrente_serie == "Sí"
+            )
+
+        if "No recurrentes" in recurrencias_filtro:
+            mascara_recurrencia |= (
+                recurrente_serie != "Sí"
+            )
+
         tareas_vista = tareas_vista[
-            tareas_vista["recurrente"] == "Sí"
-        ].copy()
-    elif recurrencia_filtro == "No recurrentes":
-        tareas_vista = tareas_vista[
-            tareas_vista["recurrente"] != "Sí"
+            mascara_recurrencia
         ].copy()
 
     if tareas_vista.empty:

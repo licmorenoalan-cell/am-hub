@@ -964,7 +964,7 @@ if pagina_pocket == "📋 Mi tablero":
         f1, f2 = st.columns(2)
 
         with f1:
-            estado_filtro = st.selectbox(
+            estados_filtro = st.multiselect(
                 "Estado",
                 [
                     "Activas",
@@ -973,235 +973,292 @@ if pagina_pocket == "📋 Mi tablero":
                     "En curso",
                     "En revisión",
                     "Pausada",
-                    "Finalizadas",
-                    "Todas",
+                    "Finalizada",
                 ],
-                key="pocket_filtro_estado",
+                default=["Activas"],
+                key="pocket_filtro_estado_multi",
             )
 
         with f2:
-            unidad_filtro = st.selectbox(
+            unidades_filtro = st.multiselect(
                 "Unidad",
-                ["Todas"] + unidades_disponibles,
-                key="pocket_filtro_unidad",
+                unidades_disponibles,
+                default=[],
+                key="pocket_filtro_unidad_multi",
             )
 
         f3, f4 = st.columns(2)
 
         with f3:
-            cliente_filtro = st.selectbox(
+            clientes_filtro = st.multiselect(
                 "Cliente",
-                ["Todos", "Sin cliente"]
+                ["Sin cliente"]
                 + clientes_disponibles,
-                key="pocket_filtro_cliente",
+                default=[],
+                key="pocket_filtro_cliente_multi",
             )
 
         with f4:
-            responsable_filtro = st.selectbox(
+            responsables_filtro = st.multiselect(
                 "Responsable",
-                ["Todos"] + responsables_disponibles,
+                responsables_disponibles,
+                default=[],
                 format_func=lambda valor: (
-                    "Todos"
-                    if valor == "Todos"
-                    else responsables_mapa.get(
+                    responsables_mapa.get(
                         valor,
                         valor,
                     )
                 ),
-                key="pocket_filtro_responsable",
+                key="pocket_filtro_responsable_multi",
             )
 
         f5, f6 = st.columns(2)
 
         with f5:
-            prioridad_filtro = st.selectbox(
+            prioridades_filtro = st.multiselect(
                 "Prioridad",
-                ["Todas"] + prioridades_disponibles,
-                key="pocket_filtro_prioridad",
+                prioridades_disponibles,
+                default=[],
+                key="pocket_filtro_prioridad_multi",
             )
 
         with f6:
-            categoria_filtro = st.selectbox(
+            categorias_filtro = st.multiselect(
                 "Categoría",
-                ["Todas", "Sin categoría"]
+                ["Sin categoría"]
                 + categorias_disponibles,
-                key="pocket_filtro_categoria",
+                default=[],
+                key="pocket_filtro_categoria_multi",
             )
 
-        fecha_filtro = st.selectbox(
+        fechas_filtro = st.multiselect(
             "Fecha de vencimiento",
             [
-                "Todas",
                 "Vencidas",
                 "Vencen hoy",
                 "Próximos 7 días",
                 "Con fecha",
                 "Sin fecha",
             ],
-            key="pocket_filtro_fecha",
+            default=[],
+            key="pocket_filtro_fecha_multi",
         )
 
     vista = tareas.copy()
 
-    estado_normalizado = (
-        vista["estado"]
-        .fillna("")
-        .astype(str)
-        .str.strip()
-    )
+    # --------------------------------------------------------
+    # Estado
+    # --------------------------------------------------------
 
-    if estado_filtro == "Activas":
+    if estados_filtro:
+        estado_serie = (
+            vista["estado"]
+            .fillna("")
+            .astype(str)
+            .str.strip()
+        )
+
+        mascara_estado = pd.Series(
+            False,
+            index=vista.index,
+        )
+
+        if "Activas" in estados_filtro:
+            mascara_estado |= estado_serie.ne(
+                "Finalizada"
+            )
+
+        estados_concretos = [
+            valor
+            for valor in estados_filtro
+            if valor != "Activas"
+        ]
+
+        if estados_concretos:
+            mascara_estado |= estado_serie.isin(
+                estados_concretos
+            )
+
         vista = vista[
-            estado_normalizado != "Finalizada"
+            mascara_estado
         ].copy()
 
-    elif estado_filtro == "Finalizadas":
-        vista = vista[
-            estado_normalizado == "Finalizada"
-        ].copy()
+    # --------------------------------------------------------
+    # Unidad
+    # --------------------------------------------------------
 
-    elif estado_filtro != "Todas":
-        vista = vista[
-            estado_normalizado == estado_filtro
-        ].copy()
-
-    if unidad_filtro != "Todas":
+    if unidades_filtro:
         vista = vista[
             vista["unidad"]
             .fillna("")
             .astype(str)
             .str.strip()
             .replace("", "AM Consultora")
-            == unidad_filtro
+            .isin(unidades_filtro)
         ].copy()
 
-    cliente_normalizado = (
-        vista["cliente"]
-        .fillna("")
-        .astype(str)
-        .str.strip()
-    )
+    # --------------------------------------------------------
+    # Cliente
+    # --------------------------------------------------------
 
-    if cliente_filtro == "Sin cliente":
+    if clientes_filtro:
+        cliente_serie = (
+            vista["cliente"]
+            .fillna("")
+            .astype(str)
+            .str.strip()
+        )
+
+        mascara_cliente = pd.Series(
+            False,
+            index=vista.index,
+        )
+
+        if "Sin cliente" in clientes_filtro:
+            mascara_cliente |= cliente_serie.eq("")
+
+        clientes_concretos = [
+            valor
+            for valor in clientes_filtro
+            if valor != "Sin cliente"
+        ]
+
+        if clientes_concretos:
+            mascara_cliente |= cliente_serie.isin(
+                clientes_concretos
+            )
+
         vista = vista[
-            cliente_normalizado == ""
+            mascara_cliente
         ].copy()
 
-    elif cliente_filtro != "Todos":
-        vista = vista[
-            cliente_normalizado == cliente_filtro
-        ].copy()
+    # --------------------------------------------------------
+    # Responsable
+    # --------------------------------------------------------
 
-    if responsable_filtro != "Todos":
+    if responsables_filtro:
         vista = vista[
             vista["responsable_am"]
             .fillna("")
             .astype(str)
             .str.strip()
             .replace("", "Sin asignar")
-            == responsable_filtro
+            .isin(responsables_filtro)
         ].copy()
 
-    if prioridad_filtro != "Todas":
+    # --------------------------------------------------------
+    # Prioridad
+    # --------------------------------------------------------
+
+    if prioridades_filtro:
         vista = vista[
             vista["prioridad"]
             .fillna("")
             .astype(str)
             .str.strip()
-            == prioridad_filtro
+            .isin(prioridades_filtro)
         ].copy()
 
-    categoria_normalizada = (
-        vista["categoria"]
-        .fillna("")
-        .astype(str)
-        .str.strip()
-    )
+    # --------------------------------------------------------
+    # Categoría
+    # --------------------------------------------------------
 
-    if categoria_filtro == "Sin categoría":
+    if categorias_filtro:
+        categoria_serie = (
+            vista["categoria"]
+            .fillna("")
+            .astype(str)
+            .str.strip()
+        )
+
+        mascara_categoria = pd.Series(
+            False,
+            index=vista.index,
+        )
+
+        if "Sin categoría" in categorias_filtro:
+            mascara_categoria |= (
+                categoria_serie == ""
+            )
+
+        categorias_concretas = [
+            valor
+            for valor in categorias_filtro
+            if valor != "Sin categoría"
+        ]
+
+        if categorias_concretas:
+            mascara_categoria |= (
+                categoria_serie.isin(
+                    categorias_concretas
+                )
+            )
+
         vista = vista[
-            categoria_normalizada == ""
+            mascara_categoria
         ].copy()
 
-    elif categoria_filtro != "Todas":
-        vista = vista[
-            categoria_normalizada == categoria_filtro
-        ].copy()
+    # --------------------------------------------------------
+    # Fecha de vencimiento
+    # --------------------------------------------------------
 
-    # Reforzar el filtro de finalización antes de evaluar fechas.
-    # Las finalizadas solo deben verse cuando el usuario elige
-    # "Finalizadas" o "Todas".
-    if estado_filtro not in [
-        "Finalizadas",
-        "Todas",
-    ]:
-        vista = vista[
+    if fechas_filtro:
+        fechas_serie = pd.to_datetime(
+            vista["fecha_limite"],
+            errors="coerce",
+        )
+
+        estado_serie = (
             vista["estado"]
             .fillna("")
             .astype(str)
             .str.strip()
-            != "Finalizada"
-        ].copy()
+        )
 
-    fechas_vista = pd.to_datetime(
-        vista["fecha_limite"],
-        errors="coerce",
-    )
+        hoy_timestamp = pd.Timestamp(
+            date.today()
+        )
 
-    hoy_timestamp = pd.Timestamp(
-        date.today()
-    )
+        limite = (
+            hoy_timestamp
+            + pd.Timedelta(days=7)
+        )
 
-    if fecha_filtro == "Vencidas":
-        vista = vista[
-            fechas_vista.notna()
-            & (fechas_vista < hoy_timestamp)
-            & (
-                vista["estado"]
-                .fillna("")
-                .astype(str)
-                .str.strip()
-                != "Finalizada"
+        mascara_fecha = pd.Series(
+            False,
+            index=vista.index,
+        )
+
+        if "Vencidas" in fechas_filtro:
+            mascara_fecha |= (
+                fechas_serie.notna()
+                & (fechas_serie < hoy_timestamp)
+                & estado_serie.ne("Finalizada")
             )
-        ].copy()
 
-    elif fecha_filtro == "Vencen hoy":
-        vista = vista[
-            fechas_vista.notna()
-            & (fechas_vista == hoy_timestamp)
-            & (
-                vista["estado"]
-                .fillna("")
-                .astype(str)
-                .str.strip()
-                != "Finalizada"
+        if "Vencen hoy" in fechas_filtro:
+            mascara_fecha |= (
+                fechas_serie.notna()
+                & (fechas_serie == hoy_timestamp)
+                & estado_serie.ne("Finalizada")
             )
-        ].copy()
 
-    elif fecha_filtro == "Próximos 7 días":
-        limite = hoy_timestamp + pd.Timedelta(days=7)
-
-        vista = vista[
-            fechas_vista.notna()
-            & (fechas_vista >= hoy_timestamp)
-            & (fechas_vista <= limite)
-            & (
-                vista["estado"]
-                .fillna("")
-                .astype(str)
-                .str.strip()
-                != "Finalizada"
+        if "Próximos 7 días" in fechas_filtro:
+            mascara_fecha |= (
+                fechas_serie.notna()
+                & (fechas_serie >= hoy_timestamp)
+                & (fechas_serie <= limite)
+                & estado_serie.ne("Finalizada")
             )
-        ].copy()
 
-    elif fecha_filtro == "Con fecha":
-        vista = vista[
-            fechas_vista.notna()
-        ].copy()
+        if "Con fecha" in fechas_filtro:
+            mascara_fecha |= fechas_serie.notna()
 
-    elif fecha_filtro == "Sin fecha":
+        if "Sin fecha" in fechas_filtro:
+            mascara_fecha |= fechas_serie.isna()
+
         vista = vista[
-            fechas_vista.isna()
+            mascara_fecha
         ].copy()
 
     st.caption(
