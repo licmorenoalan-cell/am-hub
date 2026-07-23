@@ -3,6 +3,7 @@ import os
 import secrets
 from datetime import date
 from pathlib import Path
+import re
 
 import pandas as pd
 import streamlit as st
@@ -961,6 +962,14 @@ if pagina_pocket == "📋 Mi tablero":
         "🔎 Filtros",
         expanded=True,
     ):
+        busqueda_tareas = st.text_input(
+            "Buscar tarjetas",
+            placeholder=(
+                "Tarea, cliente, responsable, categoría..."
+            ),
+            key="pocket_busqueda_tareas",
+        )
+
         f1, f2 = st.columns(2)
 
         with f1:
@@ -1045,6 +1054,71 @@ if pagina_pocket == "📋 Mi tablero":
         )
 
     vista = tareas.copy()
+
+    # --------------------------------------------------------
+    # Búsqueda libre por palabras clave
+    # --------------------------------------------------------
+
+    palabras_busqueda = [
+        palabra.strip()
+        for palabra in str(
+            busqueda_tareas or ""
+        ).split()
+        if palabra.strip()
+    ]
+
+    if palabras_busqueda:
+        columnas_busqueda = [
+            columna
+            for columna in [
+                "tarea",
+                "descripcion",
+                "cliente",
+                "unidad",
+                "proyecto",
+                "responsable_am",
+                "prioridad",
+                "estado",
+                "categoria",
+                "comentarios",
+                "origen",
+            ]
+            if columna in vista.columns
+        ]
+
+        texto_busqueda = pd.Series(
+            "",
+            index=vista.index,
+            dtype="object",
+        )
+
+        for columna in columnas_busqueda:
+            texto_busqueda = (
+                texto_busqueda
+                + " "
+                + vista[columna]
+                .fillna("")
+                .astype(str)
+            )
+
+        mascara_busqueda = pd.Series(
+            True,
+            index=vista.index,
+        )
+
+        for palabra in palabras_busqueda:
+            mascara_busqueda &= (
+                texto_busqueda.str.contains(
+                    re.escape(palabra),
+                    case=False,
+                    na=False,
+                    regex=True,
+                )
+            )
+
+        vista = vista[
+            mascara_busqueda
+        ].copy()
 
     # --------------------------------------------------------
     # Estado

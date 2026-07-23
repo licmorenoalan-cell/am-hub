@@ -8,6 +8,7 @@ import pandas as pd
 import altair as alt
 import streamlit as st
 from sqlalchemy import create_engine, text as sql_text
+import re
 
 # ============================================================
 # Configuración general
@@ -8084,6 +8085,15 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
 
     st.markdown("### Tablero")
 
+    busqueda_tareas = st.text_input(
+        "🔎 Buscar tarjetas",
+        placeholder=(
+            "Buscar por tarea, cliente, responsable, "
+            "descripción, categoría..."
+        ),
+        key=f"busqueda_tareas_{modo}_{cliente_fijo}",
+    )
+
     # Los multiselect vacíos equivalen a mostrar todos.
     f1, f2, f3 = st.columns(3)
 
@@ -8180,6 +8190,71 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
         )
 
     tareas_vista = tareas_vista_base.copy()
+
+    # --------------------------------------------------------
+    # Búsqueda libre por palabras clave
+    # --------------------------------------------------------
+
+    palabras_busqueda = [
+        palabra.strip()
+        for palabra in str(
+            busqueda_tareas or ""
+        ).split()
+        if palabra.strip()
+    ]
+
+    if palabras_busqueda:
+        columnas_busqueda = [
+            columna
+            for columna in [
+                "tarea",
+                "descripcion",
+                "cliente",
+                "unidad",
+                "proyecto",
+                "responsable_am",
+                "prioridad",
+                "estado",
+                "categoria",
+                "comentarios",
+                "origen",
+            ]
+            if columna in tareas_vista.columns
+        ]
+
+        texto_busqueda = pd.Series(
+            "",
+            index=tareas_vista.index,
+            dtype="object",
+        )
+
+        for columna in columnas_busqueda:
+            texto_busqueda = (
+                texto_busqueda
+                + " "
+                + tareas_vista[columna]
+                .fillna("")
+                .astype(str)
+            )
+
+        mascara_busqueda = pd.Series(
+            True,
+            index=tareas_vista.index,
+        )
+
+        for palabra in palabras_busqueda:
+            mascara_busqueda &= (
+                texto_busqueda.str.contains(
+                    re.escape(palabra),
+                    case=False,
+                    na=False,
+                    regex=True,
+                )
+            )
+
+        tareas_vista = tareas_vista[
+            mascara_busqueda
+        ].copy()
 
     # --------------------------------------------------------
     # Estado
