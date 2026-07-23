@@ -610,34 +610,7 @@ st.markdown(
             border: 1px solid {COLOR_TEAL_DARK};
             color: white;
         }}
-    
-    /* Permitir desplazamiento vertical normal en el tablero */
-    html,
-    body {
-        overflow-y: auto !important;
-        height: auto !important;
-        min-height: 100% !important;
-    }
-
-    [data-testid="stAppViewContainer"] {
-        overflow-y: auto !important;
-        height: auto !important;
-        min-height: 100vh !important;
-    }
-
-    [data-testid="stMain"] {
-        overflow: visible !important;
-        height: auto !important;
-        min-height: 100vh !important;
-    }
-
-    [data-testid="stMainBlockContainer"],
-    .block-container {
-        overflow: visible !important;
-        height: auto !important;
-    }
-
-</style>
+    </style>
     """,
     unsafe_allow_html=True,
 )
