@@ -610,7 +610,34 @@ st.markdown(
             border: 1px solid {COLOR_TEAL_DARK};
             color: white;
         }}
-    </style>
+    
+    /* Permitir desplazamiento vertical normal en el tablero */
+    html,
+    body {
+        overflow-y: auto !important;
+        height: auto !important;
+        min-height: 100% !important;
+    }
+
+    [data-testid="stAppViewContainer"] {
+        overflow-y: auto !important;
+        height: auto !important;
+        min-height: 100vh !important;
+    }
+
+    [data-testid="stMain"] {
+        overflow: visible !important;
+        height: auto !important;
+        min-height: 100vh !important;
+    }
+
+    [data-testid="stMainBlockContainer"],
+    .block-container {
+        overflow: visible !important;
+        height: auto !important;
+    }
+
+</style>
     """,
     unsafe_allow_html=True,
 )
@@ -7692,10 +7719,32 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
 
     with st.container(border=True):
         st.markdown("### 📥 Captura rápida")
+
+        mensaje_captura = st.session_state.pop(
+            "mensaje_captura_rapida",
+            "",
+        )
+
+        if mensaje_captura:
+            st.success(mensaje_captura)
         st.caption(
             "Anotá o pegá un pendiente. Después podés abrir "
             "la tarjeta para clasificarlo."
         )
+
+        clave_captura = (
+            f"captura_rapida_tareas_{modo}_{cliente_fijo}"
+        )
+
+        clave_limpiar_captura = (
+            f"limpiar_{clave_captura}"
+        )
+
+        if st.session_state.pop(
+            clave_limpiar_captura,
+            False,
+        ):
+            st.session_state[clave_captura] = ""
 
         captura_rapida = st.text_area(
             "¿Qué tenés pendiente?",
@@ -7703,7 +7752,7 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
                 "Ejemplo: revisar el presupuesto de pauta de Ritual"
             ),
             height=90,
-            key=f"captura_rapida_tareas_{modo}_{cliente_fijo}",
+            key=clave_captura,
             label_visibility="collapsed",
         )
 
@@ -7825,8 +7874,16 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
                 cantidad = len(nuevas_tareas)
 
                 st.session_state[
-                    f"captura_rapida_tareas_{modo}_{cliente_fijo}"
-                ] = ""
+                    clave_limpiar_captura
+                ] = True
+
+                st.session_state[
+                    "mensaje_captura_rapida"
+                ] = (
+                    "✅ TARJETA CREADA"
+                    if cantidad == 1
+                    else f"✅ {cantidad} TARJETAS CREADAS"
+                )
 
                 st.success(
                     (
