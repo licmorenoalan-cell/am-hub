@@ -8091,15 +8091,6 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
         key=f"busqueda_tareas_visible_{modo}_{cliente_fijo}",
     )
 
-    busqueda_tareas = st.text_input(
-        "🔎 Buscar tarjetas",
-        placeholder=(
-            "Buscar por tarea, cliente, responsable, "
-            "descripción, categoría..."
-        ),
-        key=f"busqueda_tareas_{modo}_{cliente_fijo}",
-    )
-
     # Los multiselect vacíos equivalen a mostrar todos.
     f1, f2, f3 = st.columns(3)
 
