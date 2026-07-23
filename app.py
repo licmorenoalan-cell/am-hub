@@ -8087,6 +8087,12 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
 
     busqueda_tareas = st.text_input(
         "🔎 Buscar tarjetas",
+        placeholder="Título, descripción, cliente, responsable...",
+        key=f"busqueda_tareas_visible_{modo}_{cliente_fijo}",
+    )
+
+    busqueda_tareas = st.text_input(
+        "🔎 Buscar tarjetas",
         placeholder=(
             "Buscar por tarea, cliente, responsable, "
             "descripción, categoría..."
@@ -8190,6 +8196,63 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
         )
 
     tareas_vista = tareas_vista_base.copy()
+
+    if str(busqueda_tareas or "").strip():
+        palabras = [
+            palabra.strip().casefold()
+            for palabra in str(busqueda_tareas).split()
+            if palabra.strip()
+        ]
+
+        columnas_busqueda = [
+            columna
+            for columna in [
+                "tarea",
+                "descripcion",
+                "cliente",
+                "unidad",
+                "proyecto",
+                "responsable_am",
+                "prioridad",
+                "estado",
+                "categoria",
+                "comentarios",
+                "origen",
+            ]
+            if columna in tareas_vista.columns
+        ]
+
+        texto_completo = pd.Series(
+            "",
+            index=tareas_vista.index,
+            dtype="object",
+        )
+
+        for columna in columnas_busqueda:
+            texto_completo = (
+                texto_completo
+                + " "
+                + tareas_vista[columna]
+                .fillna("")
+                .astype(str)
+                .str.casefold()
+            )
+
+        mascara_busqueda = pd.Series(
+            True,
+            index=tareas_vista.index,
+        )
+
+        for palabra in palabras:
+            mascara_busqueda &= texto_completo.str.contains(
+                palabra,
+                regex=False,
+                na=False,
+            )
+
+        tareas_vista = tareas_vista[
+            mascara_busqueda
+        ].copy()
 
     # --------------------------------------------------------
     # Búsqueda libre por palabras clave

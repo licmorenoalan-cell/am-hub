@@ -963,6 +963,12 @@ if pagina_pocket == "📋 Mi tablero":
         expanded=True,
     ):
         busqueda_tareas = st.text_input(
+            "🔎 Buscar tarjetas",
+            placeholder="Título, descripción, cliente, responsable...",
+            key="pocket_busqueda_tareas_visible",
+        )
+
+        busqueda_tareas = st.text_input(
             "Buscar tarjetas",
             placeholder=(
                 "Tarea, cliente, responsable, categoría..."
@@ -1054,6 +1060,63 @@ if pagina_pocket == "📋 Mi tablero":
         )
 
     vista = tareas.copy()
+
+    if str(busqueda_tareas or "").strip():
+        palabras = [
+            palabra.strip().casefold()
+            for palabra in str(busqueda_tareas).split()
+            if palabra.strip()
+        ]
+
+        columnas_busqueda = [
+            columna
+            for columna in [
+                "tarea",
+                "descripcion",
+                "cliente",
+                "unidad",
+                "proyecto",
+                "responsable_am",
+                "prioridad",
+                "estado",
+                "categoria",
+                "comentarios",
+                "origen",
+            ]
+            if columna in vista.columns
+        ]
+
+        texto_completo = pd.Series(
+            "",
+            index=vista.index,
+            dtype="object",
+        )
+
+        for columna in columnas_busqueda:
+            texto_completo = (
+                texto_completo
+                + " "
+                + vista[columna]
+                .fillna("")
+                .astype(str)
+                .str.casefold()
+            )
+
+        mascara_busqueda = pd.Series(
+            True,
+            index=vista.index,
+        )
+
+        for palabra in palabras:
+            mascara_busqueda &= texto_completo.str.contains(
+                palabra,
+                regex=False,
+                na=False,
+            )
+
+        vista = vista[
+            mascara_busqueda
+        ].copy()
 
     # --------------------------------------------------------
     # Búsqueda libre por palabras clave
