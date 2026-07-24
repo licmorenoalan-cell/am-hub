@@ -572,6 +572,27 @@ def actualizar_estado(
     limpiar_cache()
 
 
+def eliminar_tarea(tarea_id: str) -> bool:
+    engine = get_engine()
+
+    with engine.begin() as conn:
+        resultado = conn.execute(
+            text(
+                """
+                DELETE FROM tareas
+                WHERE id = :id
+                """
+            ),
+            {
+                "id": str(tarea_id),
+            },
+        )
+
+    limpiar_cache()
+
+    return bool(resultado.rowcount)
+
+
 def parsear_checklist(valor):
     import json
 
@@ -962,12 +983,6 @@ if pagina_pocket == "📋 Mi tablero":
         "🔎 Filtros",
         expanded=True,
     ):
-        busqueda_tareas = st.text_input(
-            "🔎 Buscar tarjetas",
-            placeholder="Título, descripción, cliente, responsable...",
-            key="pocket_busqueda_tareas_visible",
-        )
-
         busqueda_tareas = st.text_input(
             "Buscar tarjetas",
             placeholder=(
@@ -1747,3 +1762,36 @@ if pagina_pocket == "📋 Mi tablero":
                         "Tarea actualizada."
                     )
                     st.rerun()
+
+                st.divider()
+                confirmar_eliminacion = st.checkbox(
+                    "Confirmo eliminar esta tarjeta",
+                    key=(
+                        f"pocket_confirmar_eliminar_"
+                        f"{tarea_id}"
+                    ),
+                )
+
+                if st.button(
+                    "Eliminar tarea",
+                    key=(
+                        f"pocket_eliminar_"
+                        f"{tarea_id}"
+                    ),
+                    use_container_width=True,
+                    disabled=(
+                        not confirmar_eliminacion
+                    ),
+                ):
+                    if eliminar_tarea(tarea_id):
+                        st.session_state[
+                            "pocket_tarea_abierta"
+                        ] = ""
+                        st.success(
+                            "Tarea eliminada."
+                        )
+                        st.rerun()
+                    else:
+                        st.error(
+                            "No se encontró la tarea."
+                        )

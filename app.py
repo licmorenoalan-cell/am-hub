@@ -152,6 +152,24 @@ def get_postgres_engine():
     return _POSTGRES_ENGINE
 
 
+@st.cache_resource
+def asegurar_columnas_objetivos_postgres():
+    engine = get_postgres_engine()
+
+    with engine.begin() as conn:
+        conn.execute(
+            sql_text(
+                'ALTER TABLE "objetivos" '
+                'ADD COLUMN IF NOT EXISTS '
+                '"responsable_am" TEXT, '
+                'ADD COLUMN IF NOT EXISTS '
+                '"responsable_cliente" TEXT'
+            )
+        )
+
+    return True
+
+
 def tabla_postgres_para_path(path):
     try:
         filename = Path(path).name
@@ -179,30 +197,34 @@ def normalizar_df_para_columnas(df: pd.DataFrame, columns: list[str]) -> pd.Data
 
 
 @st.cache_data(ttl=600, show_spinner=False)
-def leer_postgres_core_cacheada() -> dict:
+def leer_postgres_core_tabla_cacheada(
+    tabla: str,
+) -> pd.DataFrame:
     inicio_perf = perf_start()
     engine = get_postgres_engine()
-    data = {}
-
-    with engine.connect() as conn:
-        for tabla in POSTGRES_CORE_TABLES:
-            try:
-                data[tabla] = pd.read_sql(sql_text(f'SELECT * FROM "{tabla}"'), conn).fillna("")
-            except Exception:
-                data[tabla] = pd.DataFrame()
 
     try:
-        total_filas = sum(len(df) for df in data.values())
+        with engine.connect() as conn:
+            df = pd.read_sql(
+                sql_text(
+                    f'SELECT * FROM "{tabla}"'
+                ),
+                conn,
+            ).fillna("")
     except Exception:
-        total_filas = 0
+        df = pd.DataFrame()
 
-    perf_log(f"CORE postgres tablas={len(data)} filas={total_filas}", inicio_perf)
-    return data
+    perf_log(
+        f"CORE postgres tabla={tabla} filas={len(df)}",
+        inicio_perf,
+    )
+    return df
 
 
 def leer_postgres_core_tabla(tabla: str, columns: list[str]) -> pd.DataFrame:
-    data = leer_postgres_core_cacheada()
-    df = data.get(tabla, pd.DataFrame()).copy()
+    df = leer_postgres_core_tabla_cacheada(
+        tabla
+    ).copy()
     return normalizar_df_para_columnas(df, columns)
 
 
@@ -294,7 +316,7 @@ def _filas_distintas(row_nueva, row_actual, columnas):
 
 def _limpiar_cache_postgres():
     for cache_func_name in [
-        "leer_postgres_core_cacheada",
+        "leer_postgres_core_tabla_cacheada",
         "leer_postgres_cacheada",
         "leer_postgres_cliente_cacheada",
         "leer_postgres_preview_cacheada",
@@ -4670,6 +4692,83 @@ def render_objetivos(cliente="", modo="cliente"):
         cambios,
         comentario_nuevo="",
     ):
+        if usar_postgres():
+            engine = get_postgres_engine()
+            asegurar_columnas_objetivos_postgres()
+            cambios_postgres = {
+                campo: valor
+                for campo, valor in cambios.items()
+                if campo in columnas and campo != "id"
+            }
+            cambios_postgres[
+                "fecha_actualizacion"
+            ] = date.today().strftime("%Y-%m-%d")
+            cambios_postgres[
+                "actualizado_por"
+            ] = nombre_usuario
+
+            with engine.begin() as conn:
+                actual = conn.execute(
+                    sql_text(
+                        'SELECT "comentarios" '
+                        'FROM "objetivos" '
+                        'WHERE "id" = :objetivo_id'
+                    ),
+                    {
+                        "objetivo_id": str(
+                            objetivo_id
+                        ),
+                    },
+                ).mappings().first()
+
+                if actual is None:
+                    raise ValueError(
+                        "No se encontró el objetivo."
+                    )
+
+                if str(comentario_nuevo or "").strip():
+                    anterior = str(
+                        actual.get("comentarios", "")
+                        or ""
+                    )
+                    agregado = (
+                        f"{date.today().strftime('%Y-%m-%d')} "
+                        f"- {nombre_usuario}: "
+                        f"{str(comentario_nuevo).strip()}"
+                    )
+                    cambios_postgres["comentarios"] = (
+                        anterior
+                        + "\n"
+                        + agregado
+                    ).strip()
+
+                asignaciones = ", ".join(
+                    f'"{campo}" = :{campo}'
+                    for campo in cambios_postgres
+                )
+                parametros = {
+                    campo: _normalizar_valor_postgres(
+                        valor
+                    )
+                    for campo, valor
+                    in cambios_postgres.items()
+                }
+                parametros["objetivo_id"] = str(
+                    objetivo_id
+                )
+
+                conn.execute(
+                    sql_text(
+                        f'UPDATE "objetivos" SET '
+                        f'{asignaciones} '
+                        f'WHERE "id" = :objetivo_id'
+                    ),
+                    parametros,
+                )
+
+            _limpiar_cache_postgres()
+            return
+
         objetivos_full = read_csv(
             OBJETIVOS_PATH,
             columnas,
@@ -4747,6 +4846,62 @@ def render_objetivos(cliente="", modo="cliente"):
 
         save_csv(
             objetivos_full,
+            OBJETIVOS_PATH,
+        )
+
+    def eliminar_objetivo(objetivo_id):
+        if usar_postgres():
+            engine = get_postgres_engine()
+
+            with engine.begin() as conn:
+                resultado = conn.execute(
+                    sql_text(
+                        'DELETE FROM "objetivos" '
+                        'WHERE "id" = :objetivo_id'
+                    ),
+                    {
+                        "objetivo_id": str(
+                            objetivo_id
+                        ),
+                    },
+                )
+
+            _limpiar_cache_postgres()
+
+            if not resultado.rowcount:
+                raise ValueError(
+                    "No se encontró el objetivo."
+                )
+
+            return
+
+        objetivos_full = read_csv(
+            OBJETIVOS_PATH,
+            [],
+        )
+
+        if (
+            objetivos_full is None
+            or objetivos_full.empty
+            or "id" not in objetivos_full.columns
+        ):
+            raise ValueError(
+                "No se encontró el objetivo."
+            )
+
+        mask = (
+            objetivos_full["id"]
+            .astype(str)
+            .eq(str(objetivo_id))
+        )
+
+        if not mask.any():
+            raise ValueError(
+                "No se encontró el objetivo."
+            )
+
+        save_csv(
+            objetivos_full.loc[~mask].copy(),
             OBJETIVOS_PATH,
         )
 
@@ -5291,6 +5446,15 @@ def render_objetivos(cliente="", modo="cliente"):
         modo == "admin"
         and role in ["admin_general", "admin"]
     )
+
+    puede_eliminar = (
+        modo == "admin"
+        or role in [
+            "admin_general",
+            "admin",
+            "equipo",
+        ]
+    ) and role != "cliente"
 
     # ------------------------------------------------------------
     # Secciones según la organización visual elegida.
@@ -5898,6 +6062,40 @@ def render_objetivos(cliente="", modo="cliente"):
 
                                     except Exception as exc:
                                         st.error(str(exc))
+
+                                if puede_eliminar:
+                                    st.divider()
+                                    confirmar_eliminacion = (
+                                        st.checkbox(
+                                            "Confirmo eliminar esta tarjeta",
+                                            key=(
+                                                f"confirmar_eliminar_objetivo_"
+                                                f"{objetivo_id}"
+                                            ),
+                                        )
+                                    )
+
+                                    if st.button(
+                                        "Eliminar objetivo",
+                                        key=(
+                                            f"eliminar_objetivo_"
+                                            f"{objetivo_id}"
+                                        ),
+                                        use_container_width=True,
+                                        disabled=(
+                                            not confirmar_eliminacion
+                                        ),
+                                    ):
+                                        try:
+                                            eliminar_objetivo(
+                                                objetivo_id
+                                            )
+                                            st.success(
+                                                "Objetivo eliminado."
+                                            )
+                                            st.rerun()
+                                        except Exception as exc:
+                                            st.error(str(exc))
 
 
 def render_documentos(cliente="", modo="cliente"):
@@ -8576,6 +8774,65 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
         if unidad and unidad not in unidades_opciones:
             unidades_opciones.append(unidad)
 
+    puede_eliminar_tareas = (
+        modo == "admin"
+        or role in [
+            "admin_general",
+            "admin",
+            "equipo",
+        ]
+    )
+
+    def eliminar_tarea(tarea_id):
+        if usar_postgres():
+            engine = get_postgres_engine()
+
+            with engine.begin() as conn:
+                resultado = conn.execute(
+                    sql_text(
+                        'DELETE FROM "tareas" '
+                        'WHERE "id" = :tarea_id'
+                    ),
+                    {
+                        "tarea_id": str(tarea_id),
+                    },
+                )
+
+            _limpiar_cache_postgres()
+
+            if not resultado.rowcount:
+                return False, "No se encontró la tarea."
+
+            return True, ""
+
+        tareas_actualizadas = read_csv(
+            TAREAS_PATH,
+            [],
+        )
+
+        if (
+            tareas_actualizadas is None
+            or tareas_actualizadas.empty
+            or "id" not in tareas_actualizadas.columns
+        ):
+            return False, "No se encontró la tarea."
+
+        mask = (
+            tareas_actualizadas["id"]
+            .astype(str)
+            .eq(str(tarea_id))
+        )
+
+        if not mask.any():
+            return False, "No se encontró la tarea."
+
+        save_csv(
+            tareas_actualizadas.loc[~mask].copy(),
+            TAREAS_PATH,
+        )
+
+        return True, ""
+
     # ========================================================
     # Helper: cambio rápido de estado
     # ========================================================
@@ -10426,6 +10683,44 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
                                         "Tarea actualizada."
                                     )
                                     st.rerun()
+
+                            if puede_eliminar_tareas:
+                                st.divider()
+                                confirmar_eliminacion = (
+                                    st.checkbox(
+                                        "Confirmo eliminar esta tarjeta",
+                                        key=(
+                                            f"confirmar_eliminar_tarea_"
+                                            f"{tarea_id}"
+                                        ),
+                                    )
+                                )
+
+                                if st.button(
+                                    "Eliminar tarea",
+                                    key=(
+                                        f"eliminar_tarea_"
+                                        f"{tarea_id}"
+                                    ),
+                                    use_container_width=True,
+                                    disabled=(
+                                        not confirmar_eliminacion
+                                    ),
+                                ):
+                                    eliminado, mensaje = (
+                                        eliminar_tarea(tarea_id)
+                                    )
+
+                                    if eliminado:
+                                        st.session_state[
+                                            "tarea_abierta_id"
+                                        ] = ""
+                                        st.success(
+                                            "Tarea eliminada."
+                                        )
+                                        st.rerun()
+                                    else:
+                                        st.error(mensaje)
 
 def main():
     ensure_data_dir()
