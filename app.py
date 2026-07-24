@@ -5154,6 +5154,118 @@ def render_objetivos(cliente="", modo="cliente"):
         )
         return
 
+    # Los filtros determinan qué objetivos participan del tablero.
+    # Este control, en cambio, define cómo se organizan visualmente.
+    criterio_columnas = st.radio(
+        "Organizar tarjetas por",
+        [
+            "Estado",
+            "Fecha de vencimiento",
+            "Cliente",
+            "Prioridad",
+            "Responsable AM",
+            "Responsable cliente",
+            "Mes",
+        ],
+        horizontal=True,
+        key=(
+            f"criterio_objetivos_"
+            f"{modo}_{cliente or 'admin'}"
+        ),
+    )
+
+    def grupo_vencimiento_objetivo(valor):
+        fecha = pd.to_datetime(
+            str(valor or "").strip(),
+            errors="coerce",
+        )
+
+        if pd.isna(fecha):
+            return "Sin fecha"
+
+        hoy = date.today()
+        fecha_objetivo = fecha.date()
+
+        if fecha_objetivo < hoy:
+            return "Vencidos"
+
+        if fecha_objetivo == hoy:
+            return "Vencen hoy"
+
+        if fecha_objetivo <= hoy + pd.Timedelta(days=7):
+            return "Próximos 7 días"
+
+        if fecha_objetivo <= hoy + pd.Timedelta(days=30):
+            return "Próximos 30 días"
+
+        return "Más adelante"
+
+    if criterio_columnas == "Estado":
+        objetivos_vista["_grupo_tablero"] = (
+            objetivos_vista["estado"]
+            .fillna("")
+            .astype(str)
+            .str.strip()
+            .replace("", "Sin estado")
+        )
+        grupos_tablero = [
+            grupo
+            for grupo in estados + ["Sin estado"]
+            if grupo
+            in set(objetivos_vista["_grupo_tablero"])
+        ]
+
+    elif criterio_columnas == "Fecha de vencimiento":
+        objetivos_vista["_grupo_tablero"] = (
+            objetivos_vista["fecha_limite"]
+            .apply(grupo_vencimiento_objetivo)
+        )
+        orden_vencimientos = [
+            "Vencidos",
+            "Vencen hoy",
+            "Próximos 7 días",
+            "Próximos 30 días",
+            "Más adelante",
+            "Sin fecha",
+        ]
+        grupos_tablero = [
+            grupo
+            for grupo in orden_vencimientos
+            if grupo
+            in set(objetivos_vista["_grupo_tablero"])
+        ]
+
+    else:
+        columna_por_criterio = {
+            "Cliente": "cliente",
+            "Prioridad": "prioridad",
+            "Responsable AM": "responsable_am",
+            "Responsable cliente": "responsable_cliente",
+            "Mes": "mes",
+        }
+        columna_grupo = columna_por_criterio[
+            criterio_columnas
+        ]
+        etiqueta_vacia = {
+            "Cliente": "Sin cliente",
+            "Prioridad": "Sin prioridad",
+            "Responsable AM": "Sin responsable AM",
+            "Responsable cliente": "Sin responsable cliente",
+            "Mes": "Sin mes",
+        }[criterio_columnas]
+        objetivos_vista["_grupo_tablero"] = (
+            objetivos_vista[columna_grupo]
+            .fillna("")
+            .astype(str)
+            .str.strip()
+            .replace("", etiqueta_vacia)
+        )
+        grupos_tablero = sorted(
+            objetivos_vista["_grupo_tablero"]
+            .unique()
+            .tolist()
+        )
+
     puede_editar = (
         modo == "admin"
         or role
@@ -5181,22 +5293,22 @@ def render_objetivos(cliente="", modo="cliente"):
     )
 
     # ------------------------------------------------------------
-    # Secciones por estado.
-    # Cada sección usa dos columnas para mantener tarjetas anchas.
+    # Secciones según la organización visual elegida.
+    # Los filtros aplicados arriba permanecen independientes.
     # ------------------------------------------------------------
 
-    for estado in estados:
+    for grupo_tablero in grupos_tablero:
         subset = objetivos_vista[
-            objetivos_vista["estado"]
+            objetivos_vista["_grupo_tablero"]
             .astype(str)
-            .eq(estado)
+            .eq(grupo_tablero)
         ].copy()
 
         if subset.empty:
             continue
 
         st.markdown("---")
-        st.markdown(f"### {estado}")
+        st.markdown(f"### {grupo_tablero}")
         st.caption(
             f"{len(subset)} objetivo(s)"
         )
