@@ -4146,6 +4146,8 @@ def render_inicio_cliente_ejecutivo(cliente):
         "objetivo",
         "descripcion",
         "responsable",
+        "responsable_am",
+        "responsable_cliente",
         "prioridad",
         "estado",
         "avance",
@@ -4456,6 +4458,8 @@ def render_objetivos(cliente="", modo="cliente"):
         "objetivo",
         "descripcion",
         "responsable",
+        "responsable_am",
+        "responsable_cliente",
         "prioridad",
         "estado",
         "avance",
@@ -4478,18 +4482,62 @@ def render_objetivos(cliente="", modo="cliente"):
 
     objetivos = objetivos.copy().fillna("")
 
+    # Compatibilidad con objetivos existentes:
+    # las columnas nuevas deben crearse antes de recortar
+    # el DataFrame a la estructura definida.
     for col in columnas:
         if col not in objetivos.columns:
             objetivos[col] = ""
 
-    objetivos = objetivos[columnas].fillna("")
+    if "responsable_am" not in objetivos.columns:
+        objetivos["responsable_am"] = ""
+
+    if "responsable_cliente" not in objetivos.columns:
+        objetivos["responsable_cliente"] = ""
+
+    objetivos = objetivos[columnas].copy().fillna("")
 
     objetivos["cliente"] = objetivos["cliente"].astype(str).str.strip()
     objetivos["objetivo"] = objetivos["objetivo"].astype(str).str.strip()
     objetivos["estado"] = objetivos["estado"].astype(str).str.strip().replace("", "Pendiente")
     objetivos["prioridad"] = objetivos["prioridad"].astype(str).str.strip().replace("", "Media")
-    objetivos["responsable"] = objetivos["responsable"].astype(str).str.strip().replace("", "AM Consultora")
-    objetivos["avance"] = pd.to_numeric(objetivos["avance"], errors="coerce").fillna(0).clip(0, 100)
+    objetivos["responsable"] = (
+        objetivos["responsable"]
+        .astype(str)
+        .str.strip()
+        .replace("", "AM Consultora")
+    )
+
+    objetivos["responsable_am"] = (
+        objetivos["responsable_am"]
+        .astype(str)
+        .str.strip()
+    )
+
+    objetivos["responsable_cliente"] = (
+        objetivos["responsable_cliente"]
+        .astype(str)
+        .str.strip()
+    )
+
+    # Compatibilidad con objetivos anteriores:
+    # si solo tenían "responsable", se conserva como responsable AM.
+    objetivos.loc[
+        objetivos["responsable_am"].eq(""),
+        "responsable_am",
+    ] = objetivos.loc[
+        objetivos["responsable_am"].eq(""),
+        "responsable",
+    ]
+
+    objetivos["avance"] = (
+        pd.to_numeric(
+            objetivos["avance"],
+            errors="coerce",
+        )
+        .fillna(0)
+        .clip(0, 100)
+    )
 
     estados = ["Pendiente", "En curso", "En revisión", "Finalizado", "Pausado"]
     prioridades = ["Alta", "Media", "Baja"]
@@ -4538,8 +4586,24 @@ def render_objetivos(cliente="", modo="cliente"):
 
                     with c2:
                         mes_ref = st.text_input("Mes", value=date.today().strftime("%Y-%m"))
-                        responsable = st.text_input("Responsable", value="AM Consultora")
-                        prioridad = st.selectbox("Prioridad", prioridades, index=1)
+                        responsable_am = st.text_input(
+                            "Responsable AM",
+                            value=nombre_usuario or "AM Consultora",
+                        )
+
+                        responsable_cliente = st.text_input(
+                            "Responsable del cliente",
+                            placeholder=(
+                                "Persona del cliente que participa "
+                                "o debe validar"
+                            ),
+                        )
+
+                        prioridad = st.selectbox(
+                            "Prioridad",
+                            prioridades,
+                            index=1,
+                        )
                         estado = st.selectbox("Estado inicial", estados)
                         fecha_limite = st.date_input("Fecha límite", value=date.today())
 
@@ -4558,7 +4622,17 @@ def render_objetivos(cliente="", modo="cliente"):
                                 "mes": mes_ref.strip(),
                                 "objetivo": objetivo_txt.strip(),
                                 "descripcion": descripcion.strip(),
-                                "responsable": responsable.strip() or "AM Consultora",
+                                "responsable": (
+                                    responsable_am.strip()
+                                    or "AM Consultora"
+                                ),
+                                "responsable_am": (
+                                    responsable_am.strip()
+                                    or "AM Consultora"
+                                ),
+                                "responsable_cliente": (
+                                    responsable_cliente.strip()
+                                ),
                                 "prioridad": prioridad,
                                 "estado": estado,
                                 "avance": avance_auto,
@@ -4588,133 +4662,832 @@ def render_objetivos(cliente="", modo="cliente"):
                             st.rerun()
 
     # ------------------------------------------------------------
+    # Guardado centralizado de un objetivo.
+    # ------------------------------------------------------------
+
+    def guardar_cambios_objetivo(
+        objetivo_id,
+        cambios,
+        comentario_nuevo="",
+    ):
+        objetivos_full = read_csv(
+            OBJETIVOS_PATH,
+            columnas,
+        )
+
+        if (
+            objetivos_full is None
+            or objetivos_full.empty
+        ):
+            objetivos_full = pd.DataFrame(
+                columns=columnas
+            )
+
+        for col in columnas:
+            if col not in objetivos_full.columns:
+                objetivos_full[col] = ""
+
+        objetivos_full = (
+            objetivos_full[columnas]
+            .copy()
+            .fillna("")
+        )
+
+        mask = (
+            objetivos_full["id"]
+            .astype(str)
+            .eq(str(objetivo_id))
+        )
+
+        if not mask.any():
+            raise ValueError(
+                "No se encontró el objetivo."
+            )
+
+        for campo, valor in cambios.items():
+            if campo in objetivos_full.columns:
+                objetivos_full.loc[
+                    mask,
+                    campo,
+                ] = valor
+
+        objetivos_full.loc[
+            mask,
+            "fecha_actualizacion",
+        ] = date.today().strftime("%Y-%m-%d")
+
+        objetivos_full.loc[
+            mask,
+            "actualizado_por",
+        ] = nombre_usuario
+
+        if str(comentario_nuevo or "").strip():
+            anterior = str(
+                objetivos_full.loc[
+                    mask,
+                    "comentarios",
+                ].iloc[0]
+                or ""
+            )
+
+            agregado = (
+                f"{date.today().strftime('%Y-%m-%d')} "
+                f"- {nombre_usuario}: "
+                f"{str(comentario_nuevo).strip()}"
+            )
+
+            objetivos_full.loc[
+                mask,
+                "comentarios",
+            ] = (
+                anterior
+                + "\n"
+                + agregado
+            ).strip()
+
+        save_csv(
+            objetivos_full,
+            OBJETIVOS_PATH,
+        )
+
+
+    # ------------------------------------------------------------
     # Filtros.
     # ------------------------------------------------------------
+
     objetivos_vista = objetivos.copy()
 
     if cliente:
         objetivos_vista = objetivos_vista[
-            objetivos_vista["cliente"].astype(str) == str(cliente)
+            objetivos_vista["cliente"]
+            .astype(str)
+            .eq(str(cliente))
         ].copy()
 
-    f1, f2, f3 = st.columns([1.4, 1.2, 1])
+    busqueda_objetivos = st.text_input(
+        "🔎 Buscar objetivos",
+        placeholder=(
+            "Objetivo, descripción, responsable, "
+            "cliente o comentario..."
+        ),
+        key=(
+            f"buscar_objetivos_"
+            f"{modo}_{cliente or 'admin'}"
+        ),
+    )
+
+    f1, f2, f3 = st.columns(3)
 
     with f1:
         if modo == "admin":
-            clientes_lista = sorted(objetivos_vista["cliente"].dropna().astype(str).unique().tolist())
-            cliente_filtro = st.selectbox(
-                "Cliente",
-                ["Todos"] + clientes_lista,
-                key=f"objetivos_cliente_filtro_{modo}_{cliente or 'admin'}",
+            clientes_lista = sorted(
+                [
+                    valor
+                    for valor in objetivos_vista[
+                        "cliente"
+                    ]
+                    .dropna()
+                    .astype(str)
+                    .str.strip()
+                    .unique()
+                    .tolist()
+                    if valor
+                ]
             )
 
-            if cliente_filtro != "Todos":
-                objetivos_vista = objetivos_vista[
-                    objetivos_vista["cliente"].astype(str) == cliente_filtro
-                ].copy()
+            clientes_filtro = st.multiselect(
+                "Cliente",
+                clientes_lista,
+                default=[],
+                key=(
+                    f"objetivos_cliente_multi_"
+                    f"{modo}_{cliente or 'admin'}"
+                ),
+            )
         else:
+            clientes_filtro = []
             st.caption(f"Cliente: {cliente}")
 
     with f2:
-        estado_filtro = st.selectbox(
+        estados_filtro = st.multiselect(
             "Estado",
-            ["Todos"] + estados,
-            key=f"objetivos_estado_filtro_{modo}_{cliente or 'admin'}",
+            estados,
+            default=[
+                "Pendiente",
+                "En curso",
+                "En revisión",
+                "Pausado",
+            ],
+            key=(
+                f"objetivos_estado_multi_"
+                f"{modo}_{cliente or 'admin'}"
+            ),
         )
 
     with f3:
-        prioridad_filtro = st.selectbox(
+        prioridades_filtro = st.multiselect(
             "Prioridad",
-            ["Todas"] + prioridades,
-            key=f"objetivos_prioridad_filtro_{modo}_{cliente or 'admin'}",
+            prioridades,
+            default=[],
+            key=(
+                f"objetivos_prioridad_multi_"
+                f"{modo}_{cliente or 'admin'}"
+            ),
         )
 
-    if estado_filtro != "Todos":
+    f4, f5, f6 = st.columns(3)
+
+    responsables_am_disponibles = sorted(
+        [
+            valor
+            for valor in objetivos_vista[
+                "responsable_am"
+            ]
+            .dropna()
+            .astype(str)
+            .str.strip()
+            .unique()
+            .tolist()
+            if valor
+        ]
+    )
+
+    responsables_cliente_disponibles = sorted(
+        [
+            valor
+            for valor in objetivos_vista[
+                "responsable_cliente"
+            ]
+            .dropna()
+            .astype(str)
+            .str.strip()
+            .unique()
+            .tolist()
+            if valor
+        ]
+    )
+
+    with f4:
+        responsables_am_filtro = st.multiselect(
+            "Responsable AM",
+            responsables_am_disponibles,
+            default=[],
+            key=(
+                f"objetivos_resp_am_multi_"
+                f"{modo}_{cliente or 'admin'}"
+            ),
+        )
+
+    with f5:
+        responsables_cliente_filtro = st.multiselect(
+            "Responsable cliente",
+            responsables_cliente_disponibles,
+            default=[],
+            key=(
+                f"objetivos_resp_cliente_multi_"
+                f"{modo}_{cliente or 'admin'}"
+            ),
+        )
+
+    meses_disponibles = sorted(
+        [
+            valor
+            for valor in objetivos_vista["mes"]
+            .dropna()
+            .astype(str)
+            .str.strip()
+            .unique()
+            .tolist()
+            if valor
+        ],
+        reverse=True,
+    )
+
+    with f6:
+        meses_filtro = st.multiselect(
+            "Mes",
+            meses_disponibles,
+            default=[],
+            key=(
+                f"objetivos_mes_multi_"
+                f"{modo}_{cliente or 'admin'}"
+            ),
+        )
+
+    fechas_filtro = st.multiselect(
+        "Fecha de vencimiento",
+        [
+            "Vencidos",
+            "Vencen hoy",
+            "Próximos 7 días",
+            "Próximos 30 días",
+            "Con fecha",
+            "Sin fecha",
+        ],
+        default=[],
+        key=(
+            f"objetivos_fecha_multi_"
+            f"{modo}_{cliente or 'admin'}"
+        ),
+    )
+
+    if clientes_filtro:
         objetivos_vista = objetivos_vista[
-            objetivos_vista["estado"].astype(str) == estado_filtro
+            objetivos_vista["cliente"]
+            .astype(str)
+            .isin(clientes_filtro)
         ].copy()
 
-    if prioridad_filtro != "Todas":
+    if estados_filtro:
         objetivos_vista = objetivos_vista[
-            objetivos_vista["prioridad"].astype(str) == prioridad_filtro
+            objetivos_vista["estado"]
+            .astype(str)
+            .isin(estados_filtro)
         ].copy()
+
+    if prioridades_filtro:
+        objetivos_vista = objetivos_vista[
+            objetivos_vista["prioridad"]
+            .astype(str)
+            .isin(prioridades_filtro)
+        ].copy()
+
+    if responsables_am_filtro:
+        objetivos_vista = objetivos_vista[
+            objetivos_vista["responsable_am"]
+            .astype(str)
+            .isin(responsables_am_filtro)
+        ].copy()
+
+    if responsables_cliente_filtro:
+        objetivos_vista = objetivos_vista[
+            objetivos_vista["responsable_cliente"]
+            .astype(str)
+            .isin(responsables_cliente_filtro)
+        ].copy()
+
+    if meses_filtro:
+        objetivos_vista = objetivos_vista[
+            objetivos_vista["mes"]
+            .fillna("")
+            .astype(str)
+            .str.strip()
+            .isin(meses_filtro)
+        ].copy()
+
+    # --------------------------------------------------------
+    # Fecha de vencimiento
+    # --------------------------------------------------------
+
+    if fechas_filtro:
+        fechas_serie = pd.to_datetime(
+            objetivos_vista["fecha_limite"]
+            .replace("", pd.NA),
+            errors="coerce",
+        )
+
+        estado_serie = (
+            objetivos_vista["estado"]
+            .fillna("")
+            .astype(str)
+            .str.strip()
+        )
+
+        hoy = pd.Timestamp(date.today())
+        limite_7 = hoy + pd.Timedelta(days=7)
+        limite_30 = hoy + pd.Timedelta(days=30)
+
+        mascara_fecha = pd.Series(
+            False,
+            index=objetivos_vista.index,
+        )
+
+        if "Vencidos" in fechas_filtro:
+            mascara_fecha |= (
+                fechas_serie.notna()
+                & (fechas_serie < hoy)
+                & estado_serie.ne("Finalizado")
+            )
+
+        if "Vencen hoy" in fechas_filtro:
+            mascara_fecha |= (
+                fechas_serie.notna()
+                & (fechas_serie == hoy)
+                & estado_serie.ne("Finalizado")
+            )
+
+        if "Próximos 7 días" in fechas_filtro:
+            mascara_fecha |= (
+                fechas_serie.notna()
+                & (fechas_serie >= hoy)
+                & (fechas_serie <= limite_7)
+                & estado_serie.ne("Finalizado")
+            )
+
+        if "Próximos 30 días" in fechas_filtro:
+            mascara_fecha |= (
+                fechas_serie.notna()
+                & (fechas_serie >= hoy)
+                & (fechas_serie <= limite_30)
+                & estado_serie.ne("Finalizado")
+            )
+
+        if "Con fecha" in fechas_filtro:
+            mascara_fecha |= fechas_serie.notna()
+
+        if "Sin fecha" in fechas_filtro:
+            mascara_fecha |= fechas_serie.isna()
+
+        objetivos_vista = objetivos_vista[
+            mascara_fecha
+        ].copy()
+
+    if str(busqueda_objetivos or "").strip():
+        palabras = [
+            palabra.casefold()
+            for palabra in str(
+                busqueda_objetivos
+            ).split()
+            if palabra.strip()
+        ]
+
+        columnas_busqueda = [
+            columna
+            for columna in [
+                "objetivo",
+                "descripcion",
+                "cliente",
+                "responsable",
+                "responsable_am",
+                "responsable_cliente",
+                "prioridad",
+                "estado",
+                "comentarios",
+                "creado_por",
+                "actualizado_por",
+            ]
+            if columna
+            in objetivos_vista.columns
+        ]
+
+        texto_busqueda = pd.Series(
+            "",
+            index=objetivos_vista.index,
+            dtype="object",
+        )
+
+        for columna in columnas_busqueda:
+            texto_busqueda = (
+                texto_busqueda
+                + " "
+                + objetivos_vista[columna]
+                .fillna("")
+                .astype(str)
+                .str.casefold()
+            )
+
+        mascara = pd.Series(
+            True,
+            index=objetivos_vista.index,
+        )
+
+        for palabra in palabras:
+            mascara &= texto_busqueda.str.contains(
+                palabra,
+                regex=False,
+                na=False,
+            )
+
+        objetivos_vista = objetivos_vista[
+            mascara
+        ].copy()
+
+    # ------------------------------------------------------------
+    # Indicadores.
+    # ------------------------------------------------------------
 
     k1, k2, k3, k4 = st.columns(4)
-    k1.metric("Objetivos visibles", len(objetivos_vista))
-    k2.metric("Pendientes", len(objetivos_vista[objetivos_vista["estado"] == "Pendiente"]))
-    k3.metric("En curso", len(objetivos_vista[objetivos_vista["estado"] == "En curso"]))
-    k4.metric("Finalizados", len(objetivos_vista[objetivos_vista["estado"] == "Finalizado"]))
+
+    k1.metric(
+        "Objetivos visibles",
+        len(objetivos_vista),
+    )
+
+    k2.metric(
+        "Pendientes",
+        len(
+            objetivos_vista[
+                objetivos_vista["estado"]
+                == "Pendiente"
+            ]
+        ),
+    )
+
+    k3.metric(
+        "En curso / revisión",
+        len(
+            objetivos_vista[
+                objetivos_vista["estado"]
+                .isin([
+                    "En curso",
+                    "En revisión",
+                ])
+            ]
+        ),
+    )
+
+    k4.metric(
+        "Finalizados",
+        len(
+            objetivos_vista[
+                objetivos_vista["estado"]
+                == "Finalizado"
+            ]
+        ),
+    )
 
     st.markdown("### Tablero de objetivos")
 
     if objetivos_vista.empty:
-        st.info("No hay objetivos cargados para los filtros seleccionados.")
+        st.info(
+            "No hay objetivos para los filtros seleccionados."
+        )
         return
 
-    cols = st.columns(len(estados))
+    puede_editar = (
+        modo == "admin"
+        or role
+        in [
+            "admin_general",
+            "admin",
+            "cliente",
+            "equipo",
+        ]
+    )
 
-    puede_editar = modo == "admin" or role in ["admin_general", "admin", "cliente", "equipo"]
+    puede_editar_responsables = (
+        modo == "admin"
+        or role
+        in [
+            "admin_general",
+            "admin",
+            "equipo",
+        ]
+    )
 
-    for idx, estado in enumerate(estados):
-        subset = objetivos_vista[objetivos_vista["estado"].astype(str) == estado].copy()
+    puede_editar_estructura = (
+        modo == "admin"
+        and role in ["admin_general", "admin"]
+    )
 
-        with cols[idx]:
-            st.markdown(f"#### {estado}")
-            st.caption(f"{len(subset)} objetivo(s)")
+    # ------------------------------------------------------------
+    # Secciones por estado.
+    # Cada sección usa dos columnas para mantener tarjetas anchas.
+    # ------------------------------------------------------------
 
-            if subset.empty:
-                st.caption("Sin tarjetas.")
-                continue
+    for estado in estados:
+        subset = objetivos_vista[
+            objetivos_vista["estado"]
+            .astype(str)
+            .eq(estado)
+        ].copy()
 
-            for _, row in subset.iterrows():
-                objetivo_id = str(row.get("id", ""))
-                cliente_txt = str(row.get("cliente", ""))
-                objetivo_txt = str(row.get("objetivo", "Sin objetivo"))
-                descripcion_txt = str(row.get("descripcion", ""))
-                responsable_txt = str(row.get("responsable", "AM Consultora"))
-                prioridad_txt = str(row.get("prioridad", "Media"))
-                fecha_limite_txt = str(row.get("fecha_limite", ""))
-                comentarios_txt = str(row.get("comentarios", ""))
+        if subset.empty:
+            continue
 
-                checklist_items = parsear_checklist_objetivo(row.get("checklist", ""))
-                avance_val = avance_desde_checklist_objetivo(checklist_items, row.get("avance", 0))
+        st.markdown("---")
+        st.markdown(f"### {estado}")
+        st.caption(
+            f"{len(subset)} objetivo(s)"
+        )
 
-                with st.container(border=True):
+        for _, row in subset.iterrows():
+            objetivo_id = str(
+                row.get("id", "")
+            )
+
+            cliente_txt = str(
+                row.get("cliente", "")
+            )
+
+            objetivo_txt = str(
+                row.get(
+                    "objetivo",
+                    "Sin objetivo",
+                )
+            )
+
+            descripcion_txt = str(
+                row.get("descripcion", "")
+            )
+
+            responsable_am_txt = str(
+                row.get(
+                    "responsable_am",
+                    "",
+                )
+                or row.get(
+                    "responsable",
+                    "AM Consultora",
+                )
+            )
+
+            responsable_cliente_txt = str(
+                row.get(
+                    "responsable_cliente",
+                    "",
+                )
+            )
+
+            prioridad_txt = str(
+                row.get(
+                    "prioridad",
+                    "Media",
+                )
+            )
+
+            fecha_limite_txt = str(
+                row.get(
+                    "fecha_limite",
+                    "",
+                )
+            )
+
+            comentarios_txt = str(
+                row.get(
+                    "comentarios",
+                    "",
+                )
+            )
+
+            checklist_items = (
+                parsear_checklist_objetivo(
+                    row.get(
+                        "checklist",
+                        "",
+                    )
+                )
+            )
+
+            avance_val = (
+                avance_desde_checklist_objetivo(
+                    checklist_items,
+                    row.get(
+                        "avance",
+                        0,
+                    ),
+                )
+            )
+
+            with st.container(
+                border=True
+            ):
+                top_izq, top_der = st.columns(
+                    [0.76, 0.24]
+                )
+
+                with top_izq:
                     if modo == "admin":
-                        st.caption(cliente_txt)
+                        st.caption(
+                            cliente_txt
+                        )
 
-                    st.markdown(f"**{objetivo_txt}**")
+                    st.markdown(
+                        f"**{objetivo_txt}**"
+                    )
 
+                with top_der:
+                    finalizado_actual = (
+                        estado == "Finalizado"
+                    )
+
+                    finalizar = st.checkbox(
+                        "Finalizado",
+                        value=finalizado_actual,
+                        key=(
+                            f"objetivo_finalizar_"
+                            f"{objetivo_id}"
+                        ),
+                        disabled=not puede_editar,
+                    )
+
+                if finalizar != finalizado_actual:
+                    try:
+                        guardar_cambios_objetivo(
+                            objetivo_id,
+                            {
+                                "estado": (
+                                    "Finalizado"
+                                    if finalizar
+                                    else "Pendiente"
+                                ),
+                                "avance": (
+                                    100
+                                    if finalizar
+                                    else avance_val
+                                ),
+                            },
+                            (
+                                "Objetivo marcado "
+                                "como finalizado."
+                                if finalizar
+                                else (
+                                    "Objetivo reabierto "
+                                    "como pendiente."
+                                )
+                            ),
+                        )
+
+                        st.rerun()
+
+                    except Exception as exc:
+                        st.error(str(exc))
+
+                if descripcion_txt:
+                    descripcion_corta = (
+                        descripcion_txt
+                        if len(
+                            descripcion_txt
+                        ) <= 260
+                        else (
+                            descripcion_txt[
+                                :257
+                            ]
+                            + "..."
+                        )
+                    )
+
+                    st.write(
+                        descripcion_corta
+                    )
+
+                st.caption(
+                    "Responsable AM: "
+                    + (
+                        responsable_am_txt
+                        or "Sin asignar"
+                    )
+                )
+
+                st.caption(
+                    "Responsable cliente: "
+                    + (
+                        responsable_cliente_txt
+                        or "Sin asignar"
+                    )
+                )
+
+                st.caption(
+                    f"Prioridad: "
+                    f"{prioridad_txt} "
+                    f"· Límite: "
+                    f"{fecha_limite_txt or 'Sin fecha'}"
+                )
+
+                fecha_objetivo = pd.to_datetime(
+                    fecha_limite_txt,
+                    errors="coerce",
+                )
+
+                if (
+                    pd.notna(fecha_objetivo)
+                    and estado != "Finalizado"
+                ):
+                    hoy_objetivo = pd.Timestamp(
+                        date.today()
+                    )
+
+                    if fecha_objetivo < hoy_objetivo:
+                        dias_atraso = (
+                            hoy_objetivo
+                            - fecha_objetivo
+                        ).days
+
+                        st.error(
+                            f"Vencido hace "
+                            f"{dias_atraso} día(s)."
+                        )
+
+                    elif fecha_objetivo == hoy_objetivo:
+                        st.warning(
+                            "Vence hoy."
+                        )
+
+                    elif (
+                        fecha_objetivo
+                        <= hoy_objetivo
+                        + pd.Timedelta(days=7)
+                    ):
+                        dias_restantes = (
+                            fecha_objetivo
+                            - hoy_objetivo
+                        ).days
+
+                        st.info(
+                            f"Vence en "
+                            f"{dias_restantes} día(s)."
+                        )
+
+                st.progress(
+                    min(
+                        max(
+                            avance_val,
+                            0,
+                        ),
+                        100,
+                    )
+                    / 100
+                )
+
+                st.caption(
+                    f"Avance: {avance_val}%"
+                )
+
+                with st.expander(
+                    "Ver detalle y actualizar",
+                    expanded=False,
+                ):
                     if descripcion_txt:
-                        st.write(descripcion_txt)
+                        st.markdown(
+                            "**Descripción completa**"
+                        )
+                        st.write(
+                            descripcion_txt
+                        )
 
-                    st.caption(f"Responsable: {responsable_txt}")
-                    st.caption(f"Prioridad: {prioridad_txt} · Límite: {fecha_limite_txt}")
+                    st.markdown(
+                        "**Checklist**"
+                    )
 
-                    st.progress(avance_val / 100)
-                    st.caption(f"Avance: {avance_val}%")
+                    checklist_actualizado = []
 
                     if checklist_items:
-                        st.markdown("**Checklist**")
-
-                        checklist_actualizado = []
-                        for i, item in enumerate(checklist_items):
-                            texto_item = str(item.get("texto", ""))
-                            hecho_item = bool(item.get("hecho", False))
-
-                            if puede_editar:
-                                hecho_nuevo = st.checkbox(
-                                    texto_item,
-                                    value=hecho_item,
-                                    key=f"check_objetivo_{objetivo_id}_{i}",
+                        for i, item in enumerate(
+                            checklist_items
+                        ):
+                            texto_item = str(
+                                item.get(
+                                    "texto",
+                                    "",
                                 )
-                            else:
-                                hecho_nuevo = st.checkbox(
-                                    texto_item,
-                                    value=hecho_item,
-                                    key=f"check_objetivo_cliente_{objetivo_id}_{i}",
-                                    disabled=True,
+                            )
+
+                            hecho_item = bool(
+                                item.get(
+                                    "hecho",
+                                    False,
                                 )
+                            )
+
+                            hecho_nuevo = st.checkbox(
+                                texto_item,
+                                value=hecho_item,
+                                key=(
+                                    f"check_objetivo_"
+                                    f"{objetivo_id}_{i}"
+                                ),
+                                disabled=not puede_editar,
+                            )
 
                             checklist_actualizado.append({
                                 "texto": texto_item,
@@ -4722,75 +5495,279 @@ def render_objetivos(cliente="", modo="cliente"):
                             })
                     else:
                         checklist_actualizado = []
-                        st.caption("Sin checklist cargado.")
+                        st.caption(
+                            "Sin checklist cargado."
+                        )
 
                     if comentarios_txt:
-                        with st.expander("Historial"):
-                            st.write(comentarios_txt)
+                        st.markdown(
+                            "**Historial**"
+                        )
+                        st.text(
+                            comentarios_txt
+                        )
 
                     if puede_editar:
-                        with st.expander("Actualizar objetivo"):
-                            nuevo_estado = st.selectbox(
-                                "Estado",
-                                estados,
-                                index=estados.index(estado) if estado in estados else 0,
-                                key=f"estado_objetivo_{objetivo_id}",
+                        nuevo_objetivo = st.text_input(
+                            "Objetivo",
+                            value=objetivo_txt,
+                            key=(
+                                f"titulo_objetivo_"
+                                f"{objetivo_id}"
+                            ),
+                            disabled=not puede_editar_estructura,
+                        )
+
+                        nueva_descripcion = st.text_area(
+                            "Descripción",
+                            value=descripcion_txt,
+                            height=100,
+                            key=(
+                                f"descripcion_objetivo_"
+                                f"{objetivo_id}"
+                            ),
+                            disabled=not puede_editar_estructura,
+                        )
+
+                        nuevo_mes = st.text_input(
+                            "Mes",
+                            value=str(row.get("mes", "")),
+                            key=(
+                                f"mes_objetivo_"
+                                f"{objetivo_id}"
+                            ),
+                            disabled=not puede_editar_estructura,
+                        )
+
+                        fecha_parseada = pd.to_datetime(
+                            fecha_limite_txt,
+                            errors="coerce",
+                        )
+
+                        fecha_actual = (
+                            fecha_parseada.date()
+                            if pd.notna(fecha_parseada)
+                            else date.today()
+                        )
+
+                        nueva_fecha_limite = st.date_input(
+                            "Fecha límite",
+                            value=fecha_actual,
+                            key=(
+                                f"fecha_objetivo_"
+                                f"{objetivo_id}"
+                            ),
+                            disabled=not puede_editar_estructura,
+                        )
+
+                        nuevo_cliente = cliente_txt
+
+                        if puede_editar_estructura:
+                            clientes_edicion = list(
+                                clientes_opciones
                             )
 
-                            nuevo_checklist_txt = st.text_area(
-                                "Agregar nuevos ítems al checklist",
-                                value="",
-                                placeholder="Un ítem por línea",
-                                key=f"nuevo_checklist_objetivo_{objetivo_id}",
-                                height=90,
-                            )
-
-                            nuevo_comentario = st.text_area(
-                                "Comentario / actualización",
-                                value="",
-                                placeholder="Agregar una actualización breve...",
-                                key=f"comentario_objetivo_{objetivo_id}",
-                                height=90,
-                            )
-
-                            if st.button(
-                                "Guardar actualización",
-                                key=f"guardar_objetivo_{objetivo_id}",
-                                use_container_width=True,
+                            if (
+                                cliente_txt
+                                and cliente_txt
+                                not in clientes_edicion
                             ):
-                                objetivos_full = read_csv(OBJETIVOS_PATH, columnas)
-                                if objetivos_full is None or objetivos_full.empty:
-                                    objetivos_full = pd.DataFrame(columns=columnas)
+                                clientes_edicion.append(
+                                    cliente_txt
+                                )
 
-                                for col in columnas:
-                                    if col not in objetivos_full.columns:
-                                        objetivos_full[col] = ""
+                            if clientes_edicion:
+                                nuevo_cliente = st.selectbox(
+                                    "Cliente",
+                                    clientes_edicion,
+                                    index=(
+                                        clientes_edicion.index(
+                                            cliente_txt
+                                        )
+                                        if cliente_txt
+                                        in clientes_edicion
+                                        else 0
+                                    ),
+                                    key=(
+                                        f"cliente_objetivo_"
+                                        f"{objetivo_id}"
+                                    ),
+                                )
 
-                                objetivos_full = objetivos_full[columnas].fillna("")
-                                mask = objetivos_full["id"].astype(str) == objetivo_id
+                        nuevo_estado = st.selectbox(
+                            "Estado",
+                            estados,
+                            index=(
+                                estados.index(estado)
+                                if estado in estados
+                                else 0
+                            ),
+                            key=(
+                                f"estado_objetivo_"
+                                f"{objetivo_id}"
+                            ),
+                        )
 
-                                if not mask.any():
-                                    st.error("No se encontró el objetivo.")
-                                else:
-                                    nuevos_items = checklist_desde_textarea_objetivo(nuevo_checklist_txt)
-                                    checklist_final = checklist_actualizado + nuevos_items
-                                    avance_final = avance_desde_checklist_objetivo(checklist_final, avance_val)
+                        nueva_prioridad = st.selectbox(
+                            "Prioridad",
+                            prioridades,
+                            index=(
+                                prioridades.index(
+                                    prioridad_txt
+                                )
+                                if prioridad_txt
+                                in prioridades
+                                else 1
+                            ),
+                            key=(
+                                f"prioridad_objetivo_"
+                                f"{objetivo_id}"
+                            ),
+                        )
 
-                                    objetivos_full.loc[mask, "estado"] = nuevo_estado
-                                    objetivos_full.loc[mask, "avance"] = avance_final
-                                    objetivos_full.loc[mask, "checklist"] = serializar_checklist_objetivo(checklist_final)
-                                    objetivos_full.loc[mask, "fecha_actualizacion"] = date.today().strftime("%Y-%m-%d")
-                                    objetivos_full.loc[mask, "actualizado_por"] = nombre_usuario
+                        if puede_editar_responsables:
+                            nuevo_responsable_am = (
+                                st.text_input(
+                                    "Responsable AM",
+                                    value=(
+                                        responsable_am_txt
+                                    ),
+                                    key=(
+                                        f"resp_am_objetivo_"
+                                        f"{objetivo_id}"
+                                    ),
+                                )
+                            )
 
-                                    if nuevo_comentario.strip():
-                                        anterior = str(objetivos_full.loc[mask, "comentarios"].iloc[0] or "")
-                                        agregado = f"{date.today().strftime('%Y-%m-%d')} - {nombre_usuario}: {nuevo_comentario.strip()}"
-                                        objetivos_full.loc[mask, "comentarios"] = (anterior + "\n" + agregado).strip()
+                            nuevo_responsable_cliente = (
+                                st.text_input(
+                                    "Responsable cliente",
+                                    value=(
+                                        responsable_cliente_txt
+                                    ),
+                                    key=(
+                                        f"resp_cliente_objetivo_"
+                                        f"{objetivo_id}"
+                                    ),
+                                )
+                            )
+                        else:
+                            nuevo_responsable_am = (
+                                responsable_am_txt
+                            )
 
-                                    save_csv(objetivos_full, OBJETIVOS_PATH)
-                                    st.success("Objetivo actualizado.")
-                                    st.rerun()
+                            nuevo_responsable_cliente = (
+                                responsable_cliente_txt
+                            )
 
+                        nuevos_items_txt = st.text_area(
+                            "Agregar ítems al checklist",
+                            value="",
+                            placeholder=(
+                                "Un ítem por línea"
+                            ),
+                            key=(
+                                f"nuevo_checklist_objetivo_"
+                                f"{objetivo_id}"
+                            ),
+                            height=90,
+                        )
+
+                        nuevo_comentario = st.text_area(
+                            "Comentario / actualización",
+                            value="",
+                            placeholder=(
+                                "Agregar una actualización..."
+                            ),
+                            key=(
+                                f"comentario_objetivo_"
+                                f"{objetivo_id}"
+                            ),
+                            height=90,
+                        )
+
+                        if st.button(
+                            "Guardar cambios",
+                            key=(
+                                f"guardar_objetivo_"
+                                f"{objetivo_id}"
+                            ),
+                            use_container_width=True,
+                        ):
+                            try:
+                                if not nuevo_objetivo.strip():
+                                    raise ValueError(
+                                        "El objetivo no puede quedar vacío."
+                                    )
+
+                                nuevos_items = (
+                                    checklist_desde_textarea_objetivo(
+                                        nuevos_items_txt
+                                    )
+                                )
+
+                                checklist_final = (
+                                    checklist_actualizado
+                                    + nuevos_items
+                                )
+
+                                avance_final = (
+                                    avance_desde_checklist_objetivo(
+                                        checklist_final,
+                                        avance_val,
+                                    )
+                                )
+
+                                if (
+                                    nuevo_estado
+                                    == "Finalizado"
+                                ):
+                                    avance_final = 100
+
+                                guardar_cambios_objetivo(
+                                    objetivo_id,
+                                    {
+                                        "cliente": nuevo_cliente,
+                                        "mes": nuevo_mes.strip(),
+                                        "objetivo": nuevo_objetivo.strip(),
+                                        "descripcion": (
+                                            nueva_descripcion.strip()
+                                        ),
+                                        "estado": nuevo_estado,
+                                        "prioridad": nueva_prioridad,
+                                        "fecha_limite": (
+                                            nueva_fecha_limite.strftime(
+                                                "%Y-%m-%d"
+                                            )
+                                        ),
+                                        "responsable": (
+                                            nuevo_responsable_am.strip()
+                                            or "AM Consultora"
+                                        ),
+                                        "responsable_am": (
+                                            nuevo_responsable_am.strip()
+                                            or "AM Consultora"
+                                        ),
+                                        "responsable_cliente": (
+                                            nuevo_responsable_cliente.strip()
+                                        ),
+                                        "avance": avance_final,
+                                        "checklist": (
+                                            serializar_checklist_objetivo(
+                                                checklist_final
+                                            )
+                                        ),
+                                    },
+                                    nuevo_comentario,
+                                )
+
+                                st.success(
+                                    "Objetivo actualizado."
+                                )
+                                st.rerun()
+
+                            except Exception as exc:
+                                st.error(str(exc))
 
 
 def render_documentos(cliente="", modo="cliente"):
