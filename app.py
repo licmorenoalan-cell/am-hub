@@ -328,6 +328,67 @@ def _limpiar_cache_postgres():
             pass
 
 
+def actualizar_postgres_por_id(tabla: str, registro_id: str, cambios: dict):
+    """Actualiza una sola fila sin sincronizar ni borrar el resto de la tabla."""
+    engine = get_postgres_engine()
+    key_col = POSTGRES_KEY_MAP.get(tabla)
+
+    if not key_col:
+        raise ValueError(f'La tabla "{tabla}" no tiene una clave configurada.')
+
+    cambios_limpios = {
+        str(campo): _normalizar_valor_postgres(valor)
+        for campo, valor in cambios.items()
+        if str(campo) != key_col
+    }
+
+    if not cambios_limpios:
+        return
+
+    asignaciones = ", ".join(
+        f'"{campo}" = :{campo}' for campo in cambios_limpios
+    )
+    parametros = dict(cambios_limpios)
+    parametros["_registro_id"] = str(registro_id)
+
+    with engine.begin() as conn:
+        resultado = conn.execute(
+            sql_text(
+                f'UPDATE "{tabla}" SET {asignaciones} '
+                f'WHERE "{key_col}" = :_registro_id'
+            ),
+            parametros,
+        )
+
+    _limpiar_cache_postgres()
+
+    if not resultado.rowcount:
+        raise ValueError("No se encontró el registro.")
+
+
+def eliminar_postgres_por_id(tabla: str, registro_id: str):
+    """Elimina una sola fila mediante la clave configurada de la tabla."""
+    engine = get_postgres_engine()
+    key_col = POSTGRES_KEY_MAP.get(tabla)
+
+    if not key_col:
+        raise ValueError(f'La tabla "{tabla}" no tiene una clave configurada.')
+
+    with engine.begin() as conn:
+        resultado = conn.execute(
+            sql_text(
+                f'DELETE FROM "{tabla}" '
+                f'WHERE "{key_col}" = :_registro_id'
+            ),
+            {"_registro_id": str(registro_id)},
+        )
+
+    _limpiar_cache_postgres()
+
+    if not resultado.rowcount:
+        raise ValueError("No se encontró el registro.")
+
+
 def guardar_postgres(df: pd.DataFrame, tabla: str):
     engine = get_postgres_engine()
 
@@ -2217,128 +2278,248 @@ def render_contenidos_equipo(cliente):
     if "fecha" in vista.columns:
         vista = vista.sort_values("fecha")
 
-    cols = ["fecha", "canal", "formato", "tema", "objetivo", "estado", "comentario_cliente"]
-    cols = [c for c in cols if c in vista.columns]
+    if vista.empty:
+        st.info("No hay contenidos para los filtros seleccionados.")
+        return
 
-    st.dataframe(
-        vista[cols],
-        use_container_width=True,
-        hide_index=True,
+    canales_base = [
+        "Instagram", "Facebook", "LinkedIn", "TikTok",
+        "YouTube", "Email", "Web", "Otro",
+    ]
+    formatos_base = [
+        "Post", "Carrusel", "Reel", "Historia", "Video",
+        "Newsletter", "Landing", "Otro",
+    ]
+    estados_base = [
+        "En diseño", "Pendiente de aprobación", "Correcciones",
+        "Aprobado", "Programado", "Publicado",
+    ]
+
+    for idx, row in vista.iterrows():
+        contenido_id = str(row.get("id", idx))
+        tema_actual = str(row.get("tema", "") or "Sin título")
+        formato_actual = str(row.get("formato", "") or "")
+        canal_actual = str(row.get("canal", "") or "")
+        estado_actual = str(row.get("estado", "") or "En diseño")
+
+        with st.container(border=True):
+            titulo_col, estado_col = st.columns([3, 1])
+
+            with titulo_col:
+                st.markdown(f"### {tema_actual}")
+                st.caption(
+                    f"{row.get('fecha', '')} · {canal_actual} · "
+                    f"{formato_actual}"
+                )
+
+            with estado_col:
+                if estado_actual in ["Aprobado", "Programado", "Publicado"]:
+                    st.success(estado_actual)
+                elif estado_actual == "Correcciones":
+                    st.warning(estado_actual)
+                else:
+                    st.info(estado_actual)
+
+            if str(row.get("objetivo", "")).strip():
+                st.markdown("**Objetivo**")
+                st.write(row.get("objetivo", ""))
+
+            if str(row.get("copy", "")).strip():
+                st.markdown("**Copy**")
+                st.write(row.get("copy", ""))
+
+            if str(row.get("comentario_cliente", "")).strip():
+                st.markdown("**Comentario del cliente**")
+                st.warning(row.get("comentario_cliente", ""))
+
+            link_actual = str(row.get("link_canva", "") or "").strip()
+            if link_actual.startswith(("http://", "https://")):
+                st.link_button("Abrir diseño", link_actual)
+
+            with st.expander("Editar este contenido"):
+                fecha_actual = pd.to_datetime(
+                    row.get("fecha", ""), errors="coerce"
+                )
+                if pd.isna(fecha_actual):
+                    fecha_actual = pd.Timestamp(date.today())
+
+                canales = canales_base.copy()
+                formatos = formatos_base.copy()
+                estados_edicion = estados_base.copy()
+
+                if canal_actual and canal_actual not in canales:
+                    canales.append(canal_actual)
+                if formato_actual and formato_actual not in formatos:
+                    formatos.append(formato_actual)
+                if estado_actual and estado_actual not in estados_edicion:
+                    estados_edicion.append(estado_actual)
+
+                with st.form(f"editar_contenido_{cliente}_{contenido_id}"):
+                    nueva_fecha = st.date_input(
+                        "Fecha",
+                        value=fecha_actual.date(),
+                    )
+
+                    e1, e2, e3 = st.columns(3)
+                    with e1:
+                        nuevo_canal = st.selectbox(
+                            "Canal",
+                            canales,
+                            index=canales.index(canal_actual) if canal_actual in canales else 0,
+                        )
+                    with e2:
+                        nuevo_formato = st.selectbox(
+                            "Formato",
+                            formatos,
+                            index=formatos.index(formato_actual) if formato_actual in formatos else 0,
+                        )
+                    with e3:
+                        nuevo_estado = st.selectbox(
+                            "Estado",
+                            estados_edicion,
+                            index=estados_edicion.index(estado_actual),
+                        )
+
+                    nuevo_tema = st.text_input(
+                        "Título / tema",
+                        value=str(row.get("tema", "") or ""),
+                    )
+                    nuevo_objetivo = st.text_input(
+                        "Objetivo",
+                        value=str(row.get("objetivo", "") or ""),
+                    )
+                    nuevo_copy = st.text_area(
+                        "Copy propuesto",
+                        value=str(row.get("copy", "") or ""),
+                        height=180,
+                    )
+                    nuevo_link = st.text_input(
+                        "Link Canva / diseño",
+                        value=link_actual,
+                    )
+                    nuevo_comentario = st.text_area(
+                        "Comentario del cliente",
+                        value=str(row.get("comentario_cliente", "") or ""),
+                        height=100,
+                    )
+
+                    guardar_cambios = st.form_submit_button(
+                        "Guardar cambios",
+                        use_container_width=True,
+                    )
+
+                if guardar_cambios:
+                    if not nuevo_tema.strip():
+                        st.error("El título o tema es obligatorio.")
+                    else:
+                        cambios = {
+                            "fecha": nueva_fecha.strftime("%Y-%m-%d"),
+                            "canal": nuevo_canal,
+                            "formato": nuevo_formato,
+                            "tema": nuevo_tema.strip(),
+                            "objetivo": nuevo_objetivo.strip(),
+                            "copy": nuevo_copy.strip(),
+                            "link_canva": nuevo_link.strip(),
+                            "estado": nuevo_estado,
+                            "comentario_cliente": nuevo_comentario.strip(),
+                        }
+
+                        try:
+                            if usar_postgres():
+                                actualizar_postgres_por_id(
+                                    "contenidos", contenido_id, cambios
+                                )
+                            else:
+                                full = read_csv(CONTENIDOS_PATH, list(df.columns))
+                                mask = full["id"].astype(str) == contenido_id
+
+                                if not mask.any():
+                                    raise ValueError("No se encontró el contenido.")
+
+                                for campo, valor in cambios.items():
+                                    full.loc[mask, campo] = valor
+
+                                save_csv(full, CONTENIDOS_PATH)
+
+                            st.success("Contenido actualizado correctamente.")
+                            st.rerun()
+                        except Exception as error:
+                            st.error(f"No se pudo actualizar el contenido: {error}")
+
+                st.divider()
+                st.markdown("**Eliminar contenido**")
+                st.caption(
+                    "Esta acción elimina definitivamente este post del calendario."
+                )
+                confirmar_eliminacion = st.checkbox(
+                    f"Confirmo eliminar: {tema_actual}",
+                    key=f"confirmar_eliminar_contenido_{cliente}_{contenido_id}",
+                )
+
+                if st.button(
+                    "Eliminar este contenido",
+                    type="secondary",
+                    use_container_width=True,
+                    disabled=not confirmar_eliminacion,
+                    key=f"eliminar_contenido_{cliente}_{contenido_id}",
+                ):
+                    try:
+                        if usar_postgres():
+                            eliminar_postgres_por_id(
+                                "contenidos", contenido_id
+                            )
+                        else:
+                            full = read_csv(CONTENIDOS_PATH, list(df.columns))
+                            mask = full["id"].astype(str) == contenido_id
+
+                            if not mask.any():
+                                raise ValueError("No se encontró el contenido.")
+
+                            save_csv(
+                                full.loc[~mask].copy(),
+                                CONTENIDOS_PATH,
+                            )
+
+                        st.success("Contenido eliminado correctamente.")
+                        st.rerun()
+                    except Exception as error:
+                        st.error(f"No se pudo eliminar el contenido: {error}")
+
+
+def render_contenidos_admin():
+    clientes_df = load_clientes()
+
+    if (
+        clientes_df is None
+        or clientes_df.empty
+        or "cliente" not in clientes_df.columns
+    ):
+        header("Contenidos", "Gestión de contenidos por cliente")
+        st.info("No hay clientes disponibles.")
+        return
+
+    clientes = sorted(
+        clientes_df["cliente"]
+        .dropna()
+        .astype(str)
+        .str.strip()
+        .loc[lambda serie: serie != ""]
+        .unique()
+        .tolist()
     )
 
-    # --------------------------------------------------------
-    # Tarjetas pendientes
-    # --------------------------------------------------------
-    st.markdown("### Pendientes de aprobación / revisión")
+    if not clientes:
+        header("Contenidos", "Gestión de contenidos por cliente")
+        st.info("No hay clientes disponibles.")
+        return
 
-    pendientes_df = vista[
-        vista["estado"].astype(str).str.contains(
-            "Pendiente|revisión|aprobación|Correcciones|En diseño",
-            case=False,
-            na=False,
-        )
-    ].copy()
+    cliente_seleccionado = st.selectbox(
+        "Cliente",
+        clientes,
+        key="cliente_contenidos_admin",
+    )
 
-    if pendientes_df.empty:
-        st.success("No hay contenidos pendientes.")
-    else:
-        for _, row in pendientes_df.head(8).iterrows():
-            with st.container(border=True):
-                st.markdown(f"**{row.get('formato', '')} — {row.get('tema', '')}**")
-                st.caption(f"{row.get('fecha', '')} | {row.get('canal', '')} | Estado: {row.get('estado', '')}")
-
-                if str(row.get("objetivo", "")).strip():
-                    st.write(row.get("objetivo", ""))
-
-                if str(row.get("comentario_cliente", "")).strip():
-                    st.markdown("**Comentario cliente:**")
-                    st.write(row.get("comentario_cliente", ""))
-
-                link = str(row.get("link_canva", "")).strip()
-                if link:
-                    st.link_button("Abrir diseño", link)
-
-    # --------------------------------------------------------
-    # Edición segura
-    # --------------------------------------------------------
-    with st.expander("Edición segura de contenidos del cliente"):
-        st.caption(
-            "Esta edición actualiza solo las filas de este cliente dentro del archivo completo, "
-            "sin pisar contenidos de otros clientes."
-        )
-
-        editable_cols = [
-            "id",
-            "fecha",
-            "canal",
-            "formato",
-            "tema",
-            "objetivo",
-            "copy",
-            "link_canva",
-            "estado",
-            "comentario_cliente",
-        ]
-
-        editable_cols = [c for c in editable_cols if c in df.columns]
-
-        edited = st.data_editor(
-            df[editable_cols],
-            use_container_width=True,
-            hide_index=True,
-            num_rows="fixed",
-            key=f"editor_contenidos_equipo_{cliente}",
-            column_config={
-                "id": st.column_config.TextColumn("ID", disabled=True),
-                "estado": st.column_config.SelectboxColumn(
-                    "Estado",
-                    options=[
-                        "En diseño",
-                        "Pendiente de aprobación",
-                        "Correcciones",
-                        "Aprobado",
-                        "Programado",
-                        "Publicado",
-                    ],
-                ),
-            },
-        )
-
-        if st.button("Guardar cambios de contenidos", use_container_width=True, key=f"guardar_contenidos_equipo_{cliente}"):
-            full = read_csv(
-                CONTENIDOS_PATH,
-                [
-                    "id",
-                    "cliente",
-                    "fecha",
-                    "canal",
-                    "formato",
-                    "tema",
-                    "objetivo",
-                    "copy",
-                    "link_canva",
-                    "estado",
-                    "comentario_cliente",
-                ],
-            )
-
-            for _, row in edited.iterrows():
-                row_id = str(row.get("id", ""))
-
-                if not row_id:
-                    continue
-
-                mask = full["id"].astype(str) == row_id
-
-                for col in editable_cols:
-                    if col == "id":
-                        continue
-
-                    full.loc[mask, col] = row.get(col, "")
-
-            save_csv(full, CONTENIDOS_PATH)
-            st.success("Contenidos actualizados correctamente.")
-            st.rerun()
+    render_contenidos_equipo(cliente_seleccionado)
 
 
 
@@ -8043,6 +8224,33 @@ def render_materiales_gestion(cliente_fijo="", modo="admin"):
                 )
 
             with st.expander("Revisar y actualizar pedido"):
+                nueva_solicitud = st.text_input(
+                    "Pedido de grabación",
+                    value=str(row.get("solicitud", "") or ""),
+                    key=f"solicitud_material_am_{material_id}",
+                )
+
+                nuevo_responsable = st.text_input(
+                    "Responsable del cliente",
+                    value=str(
+                        row.get("responsable_cliente", "") or ""
+                    ),
+                    key=f"responsable_material_am_{material_id}",
+                )
+
+                fecha_limite_actual = pd.to_datetime(
+                    row.get("fecha_limite", ""),
+                    errors="coerce",
+                )
+                if pd.isna(fecha_limite_actual):
+                    fecha_limite_actual = pd.Timestamp(date.today())
+
+                nueva_fecha_limite = st.date_input(
+                    "Fecha límite",
+                    value=fecha_limite_actual.date(),
+                    key=f"fecha_limite_material_am_{material_id}",
+                )
+
                 nuevo_estado = st.selectbox(
                     "Estado",
                     estados,
@@ -8072,6 +8280,24 @@ def render_materiales_gestion(cliente_fijo="", modo="admin"):
                     key=f"formato_material_am_{material_id}",
                 )
 
+                nueva_referencia = st.text_input(
+                    "Link de referencia",
+                    value=str(row.get("referencia", "") or ""),
+                    key=f"referencia_material_am_{material_id}",
+                )
+
+                nuevo_medio_envio = st.text_input(
+                    "Medio de entrega",
+                    value=str(row.get("medio_envio", "") or ""),
+                    key=f"medio_envio_material_am_{material_id}",
+                )
+
+                nuevo_link_entrega = st.text_input(
+                    "Link del material entregado",
+                    value=str(row.get("link_entrega", "") or ""),
+                    key=f"link_entrega_material_am_{material_id}",
+                )
+
                 devolucion_am = st.text_area(
                     "Devolución para el cliente",
                     value=str(
@@ -8090,40 +8316,53 @@ def render_materiales_gestion(cliente_fijo="", modo="admin"):
                     use_container_width=True,
                     key=f"guardar_material_am_{material_id}",
                 ):
-                    materiales_actualizados = load_materiales()
-                    mask = (
-                        materiales_actualizados["id"].astype(str)
-                        == material_id
-                    )
-
-                    if not mask.any():
-                        st.error("No se encontró el pedido.")
+                    if not nueva_solicitud.strip():
+                        st.error("El pedido de grabación no puede estar vacío.")
                     else:
-                        materiales_actualizados.loc[
-                            mask, "estado"
-                        ] = nuevo_estado
-                        materiales_actualizados.loc[
-                            mask, "observacion"
-                        ] = nuevas_indicaciones.strip()
-                        materiales_actualizados.loc[
-                            mask, "formato_sugerido"
-                        ] = nuevo_formato.strip()
-                        materiales_actualizados.loc[
-                            mask, "observacion_am"
-                        ] = devolucion_am.strip()
-                        materiales_actualizados.loc[
-                            mask, "fecha_actualizacion"
-                        ] = date.today().strftime("%Y-%m-%d")
-                        materiales_actualizados.loc[
-                            mask, "actualizado_por"
-                        ] = nombre_usuario
+                        cambios = {
+                            "solicitud": nueva_solicitud.strip(),
+                            "responsable_cliente": nuevo_responsable.strip(),
+                            "fecha_limite": nueva_fecha_limite.strftime("%Y-%m-%d"),
+                            "estado": nuevo_estado,
+                            "observacion": nuevas_indicaciones.strip(),
+                            "formato_sugerido": nuevo_formato.strip(),
+                            "referencia": nueva_referencia.strip(),
+                            "medio_envio": nuevo_medio_envio.strip(),
+                            "link_entrega": nuevo_link_entrega.strip(),
+                            "observacion_am": devolucion_am.strip(),
+                            "fecha_actualizacion": date.today().strftime("%Y-%m-%d"),
+                            "actualizado_por": nombre_usuario,
+                        }
 
-                        save_csv(
-                            materiales_actualizados,
-                            MATERIALES_PATH,
-                        )
-                        st.success("Pedido actualizado.")
-                        st.rerun()
+                        try:
+                            if usar_postgres():
+                                actualizar_postgres_por_id(
+                                    "materiales",
+                                    material_id,
+                                    cambios,
+                                )
+                            else:
+                                materiales_actualizados = load_materiales()
+                                mask = (
+                                    materiales_actualizados["id"].astype(str)
+                                    == material_id
+                                )
+
+                                if not mask.any():
+                                    raise ValueError("No se encontró el pedido.")
+
+                                for campo, valor in cambios.items():
+                                    materiales_actualizados.loc[mask, campo] = valor
+
+                                save_csv(
+                                    materiales_actualizados,
+                                    MATERIALES_PATH,
+                                )
+
+                            st.success("Pedido actualizado.")
+                            st.rerun()
+                        except Exception as error:
+                            st.error(f"No se pudo actualizar el pedido: {error}")
 
 
 
@@ -10838,7 +11077,7 @@ def main():
             elif menu == "Cuenta corriente":
                 render_cuenta_corriente_admin()
             elif menu == "Contenidos":
-                render_crud_table("Contenidos", CONTENIDOS_PATH)
+                render_contenidos_admin()
             elif menu == "Materiales":
                 render_materiales_gestion(modo="admin")
             elif menu == "Campañas":
