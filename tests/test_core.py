@@ -6,6 +6,7 @@ import pandas as pd
 
 from am_hub_core import (
     buscar_dataframe,
+    crear_evento_actividad,
     escribir_csv_atomico,
     normalizar_dataframe,
     validar_identificador_sql,
@@ -45,6 +46,21 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(resultado.index.tolist(), [0])
         literal = buscar_dataframe(datos, "[final]", ["tarea"])
         self.assertEqual(literal.index.tolist(), [2])
+
+    def test_evento_actividad_es_compacto_y_trunca_detalle(self):
+        evento = crear_evento_actividad(
+            usuario=" alan ",
+            nombre="Alan",
+            role="admin",
+            cliente="",
+            accion="guardar",
+            recurso="tareas",
+            registro_id="TAR-1",
+            detalle="x" * 1200,
+        )
+        self.assertTrue(evento["id"].startswith("EVT-"))
+        self.assertEqual(evento["usuario"], "alan")
+        self.assertEqual(len(evento["detalle"]), 1000)
 
 
 if __name__ == "__main__":

@@ -14,6 +14,7 @@ import html
 
 from am_hub_core import (
     buscar_dataframe,
+    crear_evento_actividad,
     escribir_csv_atomico,
     normalizar_dataframe,
     validar_identificador_sql,
@@ -46,6 +47,20 @@ DOCUMENTOS_PATH = DATA_DIR / "documentos.csv"
 INDICADORES_PATH = DATA_DIR / "indicadores.csv"
 INDICADORES_MOVIMIENTOS_PATH = DATA_DIR / "indicadores_movimientos.csv"
 CUENTA_CORRIENTE_PATH = DATA_DIR / "cuenta_corriente.csv"
+ACTIVIDAD_PATH = DATA_DIR / "actividad.csv"
+
+ACTIVIDAD_COLUMNS = [
+    "id",
+    "fecha_hora",
+    "usuario",
+    "nombre",
+    "role",
+    "cliente",
+    "accion",
+    "recurso",
+    "registro_id",
+    "detalle",
+]
 
 # ============================================================
 # Base de datos opcional PostgreSQL / Supabase
@@ -98,6 +113,7 @@ POSTGRES_CORE_TABLES = [
 ]
 
 _POSTGRES_ENGINE = None
+_ACTIVIDAD_TABLE_READY = False
 LOGGER = logging.getLogger("am_hub")
 
 
@@ -265,14 +281,6 @@ def leer_postgres(tabla: str, columns: list[str]) -> pd.DataFrame:
 def leer_postgres_cliente_cacheada(tabla: str, columns_tuple: tuple, cliente: str) -> pd.DataFrame:
     columns = list(columns_tuple) if columns_tuple else []
 
-    if tabla in POSTGRES_CORE_TABLES:
-        df = leer_postgres_core_tabla(tabla, columns)
-
-        if df.empty or "cliente" not in df.columns:
-            return pd.DataFrame(columns=columns)
-
-        return df[df["cliente"].astype(str) == str(cliente)].copy()
-
     engine = get_postgres_engine()
 
     with engine.connect() as conn:
@@ -375,6 +383,13 @@ def actualizar_postgres_por_id(tabla: str, registro_id: str, cambios: dict):
     if not resultado.rowcount:
         raise ValueError("No se encontró el registro.")
 
+    registrar_actividad(
+        "actualizar",
+        tabla,
+        registro_id,
+        f"Campos: {', '.join(sorted(cambios_limpios))}",
+    )
+
 
 def eliminar_postgres_por_id(tabla: str, registro_id: str):
     """Elimina una sola fila mediante la clave configurada de la tabla."""
@@ -397,6 +412,8 @@ def eliminar_postgres_por_id(tabla: str, registro_id: str):
 
     if not resultado.rowcount:
         raise ValueError("No se encontró el registro.")
+
+    registrar_actividad("eliminar", tabla, registro_id)
 
 
 def guardar_postgres(df: pd.DataFrame, tabla: str):
@@ -681,6 +698,48 @@ st.markdown(
             border: 1px solid {COLOR_TEAL_DARK};
             color: white;
         }}
+
+        @media (max-width: 768px) {{
+            .block-container {{
+                padding-top: 1rem;
+                padding-left: 0.75rem;
+                padding-right: 0.75rem;
+                padding-bottom: 3rem;
+            }}
+
+            .main-title {{
+                font-size: 1.65rem;
+                line-height: 1.15;
+            }}
+
+            .subtitle {{
+                font-size: 0.92rem;
+                margin-bottom: 1rem;
+            }}
+
+            .am-card, .metric-card {{
+                padding: 14px 15px;
+                border-radius: 14px;
+            }}
+
+            div.stButton > button {{
+                min-height: 44px;
+                width: 100%;
+            }}
+
+            div[data-testid="stMetric"] {{
+                padding: 12px;
+            }}
+
+            div[data-testid="stDataFrame"] {{
+                max-width: 100%;
+                overflow-x: auto;
+            }}
+
+            textarea, input {{
+                font-size: 16px !important;
+            }}
+        }}
     </style>
     """,
     unsafe_allow_html=True,
@@ -711,6 +770,162 @@ def perf_start():
         return time.perf_counter()
     except Exception:
         return 0
+
+
+def registrar_actividad(
+    accion: str,
+    recurso: str,
+    registro_id: str = "",
+    detalle: str = "",
+):
+    """Registra acciones de negocio sin cargar el historial en memoria."""
+    username = str(st.session_state.get("username", "")).strip()
+    if not username:
+        return
+
+    evento = crear_evento_actividad(
+        usuario=username,
+        nombre=st.session_state.get("name", ""),
+        role=st.session_state.get("role", ""),
+        cliente=st.session_state.get("cliente", ""),
+        accion=accion,
+        recurso=recurso,
+        registro_id=registro_id,
+        detalle=detalle,
+    )
+
+    try:
+        if usar_postgres():
+            global _ACTIVIDAD_TABLE_READY
+            engine = get_postgres_engine()
+            with engine.begin() as conn:
+                if not _ACTIVIDAD_TABLE_READY:
+                    conn.execute(sql_text(
+                        'CREATE TABLE IF NOT EXISTS "actividad" ('
+                        '"id" TEXT PRIMARY KEY, "fecha_hora" TEXT, '
+                        '"usuario" TEXT, "nombre" TEXT, "role" TEXT, '
+                        '"cliente" TEXT, "accion" TEXT, "recurso" TEXT, '
+                        '"registro_id" TEXT, "detalle" TEXT)'
+                    ))
+                    conn.execute(sql_text(
+                        'CREATE INDEX IF NOT EXISTS "idx_actividad_fecha" '
+                        'ON "actividad" ("fecha_hora" DESC)'
+                    ))
+                    _ACTIVIDAD_TABLE_READY = True
+                conn.execute(sql_text(
+                    'INSERT INTO "actividad" ('
+                    '"id", "fecha_hora", "usuario", "nombre", "role", '
+                    '"cliente", "accion", "recurso", "registro_id", "detalle"'
+                    ') VALUES ('
+                    ':id, :fecha_hora, :usuario, :nombre, :role, :cliente, '
+                    ':accion, :recurso, :registro_id, :detalle)'
+                ), evento)
+        else:
+            if ACTIVIDAD_PATH.exists():
+                actual = pd.read_csv(ACTIVIDAD_PATH, dtype=str).fillna("")
+            else:
+                actual = pd.DataFrame(columns=ACTIVIDAD_COLUMNS)
+            escribir_csv_atomico(
+                pd.concat([actual, pd.DataFrame([evento])], ignore_index=True),
+                ACTIVIDAD_PATH,
+            )
+    except Exception:
+        LOGGER.exception("No se pudo registrar actividad: %s %s", accion, recurso)
+
+
+def cargar_actividad(limit: int = 200) -> pd.DataFrame:
+    limit = max(1, min(int(limit), 500))
+    if usar_postgres():
+        try:
+            with get_postgres_engine().connect() as conn:
+                df = pd.read_sql(
+                    sql_text(
+                        'SELECT * FROM "actividad" '
+                        'ORDER BY "fecha_hora" DESC LIMIT :limit'
+                    ),
+                    conn,
+                    params={"limit": limit},
+                )
+            return normalizar_df_para_columnas(df.fillna(""), ACTIVIDAD_COLUMNS)
+        except Exception:
+            return pd.DataFrame(columns=ACTIVIDAD_COLUMNS)
+
+    if not ACTIVIDAD_PATH.exists():
+        return pd.DataFrame(columns=ACTIVIDAD_COLUMNS)
+
+    try:
+        df = pd.read_csv(ACTIVIDAD_PATH, dtype=str).fillna("")
+        return normalizar_df_para_columnas(
+            df.tail(limit).iloc[::-1].reset_index(drop=True),
+            ACTIVIDAD_COLUMNS,
+        )
+    except Exception:
+        LOGGER.exception("No se pudo cargar el historial local")
+        return pd.DataFrame(columns=ACTIVIDAD_COLUMNS)
+
+
+@st.cache_data(ttl=120, show_spinner=False)
+def cargar_alertas_operativas() -> dict:
+    alertas = {
+        "tareas_vencidas": 0,
+        "aprobaciones_pendientes": 0,
+        "materiales_pendientes": 0,
+    }
+
+    if usar_postgres():
+        try:
+            consulta = sql_text(
+                "SELECT "
+                "(SELECT COUNT(*) FROM \"tareas\" "
+                " WHERE COALESCE(\"estado\", '') <> 'Finalizada' "
+                " AND COALESCE(\"fecha_limite\", '') <> '' "
+                " AND \"fecha_limite\" < TO_CHAR(CURRENT_DATE, 'YYYY-MM-DD')) "
+                "AS tareas_vencidas, "
+                "(SELECT COUNT(*) FROM \"contenidos\" "
+                " WHERE LOWER(COALESCE(\"estado\", '')) IN "
+                " ('pendiente', 'pendiente de aprobación', 'en revisión', 'a aprobar')) "
+                "AS aprobaciones_pendientes, "
+                "(SELECT COUNT(*) FROM \"materiales\" "
+                " WHERE LOWER(COALESCE(\"estado\", '')) IN "
+                " ('pendiente', 'solicitado', 'faltante', 'a enviar')) "
+                "AS materiales_pendientes"
+            )
+            with get_postgres_engine().connect() as conn:
+                fila = conn.execute(consulta).mappings().one()
+            return {clave: int(fila.get(clave, 0) or 0) for clave in alertas}
+        except Exception:
+            LOGGER.exception("No se pudieron cargar las alertas operativas")
+            return alertas
+
+    tareas = read_csv(TAREAS_PATH, columnas_tareas_internas())
+    contenidos = load_contenidos()
+    materiales = load_materiales()
+
+    if not tareas.empty:
+        fechas = pd.to_datetime(tareas.get("fecha_limite", ""), errors="coerce")
+        estados = tareas.get("estado", "").astype(str)
+        alertas["tareas_vencidas"] = int(
+            ((fechas.dt.date < date.today()) & estados.ne("Finalizada")).sum()
+        )
+
+    for df, clave, estados_alerta in [
+        (
+            contenidos,
+            "aprobaciones_pendientes",
+            {"pendiente", "pendiente de aprobación", "en revisión", "a aprobar"},
+        ),
+        (
+            materiales,
+            "materiales_pendientes",
+            {"pendiente", "solicitado", "faltante", "a enviar"},
+        ),
+    ]:
+        if df is not None and not df.empty and "estado" in df.columns:
+            alertas[clave] = int(
+                df["estado"].astype(str).str.lower().isin(estados_alerta).sum()
+            )
+
+    return alertas
 
 
 def read_csv(path: Path, columns: list[str]) -> pd.DataFrame:
@@ -791,12 +1006,8 @@ def leer_postgres_preview_cacheada(tabla: str, columns_tuple: tuple, limit: int,
     columns = list(columns_tuple) if columns_tuple else []
     limit = int(limit or 80)
 
-    if tabla in POSTGRES_CORE_TABLES:
+    if tabla in POSTGRES_CORE_TABLES and not cliente:
         df = leer_postgres_core_tabla(tabla, columns)
-
-        if cliente and "cliente" in df.columns:
-            df = df[df["cliente"].astype(str) == str(cliente)].copy()
-
         return df.head(limit).copy()
 
     engine = get_postgres_engine()
@@ -849,9 +1060,19 @@ def save_csv(df: pd.DataFrame, path: Path):
 
     if usar_postgres() and tabla:
         guardar_postgres(df, tabla)
+        registrar_actividad(
+            "guardar",
+            tabla,
+            detalle=f"{len(df)} fila(s)",
+        )
         return
 
     escribir_csv_atomico(df, path)
+    registrar_actividad(
+        "guardar",
+        Path(path).stem,
+        detalle=f"{len(df)} fila(s)",
+    )
 
 
 def seed_data():
@@ -1785,6 +2006,7 @@ def sidebar():
                 "Campañas",
                 "Reportes",
                 "Tareas",
+                "Actividad",
                 "Vista cliente",
             ],
             key="menu_admin",
@@ -7457,6 +7679,16 @@ def render_admin_dashboard_ligero():
     with c3:
         st.metric("Modo", "liviano")
 
+    alertas = cargar_alertas_operativas()
+    st.markdown("### Requiere atención")
+    a1, a2, a3 = st.columns(3)
+    a1.metric("Tareas vencidas", alertas["tareas_vencidas"])
+    a2.metric(
+        "Aprobaciones pendientes",
+        alertas["aprobaciones_pendientes"],
+    )
+    a3.metric("Materiales pendientes", alertas["materiales_pendientes"])
+
     st.markdown("### Clientes recientes")
 
     if clientes is None or clientes.empty:
@@ -7487,6 +7719,61 @@ def render_admin_dashboard_ligero():
         k6.metric("Cash Flow", contar_registros(INDICADORES_MOVIMIENTOS_PATH, ["id"]))
 
     st.info("Para editar información, usá Clientes, Usuarios o Edición rápida. El dashboard evita cargas pesadas al entrar.")
+
+
+def render_actividad_admin():
+    header(
+        "Actividad",
+        "Últimos cambios registrados en AM Hub.",
+    )
+
+    limite = st.selectbox(
+        "Eventos a mostrar",
+        [50, 100, 200, 500],
+        index=2,
+        help="El historial se consulta sólo al abrir esta pantalla.",
+    )
+    actividad = cargar_actividad(limite)
+
+    if actividad.empty:
+        st.info(
+            "Todavía no hay actividad registrada. Los próximos guardados, "
+            "cambios y eliminaciones aparecerán aquí."
+        )
+        return
+
+    filtros_1, filtros_2 = st.columns(2)
+    with filtros_1:
+        usuarios = sorted(
+            valor for valor in actividad["usuario"].astype(str).unique() if valor
+        )
+        usuario_filtro = st.multiselect("Usuario", usuarios)
+    with filtros_2:
+        recursos = sorted(
+            valor for valor in actividad["recurso"].astype(str).unique() if valor
+        )
+        recurso_filtro = st.multiselect("Módulo", recursos)
+
+    vista = actividad.copy()
+    if usuario_filtro:
+        vista = vista[vista["usuario"].astype(str).isin(usuario_filtro)]
+    if recurso_filtro:
+        vista = vista[vista["recurso"].astype(str).isin(recurso_filtro)]
+
+    st.metric("Eventos visibles", len(vista))
+    st.dataframe(
+        vista[[
+            "fecha_hora",
+            "nombre",
+            "role",
+            "accion",
+            "recurso",
+            "registro_id",
+            "detalle",
+        ]],
+        use_container_width=True,
+        hide_index=True,
+    )
 
 
 
@@ -11070,6 +11357,8 @@ def main():
                 render_reportes_gestion(modo="admin")
             elif menu == "Tareas":
                 render_tareas_internas(modo="admin")
+            elif menu == "Actividad":
+                render_actividad_admin()
             elif menu == "Vista cliente":
                 clientes, contenidos, materiales, campanias, reportes, _ = load_data()
                 render_vista_cliente_admin(clientes, contenidos, materiales, campanias, reportes)

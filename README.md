@@ -38,6 +38,20 @@ El Centro de tareas limita por defecto la cantidad de tarjetas renderizadas en
 cada columna. Los filtros y conteos consideran el conjunto completo; el usuario
 puede ampliar el límite desde el tablero cuando necesita ver más resultados.
 
+El dashboard obtiene sus alertas operativas mediante una única consulta de
+conteos con caché de dos minutos. No descarga las tablas completas para mostrar
+ese resumen.
+
+## Actividad y experiencia móvil
+
+El módulo `Actividad` consulta bajo demanda los últimos eventos de guardado,
+actualización y eliminación. En PostgreSQL se crea un índice cronológico para
+que el historial siga siendo rápido al crecer.
+
+La interfaz incluye reglas responsive para pantallas de hasta 768 px: tarjetas
+apiladas, controles táctiles de al menos 44 px, campos con tipografía móvil y
+tablas con desplazamiento horizontal controlado.
+
 ## Persistencia
 
 - Los CSV se escriben mediante reemplazo atómico para evitar archivos parciales.
