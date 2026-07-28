@@ -9,6 +9,14 @@ import altair as alt
 import streamlit as st
 from sqlalchemy import create_engine, text as sql_text
 import re
+import logging
+import html
+
+from am_hub_core import (
+    escribir_csv_atomico,
+    normalizar_dataframe,
+    validar_identificador_sql,
+)
 
 # ============================================================
 # Configuración general
@@ -89,6 +97,7 @@ POSTGRES_CORE_TABLES = [
 ]
 
 _POSTGRES_ENGINE = None
+LOGGER = logging.getLogger("am_hub")
 
 
 def get_database_url():
@@ -180,20 +189,7 @@ def tabla_postgres_para_path(path):
 
 
 def normalizar_df_para_columnas(df: pd.DataFrame, columns: list[str]) -> pd.DataFrame:
-    df = df.copy()
-
-    if columns is None:
-        columns = []
-
-    for col in columns:
-        if col not in df.columns:
-            df[col] = ""
-
-    if columns:
-        extras = [c for c in df.columns if c not in columns]
-        return df[list(columns) + extras]
-
-    return df
+    return normalizar_dataframe(df, columns)
 
 
 @st.cache_data(ttl=600, show_spinner=False)
@@ -296,7 +292,7 @@ def leer_postgres_cliente(tabla: str, columns: list[str], cliente: str) -> pd.Da
 
 
 def _sql_cols(cols):
-    return ", ".join([f'"{c}"' for c in cols])
+    return ", ".join([f'"{validar_identificador_sql(c)}"' for c in cols])
 
 
 def _normalizar_valor_postgres(value):
@@ -390,6 +386,10 @@ def eliminar_postgres_por_id(tabla: str, registro_id: str):
 
 
 def guardar_postgres(df: pd.DataFrame, tabla: str):
+    validar_identificador_sql(tabla)
+    if tabla not in set(POSTGRES_TABLE_MAP.values()):
+        raise ValueError(f'Tabla no permitida: "{tabla}".')
+
     engine = get_postgres_engine()
 
     clean = df.copy().fillna("")
@@ -399,25 +399,14 @@ def guardar_postgres(df: pd.DataFrame, tabla: str):
 
     if clean.empty:
         with engine.begin() as conn:
-            try:
-                conn.execute(sql_text(f'DELETE FROM "{tabla}"'))
-            except Exception:
-                pass
+            conn.execute(sql_text(f'DELETE FROM "{tabla}"'))
         _limpiar_cache_postgres()
         return
 
     # Si no tenemos clave confiable, hacemos reemplazo preservando estructura/índices:
     # DELETE + append, en vez de DROP/CREATE con if_exists="replace".
     if not key_col or key_col not in clean.columns:
-        with engine.begin() as conn:
-            try:
-                conn.execute(sql_text(f'DELETE FROM "{tabla}"'))
-                clean.to_sql(tabla, conn, if_exists="append", index=False, method="multi", chunksize=500)
-            except Exception:
-                clean.to_sql(tabla, engine, if_exists="replace", index=False, method="multi", chunksize=500)
-
-        _limpiar_cache_postgres()
-        return
+        raise ValueError(f'No se puede guardar "{tabla}" sin su clave primaria configurada.')
 
     clean[key_col] = clean[key_col].astype(str).str.strip()
     clean = clean[clean[key_col] != ""].copy()
@@ -435,15 +424,8 @@ def guardar_postgres(df: pd.DataFrame, tabla: str):
                 _limpiar_cache_postgres()
                 return
 
-            if actual.empty or key_col not in actual.columns:
-                try:
-                    conn.execute(sql_text(f'DELETE FROM "{tabla}"'))
-                    clean.to_sql(tabla, conn, if_exists="append", index=False, method="multi", chunksize=500)
-                except Exception:
-                    clean.to_sql(tabla, conn, if_exists="replace", index=False, method="multi", chunksize=500)
-
-                _limpiar_cache_postgres()
-                return
+            if key_col not in actual.columns:
+                raise ValueError(f'La tabla "{tabla}" no contiene la clave "{key_col}".')
 
             actual = actual.copy().fillna("")
             actual.columns = [str(c) for c in actual.columns]
@@ -452,11 +434,9 @@ def guardar_postgres(df: pd.DataFrame, tabla: str):
             # Asegurar columnas nuevas si aparecieron en la app.
             for col in columnas:
                 if col not in actual.columns:
-                    try:
-                        conn.execute(sql_text(f'ALTER TABLE "{tabla}" ADD COLUMN "{col}" TEXT'))
-                        actual[col] = ""
-                    except Exception:
-                        actual[col] = ""
+                    validar_identificador_sql(col)
+                    conn.execute(sql_text(f'ALTER TABLE "{tabla}" ADD COLUMN "{col}" TEXT'))
+                    actual[col] = ""
 
             actual_idx = actual.drop_duplicates(subset=[key_col], keep="last").set_index(key_col, drop=False)
             claves_nuevas = set(clean[key_col].astype(str).tolist())
@@ -501,15 +481,9 @@ def guardar_postgres(df: pd.DataFrame, tabla: str):
             # print útil en terminal local, no molesta en Streamlit Cloud.
             print(f"[Postgres smart save] {tabla}: inserts={inserts}, updates={updates}, deletes={len(claves_a_borrar)}")
 
-    except Exception as e:
-        # Fallback seguro: preserva funcionamiento aunque falle el smart-save.
-        print(f"[Postgres smart save fallback] {tabla}: {e}")
-        with engine.begin() as conn:
-            try:
-                conn.execute(sql_text(f'DELETE FROM "{tabla}"'))
-                clean.to_sql(tabla, conn, if_exists="append", index=False, method="multi", chunksize=500)
-            except Exception:
-                clean.to_sql(tabla, engine, if_exists="replace", index=False, method="multi", chunksize=500)
+    except Exception:
+        LOGGER.exception("Falló el guardado transaccional de la tabla %s", tabla)
+        raise
 
     _limpiar_cache_postgres()
 
@@ -739,6 +713,7 @@ def read_csv(path: Path, columns: list[str]) -> pd.DataFrame:
     try:
         df = pd.read_csv(path, dtype=str).fillna("")
     except Exception:
+        LOGGER.exception("No se pudo leer el CSV %s", path)
         return pd.DataFrame(columns=columns)
 
     return normalizar_df_para_columnas(df, columns)
@@ -852,8 +827,7 @@ def save_csv(df: pd.DataFrame, path: Path):
         guardar_postgres(df, tabla)
         return
 
-    clean = df.copy().fillna("")
-    clean.to_csv(path, index=False)
+    escribir_csv_atomico(df, path)
 
 
 def seed_data():
@@ -1211,7 +1185,7 @@ def status_badge(status: str):
     elif "diseño" in s.lower() or "revisión" in s.lower() or "armado" in s.lower():
         cls = "status-revision"
 
-    return f'<span class="status {cls}">{s}</span>'
+    return f'<span class="status {cls}">{html.escape(s)}</span>'
 
 
 # ============================================================
@@ -1260,7 +1234,7 @@ def ensure_users_file():
         },
     ]
 
-    pd.DataFrame(rows).to_csv(USUARIOS_PATH, index=False)
+    escribir_csv_atomico(pd.DataFrame(rows), USUARIOS_PATH)
 
 
 def load_users_df():
