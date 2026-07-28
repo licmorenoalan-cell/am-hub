@@ -112,7 +112,6 @@ POSTGRES_CORE_TABLES = [
     "cuenta_corriente",
 ]
 
-_POSTGRES_ENGINE = None
 _ACTIVIDAD_TABLE_READY = False
 LOGGER = logging.getLogger("am_hub")
 
@@ -157,25 +156,22 @@ def usar_postgres():
     return bool(get_database_url())
 
 
+@st.cache_resource(show_spinner=False)
 def get_postgres_engine():
-    global _POSTGRES_ENGINE
+    """Mantiene un único pool PostgreSQL durante toda la vida del proceso."""
+    database_url = normalizar_database_url(get_database_url())
 
-    if _POSTGRES_ENGINE is None:
-        database_url = normalizar_database_url(get_database_url())
+    if not database_url:
+        raise ValueError("DATABASE_URL no está configurada.")
 
-        if not database_url:
-            raise ValueError("DATABASE_URL no está configurada.")
-
-        _POSTGRES_ENGINE = create_engine(
-            database_url,
-            pool_pre_ping=True,
-            pool_recycle=1800,
-            pool_size=2,
-            max_overflow=3,
-            connect_args={"connect_timeout": 10},
-        )
-
-    return _POSTGRES_ENGINE
+    return create_engine(
+        database_url,
+        pool_pre_ping=True,
+        pool_recycle=1800,
+        pool_size=5,
+        max_overflow=5,
+        connect_args={"connect_timeout": 10},
+    )
 
 
 @st.cache_resource
@@ -212,15 +208,18 @@ def normalizar_df_para_columnas(df: pd.DataFrame, columns: list[str]) -> pd.Data
 @st.cache_data(ttl=600, show_spinner=False)
 def leer_postgres_core_tabla_cacheada(
     tabla: str,
+    columns_tuple: tuple,
 ) -> pd.DataFrame:
     inicio_perf = perf_start()
     engine = get_postgres_engine()
+    columns = list(columns_tuple) if columns_tuple else []
+    seleccion = _sql_cols(columns) if tabla == "reportes" and columns else "*"
 
     try:
         with engine.connect() as conn:
             df = pd.read_sql(
                 sql_text(
-                    f'SELECT * FROM "{tabla}"'
+                    f'SELECT {seleccion} FROM "{tabla}"'
                 ),
                 conn,
             ).fillna("")
@@ -240,7 +239,8 @@ def leer_postgres_core_tabla_cacheada(
 
 def leer_postgres_core_tabla(tabla: str, columns: list[str]) -> pd.DataFrame:
     df = leer_postgres_core_tabla_cacheada(
-        tabla
+        tabla,
+        tuple(columns) if columns else tuple(),
     ).copy()
     return normalizar_df_para_columnas(df, columns)
 
@@ -254,9 +254,10 @@ def leer_postgres_cacheada(tabla: str, columns_tuple: tuple) -> pd.DataFrame:
         return leer_postgres_core_tabla(tabla, columns)
 
     engine = get_postgres_engine()
+    seleccion = _sql_cols(columns) if tabla == "reportes" and columns else "*"
 
     with engine.connect() as conn:
-        df = pd.read_sql(sql_text(f'SELECT * FROM "{tabla}"'), conn)
+        df = pd.read_sql(sql_text(f'SELECT {seleccion} FROM "{tabla}"'), conn)
 
     return normalizar_df_para_columnas(df, columns)
 
@@ -282,10 +283,13 @@ def leer_postgres_cliente_cacheada(tabla: str, columns_tuple: tuple, cliente: st
     columns = list(columns_tuple) if columns_tuple else []
 
     engine = get_postgres_engine()
+    seleccion = _sql_cols(columns) if tabla == "reportes" and columns else "*"
 
     with engine.connect() as conn:
         df = pd.read_sql(
-            sql_text(f'SELECT * FROM "{tabla}" WHERE cliente = :cliente'),
+            sql_text(
+                f'SELECT {seleccion} FROM "{tabla}" WHERE cliente = :cliente'
+            ),
             conn,
             params={"cliente": cliente},
         )
@@ -339,6 +343,8 @@ def _limpiar_cache_postgres():
         "leer_postgres_cliente_cacheada",
         "leer_postgres_preview_cacheada",
         "contar_postgres_cacheada",
+        "cargar_archivo_reporte",
+        "cargar_dashboard_admin",
     ]:
         try:
             globals()[cache_func_name].clear()
@@ -967,6 +973,56 @@ def cargar_alertas_operativas() -> dict:
     return alertas
 
 
+@st.cache_data(ttl=120, show_spinner=False)
+def cargar_dashboard_admin() -> tuple[pd.DataFrame, dict]:
+    """Carga clientes y alertas del inicio en un solo viaje a PostgreSQL."""
+    if not usar_postgres():
+        return load_clientes(), cargar_alertas_operativas()
+
+    consulta = sql_text(
+        "WITH alertas AS (SELECT "
+        "(SELECT COUNT(*) FROM \"tareas\" "
+        " WHERE COALESCE(\"estado\", '') <> 'Finalizada' "
+        " AND COALESCE(\"fecha_limite\", '') <> '' "
+        " AND \"fecha_limite\" < TO_CHAR(CURRENT_DATE, 'YYYY-MM-DD')) "
+        "AS _tareas_vencidas, "
+        "(SELECT COUNT(*) FROM \"contenidos\" "
+        " WHERE LOWER(COALESCE(\"estado\", '')) IN "
+        " ('pendiente', 'pendiente de aprobación', 'en revisión', 'a aprobar')) "
+        "AS _aprobaciones_pendientes, "
+        "(SELECT COUNT(*) FROM \"materiales\" "
+        " WHERE LOWER(COALESCE(\"estado\", '')) IN "
+        " ('pendiente', 'solicitado', 'faltante', 'a enviar')) "
+        "AS _materiales_pendientes) "
+        "SELECT c.*, a.* FROM alertas a LEFT JOIN \"clientes\" c ON TRUE"
+    )
+    with get_postgres_engine().connect() as conn:
+        combinado = pd.read_sql(consulta, conn).fillna("")
+
+    alertas = {
+        "tareas_vencidas": 0,
+        "aprobaciones_pendientes": 0,
+        "materiales_pendientes": 0,
+    }
+    if not combinado.empty:
+        primera = combinado.iloc[0]
+        alertas = {
+            "tareas_vencidas": int(primera.get("_tareas_vencidas", 0) or 0),
+            "aprobaciones_pendientes": int(
+                primera.get("_aprobaciones_pendientes", 0) or 0
+            ),
+            "materiales_pendientes": int(
+                primera.get("_materiales_pendientes", 0) or 0
+            ),
+        }
+
+    columnas_alerta = [col for col in combinado.columns if col.startswith("_")]
+    clientes = combinado.drop(columns=columnas_alerta, errors="ignore")
+    if "cliente" in clientes.columns:
+        clientes = clientes[clientes["cliente"].astype(str).str.strip() != ""]
+    return clientes.reset_index(drop=True), alertas
+
+
 def read_csv(path: Path, columns: list[str]) -> pd.DataFrame:
     ensure_data_dir()
 
@@ -1050,17 +1106,21 @@ def leer_postgres_preview_cacheada(tabla: str, columns_tuple: tuple, limit: int,
         return df.head(limit).copy()
 
     engine = get_postgres_engine()
+    seleccion = _sql_cols(columns) if tabla == "reportes" and columns else "*"
 
     with engine.connect() as conn:
         if cliente:
             df = pd.read_sql(
-                sql_text(f'SELECT * FROM "{tabla}" WHERE cliente = :cliente LIMIT :limit'),
+                sql_text(
+                    f'SELECT {seleccion} FROM "{tabla}" '
+                    'WHERE cliente = :cliente LIMIT :limit'
+                ),
                 conn,
                 params={"cliente": cliente, "limit": limit},
             )
         else:
             df = pd.read_sql(
-                sql_text(f'SELECT * FROM "{tabla}" LIMIT :limit'),
+                sql_text(f'SELECT {seleccion} FROM "{tabla}" LIMIT :limit'),
                 conn,
                 params={"limit": limit},
             )
@@ -1395,7 +1455,6 @@ def load_reportes(cliente=""):
         "proximo_foco",
         "pdf_nombre",
         "pdf_tipo",
-        "pdf_base64",
         "fecha_carga",
         "cargado_por",
     ]
@@ -1404,6 +1463,31 @@ def load_reportes(cliente=""):
         return read_csv_cliente(REPORTES_PATH, columns, cliente)
 
     return read_csv(REPORTES_PATH, columns)
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def cargar_archivo_reporte(reporte_id: str) -> dict:
+    """Obtiene el PDF únicamente cuando el usuario prepara su descarga."""
+    reporte_id = str(reporte_id).strip()
+    if not reporte_id:
+        return {}
+
+    if usar_postgres():
+        with get_postgres_engine().connect() as conn:
+            row = conn.execute(
+                sql_text(
+                    'SELECT "pdf_nombre", "pdf_tipo", "pdf_base64" '
+                    'FROM "reportes" WHERE "id" = :reporte_id LIMIT 1'
+                ),
+                {"reporte_id": reporte_id},
+            ).mappings().first()
+        return dict(row) if row else {}
+
+    reportes = read_csv(REPORTES_PATH, columnas_reportes_completas())
+    if reportes.empty or "id" not in reportes.columns:
+        return {}
+    encontrados = reportes[reportes["id"].astype(str) == reporte_id]
+    return encontrados.iloc[0].to_dict() if not encontrados.empty else {}
 
 
 
@@ -3522,31 +3606,39 @@ def render_reportes(cliente, reportes=None):
         st.markdown("### Documento del reporte")
 
         pdf_nombre = str(row.get("pdf_nombre", "") or "")
-        pdf_tipo = str(row.get("pdf_tipo", "") or "application/pdf")
-        pdf_base64 = str(row.get("pdf_base64", "") or "")
+        reporte_id = str(row.get("id", indice_sel))
 
-        if pdf_nombre and pdf_base64:
-            try:
-                pdf_bytes = base64.b64decode(pdf_base64)
+        if pdf_nombre:
+            with st.container(border=True):
+                st.markdown(f"**{pdf_nombre}**")
 
-                with st.container(border=True):
-                    st.markdown(f"**{pdf_nombre}**")
+                fecha_carga = str(row.get("fecha_carga", "") or "")
+                if fecha_carga:
+                    st.caption(f"Cargado el {fecha_carga}")
 
-                    fecha_carga = str(row.get("fecha_carga", "") or "")
-                    if fecha_carga:
-                        st.caption(f"Cargado el {fecha_carga}")
+                preparar_key = f"reporte_preparado_{cliente}"
+                if st.button(
+                    "Preparar descarga",
+                    use_container_width=True,
+                    key=f"preparar_reporte_{reporte_id}",
+                ):
+                    st.session_state[preparar_key] = reporte_id
 
-                    st.download_button(
-                        "Descargar PDF",
-                        data=pdf_bytes,
-                        file_name=pdf_nombre,
-                        mime=pdf_tipo,
-                        use_container_width=True,
-                        key=f"descargar_reporte_{row.get('id', indice_sel)}",
-                    )
-
-            except Exception:
-                st.error("El archivo PDF guardado no pudo ser leído.")
+                if st.session_state.get(preparar_key) == reporte_id:
+                    archivo = cargar_archivo_reporte(reporte_id)
+                    pdf_base64 = str(archivo.get("pdf_base64", "") or "")
+                    try:
+                        pdf_bytes = base64.b64decode(pdf_base64)
+                        st.download_button(
+                            "Descargar PDF",
+                            data=pdf_bytes,
+                            file_name=str(archivo.get("pdf_nombre", pdf_nombre)),
+                            mime=str(archivo.get("pdf_tipo", "") or "application/pdf"),
+                            use_container_width=True,
+                            key=f"descargar_reporte_{reporte_id}",
+                        )
+                    except Exception:
+                        st.error("El archivo PDF guardado no pudo ser leído.")
         else:
             st.info("Este reporte no tiene un PDF adjunto.")
 
@@ -6037,6 +6129,13 @@ def render_objetivos(cliente="", modo="cliente"):
                         )
                     )
 
+                    estado = str(
+                        row.get(
+                            "estado",
+                            "Pendiente",
+                        )
+                    )
+
                     fecha_limite_txt = str(
                         row.get(
                             "fecha_limite",
@@ -7695,7 +7794,7 @@ def render_cuenta_corriente_cliente(cliente):
 def render_admin_dashboard_ligero():
     header("Dashboard AM", "Resumen operativo liviano")
 
-    clientes = load_clientes()
+    clientes, alertas = cargar_dashboard_admin()
 
     total_clientes = len(clientes) if clientes is not None else 0
     clientes_activos = 0
@@ -7718,7 +7817,6 @@ def render_admin_dashboard_ligero():
     with c3:
         st.metric("Modo", "liviano")
 
-    alertas = cargar_alertas_operativas()
     st.markdown("### Requiere atención")
     a1, a2, a3 = st.columns(3)
     a1.metric("Tareas vencidas", alertas["tareas_vencidas"])
@@ -7941,7 +8039,10 @@ def render_reportes_gestion(cliente_fijo="", modo="admin"):
         )
 
     columnas = columnas_reportes_completas()
-    reportes_full = read_csv(REPORTES_PATH, columnas)
+    if usar_postgres():
+        reportes_full = load_reportes()
+    else:
+        reportes_full = read_csv(REPORTES_PATH, columnas)
 
     if reportes_full is None or reportes_full.empty:
         reportes_full = pd.DataFrame(columns=columnas)
@@ -8108,15 +8209,17 @@ def render_reportes_gestion(cliente_fijo="", modo="admin"):
                         "cargado_por": nombre_usuario,
                     }
 
-                    actualizado = pd.concat(
-                        [
-                            reportes_full,
-                            pd.DataFrame([nuevo]),
-                        ],
-                        ignore_index=True,
-                    )
-
-                    save_csv(actualizado, REPORTES_PATH)
+                    if usar_postgres():
+                        insertar_postgres_registros("reportes", [nuevo])
+                    else:
+                        actualizado = pd.concat(
+                            [
+                                reportes_full,
+                                pd.DataFrame([nuevo]),
+                            ],
+                            ignore_index=True,
+                        )
+                        save_csv(actualizado, REPORTES_PATH)
                     st.success("Reporte guardado.")
                     st.rerun()
 
@@ -8186,16 +8289,7 @@ def render_reportes_gestion(cliente_fijo="", modo="admin"):
         use_container_width=True,
         key=f"guardar_reportes_gestion_{modo}_{cliente_fijo}",
     ):
-        base = reportes_full.copy()
-
-        for _, fila in edited.iterrows():
-            reporte_id = str(fila.get("id", ""))
-            mask = base["id"].astype(str) == reporte_id
-
-            if not mask.any():
-                continue
-
-            for col in [
+        campos_editables = [
                 "mes",
                 "alcance",
                 "interacciones",
@@ -8204,10 +8298,26 @@ def render_reportes_gestion(cliente_fijo="", modo="admin"):
                 "estado",
                 "que_funciono",
                 "proximo_foco",
-            ]:
-                base.loc[mask, col] = fila.get(col, "")
-
-        save_csv(base, REPORTES_PATH)
+        ]
+        if usar_postgres():
+            for _, fila in edited.iterrows():
+                reporte_id = str(fila.get("id", ""))
+                if reporte_id:
+                    actualizar_postgres_por_id(
+                        "reportes",
+                        reporte_id,
+                        {col: fila.get(col, "") for col in campos_editables},
+                    )
+        else:
+            base = reportes_full.copy()
+            for _, fila in edited.iterrows():
+                reporte_id = str(fila.get("id", ""))
+                mask = base["id"].astype(str) == reporte_id
+                if not mask.any():
+                    continue
+                for col in campos_editables:
+                    base.loc[mask, col] = fila.get(col, "")
+            save_csv(base, REPORTES_PATH)
         st.success("Reportes actualizados.")
         st.rerun()
 
@@ -8241,27 +8351,31 @@ def render_reportes_gestion(cliente_fijo="", modo="admin"):
         elif nuevo_pdf.size > 5 * 1024 * 1024:
             st.error("El PDF supera el límite de 5 MB.")
         else:
-            base = reportes_full.copy()
-            mask = base["id"].astype(str) == reporte_id_sel
+            mask = reportes_full["id"].astype(str) == reporte_id_sel
 
             if not mask.any():
                 st.error("No se encontró el reporte.")
             else:
-                base.loc[mask, "pdf_nombre"] = nuevo_pdf.name
-                base.loc[mask, "pdf_tipo"] = (
-                    nuevo_pdf.type or "application/pdf"
-                )
-                base.loc[mask, "pdf_base64"] = (
-                    base64.b64encode(
+                cambios_pdf = {
+                    "pdf_nombre": nuevo_pdf.name,
+                    "pdf_tipo": nuevo_pdf.type or "application/pdf",
+                    "pdf_base64": base64.b64encode(
                         nuevo_pdf.getvalue()
-                    ).decode("utf-8")
-                )
-                base.loc[mask, "fecha_carga"] = (
-                    date.today().strftime("%Y-%m-%d")
-                )
-                base.loc[mask, "cargado_por"] = nombre_usuario
-
-                save_csv(base, REPORTES_PATH)
+                    ).decode("utf-8"),
+                    "fecha_carga": date.today().strftime("%Y-%m-%d"),
+                    "cargado_por": nombre_usuario,
+                }
+                if usar_postgres():
+                    actualizar_postgres_por_id(
+                        "reportes",
+                        reporte_id_sel,
+                        cambios_pdf,
+                    )
+                else:
+                    base = reportes_full.copy()
+                    for campo, valor in cambios_pdf.items():
+                        base.loc[mask, campo] = valor
+                    save_csv(base, REPORTES_PATH)
                 st.success("PDF actualizado.")
                 st.rerun()
 
