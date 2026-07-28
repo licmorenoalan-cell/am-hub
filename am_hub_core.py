@@ -36,6 +36,34 @@ def normalizar_dataframe(df: pd.DataFrame, columns: list[str] | None) -> pd.Data
     return clean[requeridas + extras] if requeridas else clean
 
 
+def buscar_dataframe(
+    df: pd.DataFrame,
+    consulta: str,
+    columnas: list[str],
+) -> pd.DataFrame:
+    """Filtra filas que contienen todas las palabras en las columnas indicadas."""
+    palabras = [
+        palabra.casefold()
+        for palabra in str(consulta or "").split()
+        if palabra.strip()
+    ]
+    if df.empty or not palabras:
+        return df.copy()
+
+    columnas_validas = [col for col in columnas if col in df.columns]
+    if not columnas_validas:
+        return df.iloc[0:0].copy()
+
+    texto = pd.Series("", index=df.index, dtype="object")
+    for columna in columnas_validas:
+        texto = texto + " " + df[columna].fillna("").astype(str).str.casefold()
+
+    mascara = pd.Series(True, index=df.index)
+    for palabra in palabras:
+        mascara &= texto.str.contains(palabra, regex=False, na=False)
+    return df.loc[mascara].copy()
+
+
 def escribir_csv_atomico(df: pd.DataFrame, path: Path) -> None:
     """Escribe un CSV completo sin dejar archivos parciales ante un fallo."""
     destino = Path(path)

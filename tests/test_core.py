@@ -5,6 +5,7 @@ from pathlib import Path
 import pandas as pd
 
 from am_hub_core import (
+    buscar_dataframe,
     escribir_csv_atomico,
     normalizar_dataframe,
     validar_identificador_sql,
@@ -33,6 +34,17 @@ class CoreTests(unittest.TestCase):
             resultado = pd.read_csv(path, dtype=str)
             self.assertEqual(resultado.to_dict("records"), [{"id": "2", "valor": "después"}])
             self.assertEqual(list(Path(tmp).glob("*.tmp")), [])
+
+    def test_busqueda_exige_todas_las_palabras_y_no_interpreta_regex(self):
+        datos = pd.DataFrame([
+            {"tarea": "Preparar reporte mensual", "cliente": "Ritual"},
+            {"tarea": "Revisar pauta", "cliente": "Ritual"},
+            {"tarea": "Reporte [final]", "cliente": "EZCA"},
+        ])
+        resultado = buscar_dataframe(datos, "reporte ritual", ["tarea", "cliente"])
+        self.assertEqual(resultado.index.tolist(), [0])
+        literal = buscar_dataframe(datos, "[final]", ["tarea"])
+        self.assertEqual(literal.index.tolist(), [2])
 
 
 if __name__ == "__main__":

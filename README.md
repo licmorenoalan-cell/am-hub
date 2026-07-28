@@ -29,6 +29,15 @@ python -m unittest discover -s tests -v
 python -m pip check
 ```
 
+Cada push a `main` y cada pull request ejecutan las mismas verificaciones en
+GitHub Actions mediante `.github/workflows/quality.yml`.
+
+## Rendimiento
+
+El Centro de tareas limita por defecto la cantidad de tarjetas renderizadas en
+cada columna. Los filtros y conteos consideran el conjunto completo; el usuario
+puede ampliar el límite desde el tablero cuando necesita ver más resultados.
+
 ## Persistencia
 
 - Los CSV se escriben mediante reemplazo atómico para evitar archivos parciales.

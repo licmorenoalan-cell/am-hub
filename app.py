@@ -13,6 +13,7 @@ import logging
 import html
 
 from am_hub_core import (
+    buscar_dataframe,
     escribir_csv_atomico,
     normalizar_dataframe,
     validar_identificador_sql,
@@ -208,6 +209,10 @@ def leer_postgres_core_tabla_cacheada(
                 conn,
             ).fillna("")
     except Exception:
+        LOGGER.exception(
+            "No se pudo leer la tabla PostgreSQL %s",
+            tabla,
+        )
         df = pd.DataFrame()
 
     perf_log(
@@ -248,6 +253,10 @@ def leer_postgres(tabla: str, columns: list[str]) -> pd.DataFrame:
         perf_log(f"leer_postgres {tabla} filas={len(df)}", inicio_perf)
         return df
     except Exception:
+        LOGGER.exception(
+            "No se pudo leer PostgreSQL tabla=%s",
+            tabla,
+        )
         perf_log(f"leer_postgres ERROR {tabla}", inicio_perf)
         return pd.DataFrame(columns=columns)
 
@@ -287,6 +296,11 @@ def leer_postgres_cliente(tabla: str, columns: list[str], cliente: str) -> pd.Da
         perf_log(f"leer_postgres_cliente {tabla} cliente={cliente} filas={len(df)}", inicio_perf)
         return df
     except Exception:
+        LOGGER.exception(
+            "No se pudo leer PostgreSQL tabla=%s cliente=%s",
+            tabla,
+            cliente,
+        )
         perf_log(f"leer_postgres_cliente ERROR {tabla} cliente={cliente}", inicio_perf)
         return pd.DataFrame(columns=columns)
 
@@ -758,12 +772,17 @@ def contar_registros(path: Path, columns=None) -> int:
         try:
             return contar_postgres_cacheada(tabla)
         except Exception:
+            LOGGER.exception(
+                "No se pudo contar la tabla PostgreSQL %s",
+                tabla,
+            )
             return 0
 
     try:
         df = read_csv(path, columns or [])
         return len(df)
     except Exception:
+        LOGGER.exception("No se pudo contar registros de %s", path)
         return 0
 
 
@@ -809,6 +828,11 @@ def read_csv_preview(path: Path, columns: list[str], limit: int = 80, cliente: s
             perf_log(f"preview {tabla} cliente={cliente or '-'} filas={len(df)}", inicio_perf)
             return df
         except Exception:
+            LOGGER.exception(
+                "No se pudo obtener preview tabla=%s cliente=%s",
+                tabla,
+                cliente,
+            )
             perf_log(f"preview ERROR {tabla} cliente={cliente or '-'}", inicio_perf)
             return pd.DataFrame(columns=columns)
 
@@ -1780,6 +1804,10 @@ def sidebar():
 
             st.session_state["cliente_equipo_visible"] = cliente_equipo
 
+            cliente_equipo_html = html.escape(
+                str(cliente_equipo)
+            )
+
             st.sidebar.markdown(
                 f"""
                 <div style="
@@ -1794,7 +1822,7 @@ def sidebar():
                         Cliente activo
                     </div>
                     <div style="font-size: 1.02rem; font-weight: 800; color: white; margin-top: 3px; line-height: 1.2;">
-                        {cliente_equipo}
+                        {cliente_equipo_html}
                     </div>
                 </div>
                 """,
@@ -1810,11 +1838,16 @@ def sidebar():
     st.sidebar.markdown("<div style='height: 34px;'></div>", unsafe_allow_html=True)
     st.sidebar.markdown("---")
 
+    nombre_sidebar = html.escape(
+        str(st.session_state.get("name", ""))
+    )
+    role_sidebar = html.escape(str(role or ""))
+
     st.sidebar.markdown(
         f"""
         <div style="font-size: 0.9rem; line-height: 1.6;">
-            <strong>Usuario:</strong> {st.session_state.get('name')}<br>
-            <strong>Rol:</strong> {role}
+            <strong>Usuario:</strong> {nombre_sidebar}<br>
+            <strong>Rol:</strong> {role_sidebar}
         </div>
         """,
         unsafe_allow_html=True,
@@ -4452,6 +4485,54 @@ def render_inicio_cliente_ejecutivo(cliente):
         with st.container(border=True):
             st.caption("Materiales pendientes")
             st.markdown(f"## {materiales_pendientes}")
+
+    # ------------------------------------------------------------
+    # Acciones sugeridas: transforma métricas en próximos pasos.
+    # ------------------------------------------------------------
+    acciones = []
+
+    if aprobaciones_pendientes > 0:
+        acciones.append((
+            "Revisar aprobaciones",
+            "Aprobaciones",
+            f"{aprobaciones_pendientes} pendiente(s)",
+        ))
+
+    if materiales_pendientes > 0:
+        acciones.append((
+            "Revisar materiales",
+            "Materiales",
+            f"{materiales_pendientes} pendiente(s)",
+        ))
+
+    if (
+        not objetivos_activos.empty
+        and (servicios.get("consultoria") or servicios.get("contabilidad"))
+    ):
+        acciones.append((
+            "Ver objetivos",
+            "Objetivos",
+            f"{len(objetivos_activos)} activo(s)",
+        ))
+
+    if acciones:
+        st.markdown("### Qué requiere tu atención")
+        columnas_acciones = st.columns(len(acciones))
+
+        for indice, (etiqueta, destino, detalle) in enumerate(acciones):
+            with columnas_acciones[indice]:
+                st.caption(detalle)
+                if st.button(
+                    etiqueta,
+                    use_container_width=True,
+                    key=f"accion_inicio_{cliente}_{destino}",
+                ):
+                    st.session_state["menu_cliente_destino"] = destino
+                    st.rerun()
+    else:
+        st.success(
+            "Todo al día: no tenés aprobaciones ni materiales pendientes."
+        )
 
     # ------------------------------------------------------------
     # Próximas acciones + pendientes digitales.
@@ -9795,127 +9876,23 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
 
     tareas_vista = tareas_vista_base.copy()
 
-    if str(busqueda_tareas or "").strip():
-        palabras = [
-            palabra.strip().casefold()
-            for palabra in str(busqueda_tareas).split()
-            if palabra.strip()
-        ]
-
-        columnas_busqueda = [
-            columna
-            for columna in [
-                "tarea",
-                "descripcion",
-                "cliente",
-                "unidad",
-                "proyecto",
-                "responsable_am",
-                "prioridad",
-                "estado",
-                "categoria",
-                "comentarios",
-                "origen",
-            ]
-            if columna in tareas_vista.columns
-        ]
-
-        texto_completo = pd.Series(
-            "",
-            index=tareas_vista.index,
-            dtype="object",
-        )
-
-        for columna in columnas_busqueda:
-            texto_completo = (
-                texto_completo
-                + " "
-                + tareas_vista[columna]
-                .fillna("")
-                .astype(str)
-                .str.casefold()
-            )
-
-        mascara_busqueda = pd.Series(
-            True,
-            index=tareas_vista.index,
-        )
-
-        for palabra in palabras:
-            mascara_busqueda &= texto_completo.str.contains(
-                palabra,
-                regex=False,
-                na=False,
-            )
-
-        tareas_vista = tareas_vista[
-            mascara_busqueda
-        ].copy()
-
-    # --------------------------------------------------------
-    # Búsqueda libre por palabras clave
-    # --------------------------------------------------------
-
-    palabras_busqueda = [
-        palabra.strip()
-        for palabra in str(
-            busqueda_tareas or ""
-        ).split()
-        if palabra.strip()
-    ]
-
-    if palabras_busqueda:
-        columnas_busqueda = [
-            columna
-            for columna in [
-                "tarea",
-                "descripcion",
-                "cliente",
-                "unidad",
-                "proyecto",
-                "responsable_am",
-                "prioridad",
-                "estado",
-                "categoria",
-                "comentarios",
-                "origen",
-            ]
-            if columna in tareas_vista.columns
-        ]
-
-        texto_busqueda = pd.Series(
-            "",
-            index=tareas_vista.index,
-            dtype="object",
-        )
-
-        for columna in columnas_busqueda:
-            texto_busqueda = (
-                texto_busqueda
-                + " "
-                + tareas_vista[columna]
-                .fillna("")
-                .astype(str)
-            )
-
-        mascara_busqueda = pd.Series(
-            True,
-            index=tareas_vista.index,
-        )
-
-        for palabra in palabras_busqueda:
-            mascara_busqueda &= (
-                texto_busqueda.str.contains(
-                    re.escape(palabra),
-                    case=False,
-                    na=False,
-                    regex=True,
-                )
-            )
-
-        tareas_vista = tareas_vista[
-            mascara_busqueda
-        ].copy()
+    tareas_vista = buscar_dataframe(
+        tareas_vista,
+        busqueda_tareas,
+        [
+            "tarea",
+            "descripcion",
+            "cliente",
+            "unidad",
+            "proyecto",
+            "responsable_am",
+            "prioridad",
+            "estado",
+            "categoria",
+            "comentarios",
+            "origen",
+        ],
+    )
 
     # --------------------------------------------------------
     # Estado
@@ -10081,6 +10058,28 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
         key=f"criterio_tareas_{modo}",
     )
 
+    controles_tablero_1, controles_tablero_2 = st.columns(
+        [1, 2]
+    )
+
+    with controles_tablero_1:
+        limite_por_columna = st.selectbox(
+            "Tarjetas visibles por columna",
+            [5, 10, 20, 50],
+            index=1,
+            key=f"limite_tareas_columna_{modo}",
+            help=(
+                "Reduce el tiempo de carga. Los filtros y conteos "
+                "siguen considerando todas las tareas."
+            ),
+        )
+
+    with controles_tablero_2:
+        st.caption(
+            f"{len(tareas_vista)} tarea(s) coinciden con los filtros. "
+            "Se muestran primero las más prioritarias y próximas."
+        )
+
     def grupo_vencimiento(valor):
         fecha = pd.to_datetime(
             str(valor or "").strip(),
@@ -10245,13 +10244,24 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
 
             with columnas[indice]:
                 st.markdown(f"#### {grupo}")
-                st.caption(f"{len(subset)} tarea(s)")
+                total_grupo = len(subset)
+                subset_visible = subset.head(
+                    int(limite_por_columna)
+                ).copy()
+
+                if total_grupo > len(subset_visible):
+                    st.caption(
+                        f"Mostrando {len(subset_visible)} de "
+                        f"{total_grupo} tarea(s)"
+                    )
+                else:
+                    st.caption(f"{total_grupo} tarea(s)")
 
                 if subset.empty:
                     st.caption("Sin tareas.")
                     continue
 
-                for _, row in subset.iterrows():
+                for _, row in subset_visible.iterrows():
                     tarea_id = str(
                         row.get("id", "")
                     )
