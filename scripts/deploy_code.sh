@@ -6,14 +6,16 @@ source .venv/bin/activate
 
 MSG="${1:-Actualizar app}"
 
-echo "Chequeando app.py..."
-python -m py_compile app.py
+echo "Chequeando código y pruebas..."
+python -m py_compile app.py pocket_app.py am_hub_core.py scripts/*.py
+python -m unittest discover -s tests -v
+python -m pip check
 
 echo "Estado actual:"
 git status --short
 
 echo "Agregando archivos de código..."
-git add app.py requirements.txt .streamlit/config.toml 2>/dev/null || true
+git add app.py pocket_app.py am_hub_core.py tests README.md requirements.txt .streamlit/config.toml 2>/dev/null || true
 
 if git diff --cached --quiet; then
   echo "No hay cambios de código para commitear."
