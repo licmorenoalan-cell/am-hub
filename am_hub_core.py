@@ -9,12 +9,40 @@ from __future__ import annotations
 import os
 import re
 import tempfile
+import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pandas as pd
 
 
 IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def crear_evento_actividad(
+    *,
+    usuario: str,
+    nombre: str,
+    role: str,
+    cliente: str,
+    accion: str,
+    recurso: str,
+    registro_id: str = "",
+    detalle: str = "",
+) -> dict[str, str]:
+    """Construye un evento compacto sin incluir datos sensibles completos."""
+    return {
+        "id": f"EVT-{uuid.uuid4().hex}",
+        "fecha_hora": datetime.now(timezone.utc).isoformat(),
+        "usuario": str(usuario).strip(),
+        "nombre": str(nombre),
+        "role": str(role),
+        "cliente": str(cliente),
+        "accion": str(accion).strip(),
+        "recurso": str(recurso).strip(),
+        "registro_id": str(registro_id or ""),
+        "detalle": str(detalle or "")[:1000],
+    }
 
 
 def validar_identificador_sql(valor: str) -> str:
