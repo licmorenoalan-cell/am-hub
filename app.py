@@ -1870,13 +1870,13 @@ def menu_cliente_por_servicios(cliente_nombre):
 
     if servicios["consultoria"]:
         opciones += [
-            "Objetivos",
+            "Plan de trabajo",
             ]
 
     if servicios["contabilidad"]:
         opciones += [
             "Cash Flow",
-            "Objetivos",
+            "Plan de trabajo",
             ]
 
     limpio = []
@@ -2014,10 +2014,10 @@ def menu_equipo_por_permisos():
     opciones = ["Dashboard AM"]
 
     if servicios.get("consultoria"):
-        opciones += ["Objetivos"]
+        opciones += ["Plan de trabajo"]
 
     if servicios.get("contabilidad"):
-        opciones += ["Cash Flow", "Objetivos"]
+        opciones += ["Cash Flow", "Plan de trabajo"]
 
     if servicios.get("digital"):
         opciones += ["Contenidos", "Materiales", "Campañas", "Reportes"]
@@ -2044,10 +2044,10 @@ def menu_por_servicios_cliente_para_equipo(cliente_nombre):
         opciones += ["Contenidos", "Materiales", "Campañas", "Reportes"]
 
     if servicios.get("consultoria"):
-        opciones += ["Objetivos"]
+        opciones += ["Plan de trabajo"]
 
     if servicios.get("contabilidad"):
-        opciones += ["Cash Flow", "Objetivos"]
+        opciones += ["Cash Flow", "Plan de trabajo"]
 
     opciones += ["Tareas"]
 
@@ -2089,6 +2089,11 @@ def sidebar():
 
     role = st.session_state.get("role")
 
+    # Migra la selección guardada de sesiones abiertas antes del cambio de nombre.
+    for menu_key in ["menu_cliente_v2", "menu_admin", "menu_equipo_cliente"]:
+        if st.session_state.get(menu_key) == "Objetivos":
+            st.session_state[menu_key] = "Plan de trabajo"
+
     if role == "cliente":
         cliente_actual = st.session_state.get("cliente", "")
         opciones_cliente = menu_cliente_por_servicios(cliente_actual)
@@ -2121,8 +2126,8 @@ def sidebar():
                 "Usuarios",
                 "Onboarding",
                 "Clientes",
-                "Objetivos",
-                        "Cash Flow",
+                "Plan de trabajo",
+                "Cash Flow",
                 "Cuenta corriente",
                 "Contenidos",
                 "Materiales",
@@ -4821,7 +4826,7 @@ def render_inicio_cliente_ejecutivo(cliente):
 
     with k1:
         with st.container(border=True):
-            st.caption("Objetivos activos")
+            st.caption("Frentes activos")
             st.markdown(f"## {len(objetivos_activos)}")
 
     with k2:
@@ -4863,8 +4868,8 @@ def render_inicio_cliente_ejecutivo(cliente):
         and (servicios.get("consultoria") or servicios.get("contabilidad"))
     ):
         acciones.append((
-            "Ver objetivos",
-            "Objetivos",
+            "Ver plan de trabajo",
+            "Plan de trabajo",
             f"{len(objetivos_activos)} activo(s)",
         ))
 
@@ -4906,7 +4911,7 @@ def render_inicio_cliente_ejecutivo(cliente):
             proximos = proximos.head(3)
 
             for _, row in proximos.iterrows():
-                objetivo_txt = str(row.get("objetivo", "") or "Sin objetivo")
+                objetivo_txt = str(row.get("objetivo", "") or "Sin título")
                 descripcion_txt = str(row.get("descripcion", "") or "")
                 estado_txt = str(row.get("estado", "") or "Pendiente")
                 prioridad_txt = str(row.get("prioridad", "") or "Media")
@@ -5058,9 +5063,9 @@ def render_objetivos(cliente="", modo="cliente"):
     nombre_usuario = st.session_state.get("name", username)
 
     if modo == "admin":
-        header("Objetivos", "Plan de trabajo y seguimiento por cliente.")
+        header("Plan de trabajo", "Seguimiento de frentes y compromisos por cliente.")
     else:
-        header("Objetivos", f"Plan de trabajo | {cliente}")
+        header("Plan de trabajo", f"Seguimiento | {cliente}")
 
     columnas = [
         "id",
@@ -5173,7 +5178,7 @@ def render_objetivos(cliente="", modo="cliente"):
             else:
                 clientes_opciones = sorted(clientes_df["cliente"].dropna().astype(str).unique().tolist())
 
-        with st.expander("Crear nuevo objetivo", expanded=False):
+        with st.expander("Crear nuevo frente de trabajo", expanded=False):
             if not clientes_opciones:
                 st.info("No hay clientes cargados.")
             else:
@@ -5187,8 +5192,8 @@ def render_objetivos(cliente="", modo="cliente"):
                         else:
                             cliente_sel = st.selectbox("Cliente", clientes_opciones)
 
-                        objetivo_txt = st.text_input("Objetivo", placeholder="Ejemplo: análisis de régimen PADIC")
-                        descripcion = st.text_area("Descripción", placeholder="Detalle del objetivo, alcance o entregable esperado.")
+                        objetivo_txt = st.text_input("Frente de trabajo", placeholder="Ejemplo: análisis de régimen PADIC")
+                        descripcion = st.text_area("Descripción", placeholder="Detalle del frente, alcance o entregable esperado.")
                         checklist_txt = st.text_area(
                             "Checklist / workflow",
                             placeholder="Un paso por línea. Ejemplo:\nRelevar información inicial\nAnalizar normativa\nPreparar informe\nRevisar con cliente",
@@ -5218,11 +5223,11 @@ def render_objetivos(cliente="", modo="cliente"):
                         estado = st.selectbox("Estado inicial", estados)
                         fecha_limite = st.date_input("Fecha límite", value=date.today())
 
-                    crear = st.form_submit_button("Crear objetivo", use_container_width=True)
+                    crear = st.form_submit_button("Crear frente de trabajo", use_container_width=True)
 
                     if crear:
                         if not objetivo_txt.strip():
-                            st.error("El objetivo no puede estar vacío.")
+                            st.error("El frente de trabajo no puede estar vacío.")
                         else:
                             checklist_items = checklist_desde_textarea_objetivo(checklist_txt)
                             avance_auto = avance_desde_checklist_objetivo(checklist_items, 0)
@@ -5269,7 +5274,7 @@ def render_objetivos(cliente="", modo="cliente"):
                                 ignore_index=True,
                             )
                             save_csv(actualizado, OBJETIVOS_PATH)
-                            st.success("Objetivo creado correctamente.")
+                            st.success("Frente de trabajo creado correctamente.")
                             st.rerun()
 
     # ------------------------------------------------------------
@@ -5312,7 +5317,7 @@ def render_objetivos(cliente="", modo="cliente"):
 
                 if actual is None:
                     raise ValueError(
-                        "No se encontró el objetivo."
+                        "No se encontró el frente de trabajo."
                     )
 
                 if str(comentario_nuevo or "").strip():
@@ -5389,7 +5394,7 @@ def render_objetivos(cliente="", modo="cliente"):
 
         if not mask.any():
             raise ValueError(
-                "No se encontró el objetivo."
+                "No se encontró el frente de trabajo."
             )
 
         for campo, valor in cambios.items():
@@ -5459,7 +5464,7 @@ def render_objetivos(cliente="", modo="cliente"):
 
             if not resultado.rowcount:
                 raise ValueError(
-                    "No se encontró el objetivo."
+                    "No se encontró el frente de trabajo."
                 )
 
             return
@@ -5475,7 +5480,7 @@ def render_objetivos(cliente="", modo="cliente"):
             or "id" not in objetivos_full.columns
         ):
             raise ValueError(
-                "No se encontró el objetivo."
+                "No se encontró el frente de trabajo."
             )
 
         mask = (
@@ -5486,7 +5491,7 @@ def render_objetivos(cliente="", modo="cliente"):
 
         if not mask.any():
             raise ValueError(
-                "No se encontró el objetivo."
+                "No se encontró el frente de trabajo."
             )
 
         save_csv(
@@ -5509,9 +5514,9 @@ def render_objetivos(cliente="", modo="cliente"):
         ].copy()
 
     busqueda_objetivos = st.text_input(
-        "🔎 Buscar objetivos",
+        "🔎 Buscar en el plan de trabajo",
         placeholder=(
-            "Objetivo, descripción, responsable, "
+            "Frente, descripción, responsable, "
             "cliente o comentario..."
         ),
         key=(
@@ -5853,7 +5858,7 @@ def render_objetivos(cliente="", modo="cliente"):
     k1, k2, k3, k4 = st.columns(4)
 
     k1.metric(
-        "Objetivos visibles",
+        "Frentes visibles",
         len(objetivos_vista),
     )
 
@@ -5890,11 +5895,11 @@ def render_objetivos(cliente="", modo="cliente"):
         ),
     )
 
-    st.markdown("### Tablero de objetivos")
+    st.markdown("### Plan de trabajo")
 
     if objetivos_vista.empty:
         st.info(
-            "No hay objetivos para los filtros seleccionados."
+            "No hay frentes de trabajo para los filtros seleccionados."
         )
         return
 
@@ -6081,7 +6086,7 @@ def render_objetivos(cliente="", modo="cliente"):
                 st.markdown("---")
                 st.markdown(f"### {grupo_tablero}")
                 st.caption(
-                    f"{len(subset)} objetivo(s)"
+                    f"{len(subset)} frente(s)"
                 )
 
                 for _, row in subset.iterrows():
@@ -6096,7 +6101,7 @@ def render_objetivos(cliente="", modo="cliente"):
                     objetivo_txt = str(
                         row.get(
                             "objetivo",
-                            "Sin objetivo",
+                            "Sin título",
                         )
                     )
 
@@ -6218,11 +6223,11 @@ def render_objetivos(cliente="", modo="cliente"):
                                         ),
                                     },
                                     (
-                                        "Objetivo marcado "
+                                        "Frente marcado "
                                         "como finalizado."
                                         if finalizar
                                         else (
-                                            "Objetivo reabierto "
+                                            "Frente reabierto "
                                             "como pendiente."
                                         )
                                     ),
@@ -6399,7 +6404,7 @@ def render_objetivos(cliente="", modo="cliente"):
 
                             if puede_editar:
                                 nuevo_objetivo = st.text_input(
-                                    "Objetivo",
+                                    "Frente de trabajo",
                                     value=objetivo_txt,
                                     key=(
                                         f"titulo_objetivo_"
@@ -6587,7 +6592,7 @@ def render_objetivos(cliente="", modo="cliente"):
                                     try:
                                         if not nuevo_objetivo.strip():
                                             raise ValueError(
-                                                "El objetivo no puede quedar vacío."
+                                                "El frente de trabajo no puede quedar vacío."
                                             )
 
                                         nuevos_items = (
@@ -6652,7 +6657,7 @@ def render_objetivos(cliente="", modo="cliente"):
                                         )
 
                                         st.success(
-                                            "Objetivo actualizado."
+                                            "Frente de trabajo actualizado."
                                         )
                                         st.rerun()
 
@@ -6672,7 +6677,7 @@ def render_objetivos(cliente="", modo="cliente"):
                                     )
 
                                     if st.button(
-                                        "Eliminar objetivo",
+                                        "Eliminar frente",
                                         key=(
                                             f"eliminar_objetivo_"
                                             f"{objetivo_id}"
@@ -6687,7 +6692,7 @@ def render_objetivos(cliente="", modo="cliente"):
                                                 objetivo_id
                                             )
                                             st.success(
-                                                "Objetivo eliminado."
+                                                "Frente de trabajo eliminado."
                                             )
                                             st.rerun()
                                         except Exception as exc:
@@ -11473,7 +11478,7 @@ def main():
             render_campanias(cliente, load_campanias(cliente))
         elif menu == "Reportes":
             render_reportes(cliente, load_reportes(cliente))
-        elif menu == "Objetivos":
+        elif menu == "Plan de trabajo":
             render_objetivos(cliente, modo="cliente")
         elif menu == "Cash Flow":
             render_indicadores(cliente, modo="cliente")
@@ -11489,7 +11494,7 @@ def main():
                 st.info("Todavía no tenés clientes asignados para operar.")
             elif menu == "Portal cliente":
                 render_inicio_cliente_ejecutivo(cliente_equipo)
-            elif menu == "Objetivos":
+            elif menu == "Plan de trabajo":
                 render_objetivos(cliente_equipo, modo="cliente")
             elif menu == "Cash Flow":
                 render_indicadores(cliente_equipo, modo="cliente")
@@ -11537,7 +11542,7 @@ def main():
                 render_onboarding_cliente()
             elif menu == "Clientes":
                 render_gestion_clientes()
-            elif menu == "Objetivos":
+            elif menu == "Plan de trabajo":
                 render_objetivos("", modo="admin")
             elif menu == "Cash Flow":
                 render_indicadores("", modo="admin")
