@@ -37,20 +37,29 @@ def main():
         'CREATE INDEX IF NOT EXISTS idx_campanias_cliente ON "campanias" ("cliente")',
         'CREATE INDEX IF NOT EXISTS idx_reportes_cliente ON "reportes" ("cliente")',
         'CREATE INDEX IF NOT EXISTS idx_tareas_cliente ON "tareas" ("cliente")',
+        'CREATE INDEX IF NOT EXISTS idx_tareas_estado ON "tareas" ("estado")',
+        'CREATE INDEX IF NOT EXISTS idx_tareas_fecha_limite ON "tareas" ("fecha_limite")',
+        'CREATE INDEX IF NOT EXISTS idx_tareas_responsable ON "tareas" ("responsable_am")',
+        'CREATE INDEX IF NOT EXISTS idx_tareas_cliente_estado ON "tareas" ("cliente", "estado")',
         'CREATE INDEX IF NOT EXISTS idx_objetivos_cliente ON "objetivos" ("cliente")',
         'CREATE INDEX IF NOT EXISTS idx_objetivos_cliente_mes ON "objetivos" ("cliente", "mes")',
+        'CREATE INDEX IF NOT EXISTS idx_objetivos_cliente_estado ON "objetivos" ("cliente", "estado")',
+        'CREATE INDEX IF NOT EXISTS idx_materiales_cliente_estado ON "materiales" ("cliente", "estado")',
+        'CREATE INDEX IF NOT EXISTS idx_reportes_cliente_mes ON "reportes" ("cliente", "mes")',
+        'CREATE INDEX IF NOT EXISTS idx_cuenta_cliente_estado ON "cuenta_corriente" ("cliente", "estado")',
         'CREATE INDEX IF NOT EXISTS idx_movimientos_cliente ON "indicadores_movimientos" ("cliente")',
         'CREATE INDEX IF NOT EXISTS idx_movimientos_cliente_mes ON "indicadores_movimientos" ("cliente", "mes")',
         'CREATE INDEX IF NOT EXISTS idx_movimientos_cliente_tipo ON "indicadores_movimientos" ("cliente", "tipo")',
     ]
 
-    with engine.begin() as conn:
-        for stmt in statements:
-            try:
+    for stmt in statements:
+        try:
+            # Una tabla opcional ausente no debe abortar el resto del lote.
+            with engine.begin() as conn:
                 conn.execute(text(stmt))
-                print("OK", stmt)
-            except Exception as e:
-                print("SKIP/ERROR", stmt, e)
+            print("OK", stmt)
+        except Exception as e:
+            print("SKIP/ERROR", stmt, e)
 
     print("Índices aplicados.")
 

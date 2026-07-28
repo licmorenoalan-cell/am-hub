@@ -416,6 +416,44 @@ def eliminar_postgres_por_id(tabla: str, registro_id: str):
     registrar_actividad("eliminar", tabla, registro_id)
 
 
+def insertar_postgres_registros(tabla: str, registros: list[dict]):
+    """Inserta filas nuevas sin leer ni reescribir la tabla completa."""
+    validar_identificador_sql(tabla)
+    if tabla not in set(POSTGRES_TABLE_MAP.values()):
+        raise ValueError(f'Tabla no permitida: "{tabla}".')
+    if not registros:
+        return
+
+    columnas = list(registros[0].keys())
+    for columna in columnas:
+        validar_identificador_sql(columna)
+    if any(set(registro.keys()) != set(columnas) for registro in registros):
+        raise ValueError("Todos los registros deben tener las mismas columnas.")
+
+    columnas_sql = _sql_cols(columnas)
+    valores_sql = ", ".join(f":{columna}" for columna in columnas)
+    sentencia = sql_text(
+        f'INSERT INTO "{tabla}" ({columnas_sql}) VALUES ({valores_sql})'
+    )
+    parametros = [
+        {
+            columna: _normalizar_valor_postgres(registro.get(columna, ""))
+            for columna in columnas
+        }
+        for registro in registros
+    ]
+
+    with get_postgres_engine().begin() as conn:
+        conn.execute(sentencia, parametros)
+
+    _limpiar_cache_postgres()
+    registrar_actividad(
+        "crear",
+        tabla,
+        detalle=f"{len(registros)} fila(s)",
+    )
+
+
 def guardar_postgres(df: pd.DataFrame, tabla: str):
     validar_identificador_sql(tabla)
     if tabla not in set(POSTGRES_TABLE_MAP.values()):
@@ -755,12 +793,13 @@ def ensure_data_dir():
 
 
 def perf_log(nombre, inicio):
-    if os.getenv("PERF_DEBUG", "0") != "1":
-        return
-
     try:
         duracion = time.perf_counter() - inicio
-        print(f"[PERF] {nombre}: {duracion:.3f}s")
+        limite = float(os.getenv("SLOW_OPERATION_SECONDS", "1.0"))
+        if duracion >= limite:
+            LOGGER.warning("Operación lenta %s: %.3fs", nombre, duracion)
+        elif os.getenv("PERF_DEBUG", "0") == "1":
+            LOGGER.info("[PERF] %s: %.3fs", nombre, duracion)
     except Exception:
         pass
 
@@ -9366,25 +9405,11 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
 
     def eliminar_tarea(tarea_id):
         if usar_postgres():
-            engine = get_postgres_engine()
-
-            with engine.begin() as conn:
-                resultado = conn.execute(
-                    sql_text(
-                        'DELETE FROM "tareas" '
-                        'WHERE "id" = :tarea_id'
-                    ),
-                    {
-                        "tarea_id": str(tarea_id),
-                    },
-                )
-
-            _limpiar_cache_postgres()
-
-            if not resultado.rowcount:
-                return False, "No se encontró la tarea."
-
-            return True, ""
+            try:
+                eliminar_postgres_por_id("tareas", tarea_id)
+                return True, ""
+            except ValueError as exc:
+                return False, str(exc)
 
         tareas_actualizadas = read_csv(
             TAREAS_PATH,
@@ -9425,6 +9450,27 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
         tarea_id_rapido = str(
             row_tarea.get("id", "")
         )
+
+        requiere_generar_recurrencia = (
+            str(row_tarea.get("recurrente", "No")) == "Sí"
+            and nuevo_estado == "Finalizada"
+            and str(row_tarea.get("estado", "")) != "Finalizada"
+        )
+
+        if usar_postgres() and not requiere_generar_recurrencia:
+            try:
+                actualizar_postgres_por_id(
+                    "tareas",
+                    tarea_id_rapido,
+                    {
+                        "estado": nuevo_estado,
+                        "fecha_actualizacion": date.today().strftime("%Y-%m-%d"),
+                        "actualizado_por": nombre_usuario,
+                    },
+                )
+                return True, ""
+            except Exception as exc:
+                return False, str(exc)
 
         tareas_actualizadas = normalizar_tareas_internas(
             cargar_tareas_internas()
@@ -9776,18 +9822,23 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
                         "actualizado_por": nombre_usuario,
                     })
 
-                tareas_actualizadas = pd.concat(
-                    [
-                        tareas_full,
-                        pd.DataFrame(nuevas_tareas),
-                    ],
-                    ignore_index=True,
-                )
-
-                save_csv(
-                    tareas_actualizadas,
-                    TAREAS_PATH,
-                )
+                if usar_postgres():
+                    insertar_postgres_registros(
+                        "tareas",
+                        nuevas_tareas,
+                    )
+                else:
+                    tareas_actualizadas = pd.concat(
+                        [
+                            tareas_full,
+                            pd.DataFrame(nuevas_tareas),
+                        ],
+                        ignore_index=True,
+                    )
+                    save_csv(
+                        tareas_actualizadas,
+                        TAREAS_PATH,
+                    )
 
                 cantidad = len(nuevas_tareas)
 
@@ -10036,18 +10087,23 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
                         "actualizado_por": nombre_usuario,
                     }
 
-                    actualizado = pd.concat(
-                        [
-                            tareas_full,
-                            pd.DataFrame([nueva]),
-                        ],
-                        ignore_index=True,
-                    )
-
-                    save_csv(
-                        actualizado,
-                        TAREAS_PATH,
-                    )
+                    if usar_postgres():
+                        insertar_postgres_registros(
+                            "tareas",
+                            [nueva],
+                        )
+                    else:
+                        actualizado = pd.concat(
+                            [
+                                tareas_full,
+                                pd.DataFrame([nueva]),
+                            ],
+                            ignore_index=True,
+                        )
+                        save_csv(
+                            actualizado,
+                            TAREAS_PATH,
+                        )
 
                     st.success(
                         "Tarea creada correctamente."
@@ -11167,19 +11223,45 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
                                             + agregado
                                         ).strip()
 
-                                    save_csv(
-                                        tareas_actualizadas,
-                                        TAREAS_PATH,
-                                    )
-
-                                    # Genera la próxima
-                                    # ocurrencia cuando corresponde.
-                                    if (
+                                    finaliza_recurrente = (
                                         nuevo_estado
                                         == "Finalizada"
                                         and estado_actual
                                         != "Finalizada"
-                                    ):
+                                        and str(row.get("recurrente", "No")).strip()
+                                        == "Sí"
+                                    )
+
+                                    if usar_postgres():
+                                        # La transición recurrente crea primero la
+                                        # próxima ocurrencia; luego persistimos el
+                                        # resto de los cambios en una sola fila.
+                                        if finaliza_recurrente:
+                                            actualizar_estado_rapido_tarea(
+                                                row,
+                                                "Finalizada",
+                                            )
+
+                                        registro_actualizado = (
+                                            tareas_actualizadas.loc[mask]
+                                            .iloc[0]
+                                            .to_dict()
+                                        )
+                                        registro_actualizado.pop("id", None)
+                                        actualizar_postgres_por_id(
+                                            "tareas",
+                                            tarea_id,
+                                            registro_actualizado,
+                                        )
+                                    else:
+                                        save_csv(
+                                            tareas_actualizadas,
+                                            TAREAS_PATH,
+                                        )
+
+                                    # En CSV se mantiene la generación posterior
+                                    # sobre el archivo recién guardado.
+                                    if finaliza_recurrente and not usar_postgres():
                                         actualizar_estado_rapido_tarea(
                                             row,
                                             "Finalizada",
@@ -11362,6 +11444,11 @@ def main():
             elif menu == "Vista cliente":
                 clientes, contenidos, materiales, campanias, reportes, _ = load_data()
                 render_vista_cliente_admin(clientes, contenidos, materiales, campanias, reportes)
+
+    perf_log(
+        f"menu role={role or '-'} opción={menu}",
+        inicio_menu_perf,
+    )
 
 
 if __name__ == "__main__":
