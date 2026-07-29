@@ -11,6 +11,7 @@ from sqlalchemy import create_engine, text as sql_text
 import re
 import logging
 import html
+import uuid
 
 from am_hub_core import (
     buscar_dataframe,
@@ -48,6 +49,7 @@ INDICADORES_PATH = DATA_DIR / "indicadores.csv"
 INDICADORES_MOVIMIENTOS_PATH = DATA_DIR / "indicadores_movimientos.csv"
 CUENTA_CORRIENTE_PATH = DATA_DIR / "cuenta_corriente.csv"
 ACTIVIDAD_PATH = DATA_DIR / "actividad.csv"
+TAREA_ARCHIVOS_PATH = DATA_DIR / "tarea_archivos.csv"
 
 ACTIVIDAD_COLUMNS = [
     "id",
@@ -345,11 +347,231 @@ def _limpiar_cache_postgres():
         "contar_postgres_cacheada",
         "cargar_archivo_reporte",
         "cargar_dashboard_admin",
+        "cargar_adjuntos_tarea",
+        "cargar_archivo_tarea",
     ]:
         try:
             globals()[cache_func_name].clear()
         except Exception:
             pass
+
+
+TAREA_ARCHIVOS_COLUMNAS = [
+    "id",
+    "tarea_id",
+    "nombre",
+    "tipo",
+    "tamano",
+    "contenido_base64",
+    "fecha_carga",
+    "cargado_por",
+]
+TAREA_ARCHIVO_MAX_BYTES = 8 * 1024 * 1024
+TAREA_ARCHIVOS_MAX_POR_CARGA = 5
+TAREA_ARCHIVOS_MAX_POR_TAREA = 20
+TAREA_ARCHIVOS_MAX_TOTAL_BYTES = 40 * 1024 * 1024
+
+
+@st.cache_resource(show_spinner=False)
+def asegurar_tabla_tarea_archivos():
+    """Crea el depósito separado de adjuntos sin afectar la tabla de tareas."""
+    if not usar_postgres():
+        return True
+
+    with get_postgres_engine().begin() as conn:
+        conn.execute(
+            sql_text(
+                'CREATE TABLE IF NOT EXISTS "tarea_archivos" ('
+                '"id" TEXT PRIMARY KEY, "tarea_id" TEXT NOT NULL, '
+                '"nombre" TEXT NOT NULL, "tipo" TEXT, "tamano" BIGINT, '
+                '"contenido_base64" TEXT NOT NULL, "fecha_carga" TEXT, '
+                '"cargado_por" TEXT)'
+            )
+        )
+        conn.execute(
+            sql_text(
+                'CREATE INDEX IF NOT EXISTS "idx_tarea_archivos_tarea" '
+                'ON "tarea_archivos" ("tarea_id")'
+            )
+        )
+    return True
+
+
+@st.cache_data(ttl=120, show_spinner=False)
+def cargar_adjuntos_tarea(tarea_id: str) -> pd.DataFrame:
+    """Carga sólo metadatos; nunca trae el contenido al abrir el tablero."""
+    tarea_id = str(tarea_id).strip()
+    columnas = [col for col in TAREA_ARCHIVOS_COLUMNAS if col != "contenido_base64"]
+    if not tarea_id:
+        return pd.DataFrame(columns=columnas)
+
+    if usar_postgres():
+        asegurar_tabla_tarea_archivos()
+        with get_postgres_engine().connect() as conn:
+            return pd.read_sql(
+                sql_text(
+                    'SELECT "id", "tarea_id", "nombre", "tipo", "tamano", '
+                    '"fecha_carga", "cargado_por" FROM "tarea_archivos" '
+                    'WHERE "tarea_id" = :tarea_id ORDER BY "fecha_carga" DESC'
+                ),
+                conn,
+                params={"tarea_id": tarea_id},
+            ).fillna("")
+
+    archivos = read_csv(TAREA_ARCHIVOS_PATH, TAREA_ARCHIVOS_COLUMNAS)
+    if archivos.empty:
+        return pd.DataFrame(columns=columnas)
+    vista = archivos[archivos["tarea_id"].astype(str) == tarea_id].copy()
+    return vista[columnas].sort_values("fecha_carga", ascending=False)
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def cargar_archivo_tarea(archivo_id: str, tarea_id: str) -> dict:
+    """Trae un único binario cuando el usuario solicita descargarlo."""
+    archivo_id = str(archivo_id).strip()
+    tarea_id = str(tarea_id).strip()
+    if not archivo_id or not tarea_id:
+        return {}
+
+    if usar_postgres():
+        asegurar_tabla_tarea_archivos()
+        with get_postgres_engine().connect() as conn:
+            fila = conn.execute(
+                sql_text(
+                    'SELECT "id", "nombre", "tipo", "contenido_base64" '
+                    'FROM "tarea_archivos" WHERE "id" = :archivo_id '
+                    'AND "tarea_id" = :tarea_id LIMIT 1'
+                ),
+                {"archivo_id": archivo_id, "tarea_id": tarea_id},
+            ).mappings().first()
+        return dict(fila) if fila else {}
+
+    archivos = read_csv(TAREA_ARCHIVOS_PATH, TAREA_ARCHIVOS_COLUMNAS)
+    encontrados = archivos[
+        (archivos["id"].astype(str) == archivo_id)
+        & (archivos["tarea_id"].astype(str) == tarea_id)
+    ]
+    return encontrados.iloc[0].to_dict() if not encontrados.empty else {}
+
+
+def guardar_adjuntos_tarea(tarea_id: str, archivos, cargado_por: str) -> int:
+    archivos = list(archivos or [])
+    if not archivos:
+        raise ValueError("Seleccioná al menos un archivo.")
+    if len(archivos) > TAREA_ARCHIVOS_MAX_POR_CARGA:
+        raise ValueError(
+            f"Podés cargar hasta {TAREA_ARCHIVOS_MAX_POR_CARGA} archivos por vez."
+        )
+
+    existentes = cargar_adjuntos_tarea(str(tarea_id))
+    if len(existentes) + len(archivos) > TAREA_ARCHIVOS_MAX_POR_TAREA:
+        raise ValueError(
+            f"Cada tarjeta admite hasta {TAREA_ARCHIVOS_MAX_POR_TAREA} archivos."
+        )
+
+    registros = []
+    total_nuevo = 0
+    for archivo in archivos:
+        contenido = archivo.getvalue()
+        if len(contenido) > TAREA_ARCHIVO_MAX_BYTES:
+            raise ValueError(f'"{archivo.name}" supera el límite de 8 MB.')
+        total_nuevo += len(contenido)
+        registros.append({
+            "id": f"ADJ-{uuid.uuid4().hex}",
+            "tarea_id": str(tarea_id),
+            "nombre": str(archivo.name),
+            "tipo": str(archivo.type or "application/octet-stream"),
+            "tamano": len(contenido),
+            "contenido_base64": base64.b64encode(contenido).decode("ascii"),
+            "fecha_carga": pd.Timestamp.now(tz="America/Argentina/Buenos_Aires").isoformat(),
+            "cargado_por": str(cargado_por),
+        })
+
+    total_existente = pd.to_numeric(
+        existentes.get("tamano", pd.Series(dtype="float64")),
+        errors="coerce",
+    ).fillna(0).sum()
+    if total_existente + total_nuevo > TAREA_ARCHIVOS_MAX_TOTAL_BYTES:
+        raise ValueError("Los adjuntos de la tarjeta no pueden superar 40 MB en total.")
+
+    if usar_postgres():
+        asegurar_tabla_tarea_archivos()
+        sentencia = sql_text(
+            'INSERT INTO "tarea_archivos" ('
+            '"id", "tarea_id", "nombre", "tipo", "tamano", '
+            '"contenido_base64", "fecha_carga", "cargado_por") VALUES ('
+            ':id, :tarea_id, :nombre, :tipo, :tamano, '
+            ':contenido_base64, :fecha_carga, :cargado_por)'
+        )
+        with get_postgres_engine().begin() as conn:
+            conn.execute(sentencia, registros)
+    else:
+        actuales = read_csv(TAREA_ARCHIVOS_PATH, TAREA_ARCHIVOS_COLUMNAS)
+        save_csv(
+            pd.concat([actuales, pd.DataFrame(registros)], ignore_index=True),
+            TAREA_ARCHIVOS_PATH,
+        )
+
+    cargar_adjuntos_tarea.clear()
+    cargar_archivo_tarea.clear()
+    registrar_actividad(
+        "crear",
+        "tarea_archivos",
+        str(tarea_id),
+        f"{len(registros)} archivo(s)",
+    )
+    return len(registros)
+
+
+def eliminar_adjunto_tarea(archivo_id: str, tarea_id: str):
+    if usar_postgres():
+        asegurar_tabla_tarea_archivos()
+        with get_postgres_engine().begin() as conn:
+            resultado = conn.execute(
+                sql_text(
+                    'DELETE FROM "tarea_archivos" WHERE "id" = :archivo_id '
+                    'AND "tarea_id" = :tarea_id'
+                ),
+                {"archivo_id": str(archivo_id), "tarea_id": str(tarea_id)},
+            )
+        if not resultado.rowcount:
+            raise ValueError("No se encontró el archivo.")
+    else:
+        archivos = read_csv(TAREA_ARCHIVOS_PATH, TAREA_ARCHIVOS_COLUMNAS)
+        mascara = (
+            (archivos["id"].astype(str) == str(archivo_id))
+            & (archivos["tarea_id"].astype(str) == str(tarea_id))
+        )
+        if not mascara.any():
+            raise ValueError("No se encontró el archivo.")
+        save_csv(archivos[~mascara].copy(), TAREA_ARCHIVOS_PATH)
+
+    cargar_adjuntos_tarea.clear()
+    cargar_archivo_tarea.clear()
+    registrar_actividad("eliminar", "tarea_archivos", str(archivo_id))
+
+
+def eliminar_adjuntos_de_tarea(tarea_id: str):
+    """Limpia los adjuntos cuando se elimina su tarjeta."""
+    if usar_postgres():
+        asegurar_tabla_tarea_archivos()
+        with get_postgres_engine().begin() as conn:
+            conn.execute(
+                sql_text(
+                    'DELETE FROM "tarea_archivos" WHERE "tarea_id" = :tarea_id'
+                ),
+                {"tarea_id": str(tarea_id)},
+            )
+    else:
+        archivos = read_csv(TAREA_ARCHIVOS_PATH, TAREA_ARCHIVOS_COLUMNAS)
+        if not archivos.empty:
+            restantes = archivos[
+                archivos["tarea_id"].astype(str) != str(tarea_id)
+            ].copy()
+            save_csv(restantes, TAREA_ARCHIVOS_PATH)
+
+    cargar_adjuntos_tarea.clear()
+    cargar_archivo_tarea.clear()
 
 
 def actualizar_postgres_por_id(tabla: str, registro_id: str, cambios: dict):
@@ -9718,6 +9940,7 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
         if usar_postgres():
             try:
                 eliminar_postgres_por_id("tareas", tarea_id)
+                eliminar_adjuntos_de_tarea(tarea_id)
                 return True, ""
             except ValueError as exc:
                 return False, str(exc)
@@ -9747,6 +9970,7 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
             tareas_actualizadas.loc[~mask].copy(),
             TAREAS_PATH,
         )
+        eliminar_adjuntos_de_tarea(tarea_id)
 
         return True, ""
 
@@ -11362,6 +11586,162 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
                                     st.write(
                                         comentarios_txt
                                     )
+
+                            st.markdown("**Archivos adjuntos**")
+                            st.caption(
+                                "Se cargan sólo al abrir esta tarjeta. Máximo "
+                                "5 archivos por vez, 8 MB por archivo y 40 MB "
+                                "en total."
+                            )
+
+                            nuevos_adjuntos = st.file_uploader(
+                                "Agregar archivos",
+                                type=[
+                                    "pdf", "doc", "docx", "xls", "xlsx",
+                                    "csv", "txt", "png", "jpg", "jpeg",
+                                    "webp", "zip",
+                                ],
+                                accept_multiple_files=True,
+                                key=f"adjuntos_tarea_{tarea_id}",
+                            )
+
+                            if st.button(
+                                "Subir archivos",
+                                key=f"subir_adjuntos_{tarea_id}",
+                                use_container_width=True,
+                                disabled=not nuevos_adjuntos,
+                            ):
+                                try:
+                                    cantidad_adjuntos = guardar_adjuntos_tarea(
+                                        tarea_id,
+                                        nuevos_adjuntos,
+                                        nombre_usuario,
+                                    )
+                                    st.success(
+                                        f"{cantidad_adjuntos} archivo(s) cargado(s)."
+                                    )
+                                    st.rerun()
+                                except Exception as exc:
+                                    st.error(str(exc))
+
+                            adjuntos_tarea = cargar_adjuntos_tarea(tarea_id)
+                            if adjuntos_tarea.empty:
+                                st.caption("Todavía no hay archivos adjuntos.")
+                            else:
+                                for _, adjunto in adjuntos_tarea.iterrows():
+                                    adjunto_id = str(adjunto.get("id", ""))
+                                    adjunto_nombre = str(
+                                        adjunto.get("nombre", "archivo")
+                                    )
+                                    try:
+                                        adjunto_mb = float(
+                                            adjunto.get("tamano", 0) or 0
+                                        ) / (1024 * 1024)
+                                    except Exception:
+                                        adjunto_mb = 0
+
+                                    with st.container(border=True):
+                                        st.markdown(f"**{adjunto_nombre}**")
+                                        st.caption(
+                                            f"{adjunto_mb:.2f} MB · "
+                                            f"{adjunto.get('cargado_por', '')}"
+                                        )
+
+                                        preparar_key = (
+                                            f"adjunto_preparado_{tarea_id}"
+                                        )
+                                        if st.button(
+                                            "Preparar descarga",
+                                            key=(
+                                                f"preparar_adjunto_{adjunto_id}"
+                                            ),
+                                            use_container_width=True,
+                                        ):
+                                            st.session_state[preparar_key] = (
+                                                adjunto_id
+                                            )
+
+                                        if (
+                                            st.session_state.get(preparar_key)
+                                            == adjunto_id
+                                        ):
+                                            archivo_adjunto = cargar_archivo_tarea(
+                                                adjunto_id,
+                                                tarea_id,
+                                            )
+                                            contenido_b64 = str(
+                                                archivo_adjunto.get(
+                                                    "contenido_base64",
+                                                    "",
+                                                )
+                                                or ""
+                                            )
+                                            try:
+                                                st.download_button(
+                                                    "Descargar",
+                                                    data=base64.b64decode(
+                                                        contenido_b64
+                                                    ),
+                                                    file_name=str(
+                                                        archivo_adjunto.get(
+                                                            "nombre",
+                                                            adjunto_nombre,
+                                                        )
+                                                    ),
+                                                    mime=str(
+                                                        archivo_adjunto.get(
+                                                            "tipo",
+                                                            "application/octet-stream",
+                                                        )
+                                                    ),
+                                                    key=(
+                                                        f"descargar_adjunto_"
+                                                        f"{adjunto_id}"
+                                                    ),
+                                                    use_container_width=True,
+                                                )
+                                            except Exception:
+                                                st.error(
+                                                    "No se pudo preparar el archivo."
+                                                )
+
+                                ids_adjuntos = (
+                                    adjuntos_tarea["id"].astype(str).tolist()
+                                )
+                                nombres_adjuntos = dict(
+                                    zip(
+                                        adjuntos_tarea["id"].astype(str),
+                                        adjuntos_tarea["nombre"].astype(str),
+                                    )
+                                )
+                                adjunto_eliminar = st.selectbox(
+                                    "Archivo a eliminar",
+                                    ids_adjuntos,
+                                    format_func=lambda valor: nombres_adjuntos.get(
+                                        valor,
+                                        valor,
+                                    ),
+                                    key=f"eliminar_adjunto_sel_{tarea_id}",
+                                )
+                                confirma_adjunto = st.checkbox(
+                                    "Confirmo eliminar el archivo seleccionado",
+                                    key=f"confirmar_adjunto_{tarea_id}",
+                                )
+                                if st.button(
+                                    "Eliminar archivo",
+                                    key=f"eliminar_adjunto_{tarea_id}",
+                                    disabled=not confirma_adjunto,
+                                    use_container_width=True,
+                                ):
+                                    try:
+                                        eliminar_adjunto_tarea(
+                                            adjunto_eliminar,
+                                            tarea_id,
+                                        )
+                                        st.success("Archivo eliminado.")
+                                        st.rerun()
+                                    except Exception as exc:
+                                        st.error(str(exc))
 
                             if st.button(
                                 "Guardar cambios",
