@@ -16,7 +16,6 @@ from am_hub_core import (
     buscar_dataframe,
     crear_evento_actividad,
     escribir_csv_atomico,
-    filtrar_tareas_por_estado,
     normalizar_dataframe,
     validar_identificador_sql,
 )
@@ -10553,10 +10552,28 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
     # Estado
     # --------------------------------------------------------
 
-    tareas_vista = filtrar_tareas_por_estado(
-        tareas_vista,
-        estados_filtro,
+    estado_serie = (
+        tareas_vista["estado"]
+        .fillna("")
+        .astype(str)
+        .str.strip()
     )
+
+    if estados_filtro:
+        mascara_estado = pd.Series(False, index=tareas_vista.index)
+        if "Activas" in estados_filtro:
+            mascara_estado |= estado_serie.ne("Finalizada")
+
+        estados_concretos = [
+            valor for valor in estados_filtro if valor != "Activas"
+        ]
+        if estados_concretos:
+            mascara_estado |= estado_serie.isin(estados_concretos)
+
+        tareas_vista = tareas_vista[mascara_estado].copy()
+    else:
+        # Las finalizadas sólo se muestran con selección explícita.
+        tareas_vista = tareas_vista[estado_serie.ne("Finalizada")].copy()
 
     # --------------------------------------------------------
     # Unidad
