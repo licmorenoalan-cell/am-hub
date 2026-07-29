@@ -5284,8 +5284,13 @@ def render_objetivos(cliente="", modo="cliente"):
     username = st.session_state.get("username", "")
     nombre_usuario = st.session_state.get("name", username)
 
-    if modo == "admin":
-        header("Plan de trabajo", "Seguimiento de frentes y compromisos por cliente.")
+    if modo in ["admin", "equipo"]:
+        subtitulo_plan = (
+            "Seguimiento de frentes y compromisos por cliente."
+            if modo == "admin"
+            else "Consolidado de todos tus clientes asignados."
+        )
+        header("Plan de trabajo", subtitulo_plan)
     else:
         header("Plan de trabajo", f"Seguimiento | {cliente}")
 
@@ -5334,6 +5339,15 @@ def render_objetivos(cliente="", modo="cliente"):
         objetivos["responsable_cliente"] = ""
 
     objetivos = objetivos[columnas].copy().fillna("")
+
+    # El equipo ve el consolidado de todos sus clientes, sin ampliar permisos.
+    # La selección de "cliente activo" del sidebar sigue aplicando al resto
+    # de los módulos, pero no limita el Plan de trabajo.
+    if modo == "equipo" and role == "equipo":
+        clientes_permitidos_plan = set(clientes_visibles_para_usuario())
+        objetivos = objetivos[
+            objetivos["cliente"].astype(str).isin(clientes_permitidos_plan)
+        ].copy()
 
     objetivos["cliente"] = objetivos["cliente"].astype(str).str.strip()
     objetivos["objetivo"] = objetivos["objetivo"].astype(str).str.strip()
@@ -5750,7 +5764,7 @@ def render_objetivos(cliente="", modo="cliente"):
     f1, f2, f3 = st.columns(3)
 
     with f1:
-        if modo == "admin":
+        if modo in ["admin", "equipo"]:
             clientes_lista = sorted(
                 [
                     valor
@@ -6404,7 +6418,7 @@ def render_objetivos(cliente="", modo="cliente"):
                         )
 
                         with top_izq:
-                            if modo == "admin":
+                            if modo in ["admin", "equipo"]:
                                 st.caption(
                                     cliente_txt
                                 )
@@ -12057,7 +12071,7 @@ def main():
             elif menu == "Portal cliente":
                 render_inicio_cliente_ejecutivo(cliente_equipo)
             elif menu == "Plan de trabajo":
-                render_objetivos(cliente_equipo, modo="cliente")
+                render_objetivos("", modo="equipo")
             elif menu == "Cash Flow":
                 render_indicadores(cliente_equipo, modo="cliente")
             elif menu == "Contenidos":
