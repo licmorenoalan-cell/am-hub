@@ -7545,7 +7545,190 @@ def render_cuenta_corriente_admin():
         cuenta["servicio"] = "General"
     cuenta["servicio"] = cuenta["servicio"].replace("", "General")
     cuenta["importe"] = pd.to_numeric(cuenta["importe"], errors="coerce").fillna(0)
-    cuenta["mes"] = cuenta["mes"].astype(str)
+    cuenta["mes"] = cuenta["mes"].astype(str).str.strip().replace("", "Sin período")
+
+    # --------------------------------------------------------
+    # Consolidado exclusivo del administrador general.
+    # --------------------------------------------------------
+    estados_sin_deuda = ["Pagado", "Bonificado"]
+    cuenta["_cobrado"] = cuenta["importe"].where(
+        cuenta["estado"].astype(str).eq("Pagado"),
+        0,
+    )
+    cuenta["_pendiente"] = cuenta["importe"].where(
+        ~cuenta["estado"].astype(str).isin(estados_sin_deuda),
+        0,
+    )
+
+    st.markdown("### Resumen consolidado")
+
+    total_general = float(cuenta["importe"].sum())
+    cobrado_general = float(cuenta["_cobrado"].sum())
+    pendiente_general = float(cuenta["_pendiente"].sum())
+    clientes_con_deuda = int(
+        cuenta.loc[cuenta["_pendiente"] > 0, "cliente"]
+        .astype(str)
+        .nunique()
+    )
+
+    ck1, ck2, ck3, ck4 = st.columns(4)
+    ck1.metric("Total cargado", formato_pesos(total_general))
+    ck2.metric("Ingresos cobrados", formato_pesos(cobrado_general))
+    ck3.metric("Deuda pendiente", formato_pesos(pendiente_general))
+    ck4.metric("Clientes con deuda", clientes_con_deuda)
+
+    resumen_mensual = (
+        cuenta.groupby("mes", as_index=False)
+        .agg(
+            total_cargado=("importe", "sum"),
+            cobrado=("_cobrado", "sum"),
+            pendiente=("_pendiente", "sum"),
+            clientes=("cliente", "nunique"),
+            movimientos=("id", "count"),
+        )
+        .sort_values("mes")
+    )
+
+    resumen_clientes = (
+        cuenta.groupby("cliente", as_index=False)
+        .agg(
+            total_cargado=("importe", "sum"),
+            cobrado=("_cobrado", "sum"),
+            deuda_pendiente=("_pendiente", "sum"),
+            movimientos=("id", "count"),
+        )
+        .sort_values(
+            ["deuda_pendiente", "cliente"],
+            ascending=[False, True],
+        )
+    )
+
+    tab_meses, tab_clientes, tab_detalle = st.tabs(
+        ["Ingresos mensuales", "Resumen por cliente", "Detalle por cliente"]
+    )
+
+    with tab_meses:
+        if resumen_mensual.empty:
+            st.info("No hay períodos disponibles para consolidar.")
+        else:
+            mensual_grafico = resumen_mensual.melt(
+                id_vars=["mes"],
+                value_vars=["cobrado", "pendiente"],
+                var_name="situacion",
+                value_name="importe",
+            )
+            grafico = (
+                alt.Chart(mensual_grafico)
+                .mark_bar()
+                .encode(
+                    x=alt.X("mes:N", title="Mes", sort=resumen_mensual["mes"].tolist()),
+                    y=alt.Y("importe:Q", title="Importe"),
+                    color=alt.Color(
+                        "situacion:N",
+                        title="Situación",
+                        scale=alt.Scale(
+                            domain=["cobrado", "pendiente"],
+                            range=["#2F855A", "#D97706"],
+                        ),
+                    ),
+                    tooltip=[
+                        alt.Tooltip("mes:N", title="Mes"),
+                        alt.Tooltip("situacion:N", title="Situación"),
+                        alt.Tooltip("importe:Q", title="Importe", format=",.0f"),
+                    ],
+                )
+                .properties(height=300)
+            )
+            st.altair_chart(grafico, use_container_width=True)
+            st.dataframe(
+                resumen_mensual,
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    "mes": "Mes",
+                    "total_cargado": st.column_config.NumberColumn("Total cargado", format="$ %.0f"),
+                    "cobrado": st.column_config.NumberColumn("Cobrado", format="$ %.0f"),
+                    "pendiente": st.column_config.NumberColumn("Pendiente", format="$ %.0f"),
+                    "clientes": "Clientes",
+                    "movimientos": "Movimientos",
+                },
+            )
+
+    with tab_clientes:
+        st.dataframe(
+            resumen_clientes,
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "cliente": "Cliente",
+                "total_cargado": st.column_config.NumberColumn("Total cargado", format="$ %.0f"),
+                "cobrado": st.column_config.NumberColumn("Cobrado", format="$ %.0f"),
+                "deuda_pendiente": st.column_config.NumberColumn("Deuda pendiente", format="$ %.0f"),
+                "movimientos": "Movimientos",
+            },
+        )
+
+    with tab_detalle:
+        clientes_con_movimientos = sorted(
+            cuenta["cliente"]
+            .dropna()
+            .astype(str)
+            .str.strip()
+            .replace("", pd.NA)
+            .dropna()
+            .unique()
+            .tolist()
+        )
+        if not clientes_con_movimientos:
+            st.info("No hay clientes con movimientos cargados.")
+        else:
+            cliente_detalle = st.selectbox(
+                "Cliente para generar detalle",
+                clientes_con_movimientos,
+                key="cc_cliente_detalle_admin_general",
+            )
+            detalle_cliente = cuenta[
+                cuenta["cliente"].astype(str).eq(cliente_detalle)
+            ].copy()
+            detalle_cliente = detalle_cliente.sort_values(
+                ["mes", "fecha_factura", "id"],
+                ascending=[False, False, False],
+            )
+            columnas_detalle = [
+                "mes",
+                "concepto",
+                "servicio",
+                "importe",
+                "estado",
+                "fecha_factura",
+                "fecha_pago",
+                "observacion",
+            ]
+            st.dataframe(
+                detalle_cliente[columnas_detalle],
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    "importe": st.column_config.NumberColumn("Importe", format="$ %.0f"),
+                },
+            )
+            csv_detalle = detalle_cliente[columnas_detalle].to_csv(
+                index=False,
+            ).encode("utf-8-sig")
+            st.download_button(
+                "Descargar detalle en CSV",
+                data=csv_detalle,
+                file_name=(
+                    "cuenta_corriente_"
+                    + cliente_detalle.lower().replace(" ", "_")
+                    + ".csv"
+                ),
+                mime="text/csv",
+                key="descargar_cc_cliente_admin_general",
+            )
+
+    # Las columnas auxiliares son solo de visualización y no deben persistirse.
+    cuenta = cuenta.drop(columns=["_cobrado", "_pendiente"], errors="ignore")
 
     st.markdown("### Resumen")
 
@@ -7581,7 +7764,6 @@ def render_cuenta_corriente_admin():
         st.info("No hay movimientos para los filtros seleccionados.")
         return
 
-    estados_sin_deuda = ["Pagado", "Bonificado"]
     deuda = vista[~vista["estado"].astype(str).isin(estados_sin_deuda)]["importe"].sum()
     pagado = vista[vista["estado"].astype(str) == "Pagado"]["importe"].sum()
     total = vista["importe"].sum()
