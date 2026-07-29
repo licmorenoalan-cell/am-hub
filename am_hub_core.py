@@ -92,6 +92,35 @@ def buscar_dataframe(
     return df.loc[mascara].copy()
 
 
+def filtrar_tareas_por_estado(
+    df: pd.DataFrame,
+    estados_seleccionados: list[str] | None,
+) -> pd.DataFrame:
+    """Oculta finalizadas salvo que se soliciten explícitamente."""
+    if df.empty or "estado" not in df.columns:
+        return df.copy()
+
+    seleccion = [
+        str(valor).strip()
+        for valor in (estados_seleccionados or [])
+        if str(valor).strip()
+    ]
+    estados = df["estado"].fillna("").astype(str).str.strip()
+
+    if not seleccion:
+        return df.loc[estados.ne("Finalizada")].copy()
+
+    mascara = pd.Series(False, index=df.index)
+    if "Activas" in seleccion:
+        mascara |= estados.ne("Finalizada")
+
+    concretos = [valor for valor in seleccion if valor != "Activas"]
+    if concretos:
+        mascara |= estados.isin(concretos)
+
+    return df.loc[mascara].copy()
+
+
 def escribir_csv_atomico(df: pd.DataFrame, path: Path) -> None:
     """Escribe un CSV completo sin dejar archivos parciales ante un fallo."""
     destino = Path(path)

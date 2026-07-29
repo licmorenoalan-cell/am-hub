@@ -8,6 +8,7 @@ from am_hub_core import (
     buscar_dataframe,
     crear_evento_actividad,
     escribir_csv_atomico,
+    filtrar_tareas_por_estado,
     normalizar_dataframe,
     validar_identificador_sql,
 )
@@ -61,6 +62,28 @@ class CoreTests(unittest.TestCase):
         self.assertTrue(evento["id"].startswith("EVT-"))
         self.assertEqual(evento["usuario"], "alan")
         self.assertEqual(len(evento["detalle"]), 1000)
+
+    def test_tareas_finalizadas_solo_aparecen_con_filtro_explicito(self):
+        tareas = pd.DataFrame([
+            {"id": "1", "estado": "Pendiente"},
+            {"id": "2", "estado": "En curso"},
+            {"id": "3", "estado": "Finalizada"},
+        ])
+
+        sin_filtro = filtrar_tareas_por_estado(tareas, [])
+        self.assertEqual(sin_filtro["id"].tolist(), ["1", "2"])
+
+        activas = filtrar_tareas_por_estado(tareas, ["Activas"])
+        self.assertEqual(activas["id"].tolist(), ["1", "2"])
+
+        finalizadas = filtrar_tareas_por_estado(tareas, ["Finalizada"])
+        self.assertEqual(finalizadas["id"].tolist(), ["3"])
+
+        combinadas = filtrar_tareas_por_estado(
+            tareas,
+            ["Pendiente", "Finalizada"],
+        )
+        self.assertEqual(combinadas["id"].tolist(), ["1", "3"])
 
 
 if __name__ == "__main__":
