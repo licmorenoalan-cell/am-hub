@@ -6134,8 +6134,56 @@ def render_objetivos(cliente="", modo="cliente"):
     st.markdown("### Plan de trabajo")
 
     if objetivos_vista.empty:
-        st.info(
-            "No hay frentes de trabajo para los filtros seleccionados."
+        filtros_activos = []
+        for etiqueta, valores in [
+            ("Cliente", clientes_filtro),
+            ("Estado", estados_filtro),
+            ("Prioridad", prioridades_filtro),
+            ("Responsable AM", responsables_am_filtro),
+            ("Responsable cliente", responsables_cliente_filtro),
+            ("Mes", meses_filtro),
+            ("Fecha", fechas_filtro),
+        ]:
+            if valores:
+                filtros_activos.append(
+                    f"{etiqueta}: {' o '.join(map(str, valores))}"
+                )
+
+        if str(busqueda_objetivos or "").strip():
+            filtros_activos.append(f"Búsqueda: {busqueda_objetivos}")
+
+        if filtros_activos:
+            st.warning(
+                "No hay coincidencias exactas. Los distintos filtros se "
+                "combinan entre sí con ‘Y’; las opciones dentro de un mismo "
+                "filtro se combinan con ‘O’."
+            )
+            st.caption(" · ".join(filtros_activos))
+        else:
+            st.info("No hay frentes de trabajo cargados.")
+
+        sufijo_filtros = f"{modo}_{cliente or 'admin'}"
+
+        def limpiar_filtros_plan():
+            st.session_state[f"buscar_objetivos_{sufijo_filtros}"] = ""
+            st.session_state[f"objetivos_cliente_multi_{sufijo_filtros}"] = []
+            st.session_state[f"objetivos_estado_multi_{sufijo_filtros}"] = [
+                "Pendiente",
+                "En curso",
+                "En revisión",
+                "Pausado",
+            ]
+            st.session_state[f"objetivos_prioridad_multi_{sufijo_filtros}"] = []
+            st.session_state[f"objetivos_resp_am_multi_{sufijo_filtros}"] = []
+            st.session_state[f"objetivos_resp_cliente_multi_{sufijo_filtros}"] = []
+            st.session_state[f"objetivos_mes_multi_{sufijo_filtros}"] = []
+            st.session_state[f"objetivos_fecha_multi_{sufijo_filtros}"] = []
+
+        st.button(
+            "Limpiar filtros",
+            key=f"limpiar_objetivos_{sufijo_filtros}",
+            on_click=limpiar_filtros_plan,
+            use_container_width=True,
         )
         return
 
