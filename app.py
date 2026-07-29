@@ -11096,7 +11096,13 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
             .tolist()
         )
 
-    max_columnas = 4
+    # Al organizar por vencimiento, las tareas sin fecha quedan en una fila
+    # aparte para que las tres columnas temporales sean más anchas y ágiles.
+    max_columnas = (
+        3
+        if criterio_columnas == "Fecha de vencimiento"
+        else 4
+    )
 
     for inicio_grupo in range(
         0,
@@ -11107,6 +11113,17 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
             inicio_grupo:
             inicio_grupo + max_columnas
         ]
+
+        if (
+            criterio_columnas == "Fecha de vencimiento"
+            and grupos_fila == ["Sin fecha"]
+        ):
+            st.divider()
+            st.markdown("### Tareas pendientes de fecha")
+            st.caption(
+                "Quedan separadas del tablero de vencimientos. "
+                "Abrí una tarjeta para asignarle una fecha límite."
+            )
 
         columnas = st.columns(
             len(grupos_fila)
@@ -11173,7 +11190,15 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
                 )
 
             with columnas[indice]:
-                st.markdown(f"#### {grupo}")
+                titulo_grupo = (
+                    "Sin fecha asignada"
+                    if (
+                        criterio_columnas == "Fecha de vencimiento"
+                        and grupo == "Sin fecha"
+                    )
+                    else grupo
+                )
+                st.markdown(f"#### {titulo_grupo}")
                 total_grupo = len(subset)
                 subset_visible = subset.head(
                     int(limite_por_columna)
