@@ -11277,11 +11277,20 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
                     "_",
                     str(grupo),
                 ).strip("_")
-                if st.toggle(
-                    "Ordenar manualmente",
-                    key=f"ordenar_tareas_{modo}_{clave_grupo}",
-                    help="Activá y arrastrá para elegir qué tarea aparece primero.",
-                ):
+                orden_manual_activo = role == "admin_general"
+                if not orden_manual_activo:
+                    orden_manual_activo = st.toggle(
+                        "Ordenar manualmente",
+                        key=f"ordenar_tareas_{modo}_{clave_grupo}",
+                        help=(
+                            "Activá y arrastrá para elegir qué tarea "
+                            "aparece primero."
+                        ),
+                    )
+
+                if orden_manual_activo:
+                    if role == "admin_general":
+                        st.caption("↕ Arrastrá para ordenar las tarjetas")
                     filas_ordenables = subset_visible.copy()
                     etiquetas = []
                     ids_por_etiqueta = {}
