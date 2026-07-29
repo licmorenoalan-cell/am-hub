@@ -11277,7 +11277,8 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
                     "_",
                     str(grupo),
                 ).strip("_")
-                orden_manual_activo = role == "admin_general"
+                es_administrador = role in ["admin_general", "admin"]
+                orden_manual_activo = es_administrador
                 if not orden_manual_activo:
                     orden_manual_activo = st.toggle(
                         "Ordenar manualmente",
@@ -11289,7 +11290,7 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
                     )
 
                 if orden_manual_activo:
-                    if role == "admin_general":
+                    if es_administrador:
                         st.caption("↕ Arrastrá para ordenar las tarjetas")
                     filas_ordenables = subset_visible.copy()
                     etiquetas = []
