@@ -12,6 +12,7 @@ import re
 import logging
 import html
 import uuid
+from streamlit_sortables import sort_items
 
 from am_hub_core import (
     buscar_dataframe,
@@ -188,6 +189,21 @@ def asegurar_columnas_objetivos_postgres():
                 '"responsable_am" TEXT, '
                 'ADD COLUMN IF NOT EXISTS '
                 '"responsable_cliente" TEXT'
+            )
+        )
+
+    return True
+
+
+@st.cache_resource
+def asegurar_columnas_tareas_postgres():
+    engine = get_postgres_engine()
+
+    with engine.begin() as conn:
+        conn.execute(
+            sql_text(
+                'ALTER TABLE "tareas" '
+                'ADD COLUMN IF NOT EXISTS "orden_manual" TEXT'
             )
         )
 
@@ -9538,6 +9554,7 @@ def columnas_tareas_internas():
         "creado_por",
         "fecha_actualizacion",
         "actualizado_por",
+        "orden_manual",
     ]
 
 
@@ -9859,9 +9876,43 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
     usuarios_equipo = usuarios_equipo_disponibles()
     responsables = ["Sin asignar"] + usuarios_equipo
 
+    if usar_postgres():
+        asegurar_columnas_tareas_postgres()
+
     tareas_full = normalizar_tareas_internas(
         cargar_tareas_internas()
     )
+
+    def guardar_orden_manual(ids_ordenados):
+        ids_ordenados = [str(valor) for valor in ids_ordenados]
+
+        if usar_postgres():
+            with get_postgres_engine().begin() as conn:
+                conn.execute(
+                    sql_text(
+                        'UPDATE "tareas" SET "orden_manual" = :orden '
+                        'WHERE "id" = :tarea_id'
+                    ),
+                    [
+                        {"orden": str(indice), "tarea_id": tarea_id}
+                        for indice, tarea_id in enumerate(ids_ordenados, start=1)
+                    ],
+                )
+            _limpiar_cache_postgres()
+            return
+
+        tareas_ordenadas = normalizar_tareas_internas(
+            cargar_tareas_internas()
+        )
+        mapa_orden = {
+            tarea_id: str(indice)
+            for indice, tarea_id in enumerate(ids_ordenados, start=1)
+        }
+        mascara = tareas_ordenadas["id"].astype(str).isin(mapa_orden)
+        tareas_ordenadas.loc[mascara, "orden_manual"] = (
+            tareas_ordenadas.loc[mascara, "id"].astype(str).map(mapa_orden)
+        )
+        save_csv(tareas_ordenadas, TAREAS_PATH)
 
     if "unidad" not in tareas_full.columns:
         tareas_full["unidad"] = ""
@@ -11169,6 +11220,10 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
             }
 
             if not subset.empty:
+                subset["_orden_manual"] = pd.to_numeric(
+                    subset["orden_manual"],
+                    errors="coerce",
+                )
                 subset["_orden_prioridad"] = (
                     subset["prioridad"]
                     .map(orden_prioridad)
@@ -11182,10 +11237,11 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
 
                 subset = subset.sort_values(
                     [
+                        "_orden_manual",
                         "_orden_prioridad",
                         "_orden_fecha",
                     ],
-                    ascending=[True, True],
+                    ascending=[True, True, True],
                     na_position="last",
                 )
 
@@ -11215,6 +11271,47 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
                 if subset.empty:
                     st.caption("Sin tareas.")
                     continue
+
+                clave_grupo = re.sub(
+                    r"[^a-zA-Z0-9]+",
+                    "_",
+                    str(grupo),
+                ).strip("_")
+                if st.toggle(
+                    "Ordenar manualmente",
+                    key=f"ordenar_tareas_{modo}_{clave_grupo}",
+                    help="Activá y arrastrá para elegir qué tarea aparece primero.",
+                ):
+                    filas_ordenables = subset_visible.copy()
+                    etiquetas = []
+                    ids_por_etiqueta = {}
+                    for posicion, (_, fila_orden) in enumerate(
+                        filas_ordenables.iterrows(),
+                        start=1,
+                    ):
+                        tarea_id_orden = str(fila_orden.get("id", ""))
+                        etiqueta_orden = (
+                            f"{posicion}. {fila_orden.get('tarea', 'Sin título')} "
+                            f"· {tarea_id_orden[-6:]}"
+                        )
+                        etiquetas.append(etiqueta_orden)
+                        ids_por_etiqueta[etiqueta_orden] = tarea_id_orden
+
+                    etiquetas_ordenadas = sort_items(
+                        etiquetas,
+                        direction="vertical",
+                        key=f"arrastrar_tareas_{modo}_{clave_grupo}",
+                        custom_style=(
+                            ".sortable-item { padding: 10px; margin: 6px 0; "
+                            "border-radius: 8px; cursor: grab; }"
+                        ),
+                    )
+                    ids_actuales = [ids_por_etiqueta[item] for item in etiquetas]
+                    ids_nuevos = [ids_por_etiqueta[item] for item in etiquetas_ordenadas]
+                    if ids_nuevos != ids_actuales:
+                        guardar_orden_manual(ids_nuevos)
+                        st.toast("Orden guardado")
+                        st.rerun()
 
                 for _, row in subset_visible.iterrows():
                     tarea_id = str(
