@@ -12,9 +12,15 @@ from am_hub_core import (
     normalizar_dataframe,
     validar_identificador_sql,
 )
+from am_hub_i18n import normalize_language, translate
 
 
 class CoreTests(unittest.TestCase):
+    def test_traduccion_local_preserva_valores_desconocidos(self):
+        self.assertEqual(translate("Pendiente", "en"), "Pending")
+        self.assertEqual(translate("Cliente inventado", "en"), "Cliente inventado")
+        self.assertEqual(normalize_language("English"), "en")
+
     def test_normalizar_dataframe_agrega_requeridas_y_conserva_extras(self):
         original = pd.DataFrame([{"extra": "x", "id": "1"}])
         resultado = normalizar_dataframe(original, ["id", "cliente"])

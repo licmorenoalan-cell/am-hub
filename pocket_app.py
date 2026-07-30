@@ -8,6 +8,7 @@ import re
 import pandas as pd
 import streamlit as st
 from sqlalchemy import create_engine, text
+from am_hub_i18n import LANGUAGES, normalize_language, translate
 
 
 st.set_page_config(
@@ -97,6 +98,19 @@ COLORES_UNIDAD = {
     "Comunidad": "🟩",
     "BRC Trading": "🟧",
 }
+
+
+def pocket_language() -> str:
+    return normalize_language(
+        st.session_state.get(
+            "pocket_language",
+            st.query_params.get("lang", "es"),
+        )
+    )
+
+
+def pocket_ui(texto: str) -> str:
+    return translate(texto, pocket_language())
 
 
 def get_secret(nombre: str, default: str = "") -> str:
@@ -745,26 +759,26 @@ def texto_fecha(valor: str) -> str:
     )
 
     if pd.isna(fecha):
-        return "Sin fecha"
+        return pocket_ui("Sin fecha")
 
     hoy = date.today()
     fecha_tarea = fecha.date()
     texto = fecha.strftime("%d/%m")
 
     if fecha_tarea < hoy:
-        return f"🔴 Vencida · {texto}"
+        return f"🔴 {'Overdue' if pocket_language() == 'en' else 'Vencida'} · {texto}"
 
     if fecha_tarea == hoy:
-        return f"🟠 Hoy · {texto}"
+        return f"🟠 {'Today' if pocket_language() == 'en' else 'Hoy'} · {texto}"
 
     return f"📅 {texto}"
 
 
 def texto_prioridad(valor: str) -> str:
     mapa = {
-        "Alta": "🔴 Alta",
-        "Media": "🟡 Media",
-        "Baja": "🟢 Baja",
+        "Alta": "🔴 " + pocket_ui("Alta"),
+        "Media": "🟡 " + pocket_ui("Media"),
+        "Baja": "🟢 " + pocket_ui("Baja"),
     }
 
     return mapa.get(
@@ -777,6 +791,21 @@ if not acceso_autorizado():
     st.stop()
 
 
+idioma_inicial = pocket_language()
+if "pocket_language" not in st.session_state:
+    st.session_state["pocket_language"] = idioma_inicial
+
+idioma_elegido = st.selectbox(
+    "Language / Idioma",
+    list(LANGUAGES.keys()),
+    format_func=lambda value: LANGUAGES[value],
+    key="pocket_language",
+)
+
+if idioma_elegido != normalize_language(st.query_params.get("lang", "es")):
+    st.query_params["lang"] = idioma_elegido
+
+
 asegurar_columnas()
 
 st.markdown(
@@ -784,18 +813,17 @@ st.markdown(
     unsafe_allow_html=True,
 )
 st.markdown(
-    '<p class="pocket-subtitle">'
-    "Capturá y administrá pendientes desde el celular."
-    "</p>",
+    f'<p class="pocket-subtitle">{pocket_ui("Capturá y administrá pendientes desde el celular.")}</p>',
     unsafe_allow_html=True,
 )
 
 pagina_pocket = st.radio(
-    "Vista",
+    pocket_ui("Vista"),
     [
         "📥 Capturar",
         "📋 Mi tablero",
     ],
+    format_func=pocket_ui,
     horizontal=True,
     label_visibility="collapsed",
     key="pocket_pagina",
@@ -819,20 +847,20 @@ if pagina_pocket == "📥 Capturar":
         border=False,
     ):
         pendiente = st.text_area(
-            "¿Qué tenés pendiente?",
-            placeholder="Escribí o dictá un pendiente...",
+            pocket_ui("¿Qué tenés pendiente?"),
+            placeholder="Type or dictate a task..." if pocket_language() == "en" else "Escribí o dictá un pendiente...",
             height=145,
             key="pocket_captura_confirmada",
         )
 
         una_por_linea = st.checkbox(
-            "Crear una tarjeta por línea",
+            pocket_ui("Crear una tarjeta por línea"),
             value=False,
             key="pocket_una_por_linea_confirmada",
         )
 
         crear_tarea = st.form_submit_button(
-            "Crear tarea",
+            pocket_ui("Crear tarea"),
             type="primary",
             use_container_width=True,
         )
@@ -898,7 +926,7 @@ if pagina_pocket == "📋 Mi tablero":
     tareas = cargar_tareas()
 
     if tareas.empty:
-        st.info("Todavía no hay tareas.")
+        st.info(pocket_ui("Todavía no hay tareas."))
         st.stop()
 
     unidades_disponibles = sorted(
@@ -980,11 +1008,11 @@ if pagina_pocket == "📋 Mi tablero":
     ])
 
     with st.expander(
-        "🔎 Filtros",
+        "🔎 " + pocket_ui("Filtros"),
         expanded=True,
     ):
         busqueda_tareas = st.text_input(
-            "Buscar tarjetas",
+            pocket_ui("Buscar tarjetas"),
             placeholder=(
                 "Tarea, cliente, responsable, categoría..."
             ),
@@ -995,7 +1023,7 @@ if pagina_pocket == "📋 Mi tablero":
 
         with f1:
             estados_filtro = st.multiselect(
-                "Estado",
+                pocket_ui("Estado"),
                 [
                     "Activas",
                     "A priorizar",
@@ -1006,12 +1034,13 @@ if pagina_pocket == "📋 Mi tablero":
                     "Finalizada",
                 ],
                 default=["Activas"],
+                format_func=pocket_ui,
                 key="pocket_filtro_estado_multi",
             )
 
         with f2:
             unidades_filtro = st.multiselect(
-                "Unidad",
+                pocket_ui("Unidad"),
                 unidades_disponibles,
                 default=[],
                 key="pocket_filtro_unidad_multi",
@@ -1021,16 +1050,17 @@ if pagina_pocket == "📋 Mi tablero":
 
         with f3:
             clientes_filtro = st.multiselect(
-                "Cliente",
+                pocket_ui("Cliente"),
                 ["Sin cliente"]
                 + clientes_disponibles,
                 default=[],
+                format_func=pocket_ui,
                 key="pocket_filtro_cliente_multi",
             )
 
         with f4:
             responsables_filtro = st.multiselect(
-                "Responsable",
+                pocket_ui("Responsable"),
                 responsables_disponibles,
                 default=[],
                 format_func=lambda valor: (
@@ -1046,23 +1076,25 @@ if pagina_pocket == "📋 Mi tablero":
 
         with f5:
             prioridades_filtro = st.multiselect(
-                "Prioridad",
+                pocket_ui("Prioridad"),
                 prioridades_disponibles,
                 default=[],
+                format_func=pocket_ui,
                 key="pocket_filtro_prioridad_multi",
             )
 
         with f6:
             categorias_filtro = st.multiselect(
-                "Categoría",
+                pocket_ui("Categoría"),
                 ["Sin categoría"]
                 + categorias_disponibles,
                 default=[],
+                format_func=pocket_ui,
                 key="pocket_filtro_categoria_multi",
             )
 
         fechas_filtro = st.multiselect(
-            "Fecha de vencimiento",
+            pocket_ui("Fecha de vencimiento"),
             [
                 "Vencidas",
                 "Vencen hoy",
@@ -1071,6 +1103,7 @@ if pagina_pocket == "📋 Mi tablero":
                 "Sin fecha",
             ],
             default=[],
+            format_func=pocket_ui,
             key="pocket_filtro_fecha_multi",
         )
 

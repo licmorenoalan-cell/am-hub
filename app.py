@@ -20,6 +20,15 @@ from am_hub_core import (
     normalizar_dataframe,
     validar_identificador_sql,
 )
+from am_hub_i18n import LANGUAGES, normalize_language, translate
+
+
+def current_language() -> str:
+    return normalize_language(st.session_state.get("language", "es"))
+
+
+def ui(text: str) -> str:
+    return translate(text, current_language())
 
 # ============================================================
 # Configuración general
@@ -1827,10 +1836,26 @@ def ensure_users_file():
     escribir_csv_atomico(pd.DataFrame(rows), USUARIOS_PATH)
 
 
+@st.cache_resource
+def asegurar_idioma_usuarios_postgres():
+    if not usar_postgres():
+        return
+
+    with get_postgres_engine().begin() as conn:
+        conn.execute(
+            sql_text(
+                'ALTER TABLE "usuarios" '
+                'ADD COLUMN IF NOT EXISTS "idioma" text'
+            )
+        )
+
+
 def load_users_df():
     ensure_users_file()
 
-    required_cols = ["username", "password", "role", "name", "cliente", "activo"]
+    asegurar_idioma_usuarios_postgres()
+
+    required_cols = ["username", "password", "role", "name", "cliente", "activo", "idioma"]
     df = read_csv(USUARIOS_PATH, required_cols).fillna("")
 
     for col in required_cols:
@@ -1838,12 +1863,13 @@ def load_users_df():
             df[col] = ""
 
     df["activo"] = df["activo"].replace({"": "Sí"})
+    df["idioma"] = df["idioma"].apply(normalize_language)
 
     return df[required_cols]
 
 
 def save_users_df(df):
-    required_cols = ["username", "password", "role", "name", "cliente", "activo"]
+    required_cols = ["username", "password", "role", "name", "cliente", "activo", "idioma"]
 
     clean = df.copy().fillna("")
 
@@ -1855,6 +1881,7 @@ def save_users_df(df):
     clean["username"] = clean["username"].astype(str).str.strip()
     clean["role"] = clean["role"].astype(str).str.strip()
     clean["activo"] = clean["activo"].astype(str).str.strip()
+    clean["idioma"] = clean["idioma"].apply(normalize_language)
 
     clean = clean[clean["username"] != ""]
     clean = clean.drop_duplicates(subset=["username"], keep="last")
@@ -1881,6 +1908,7 @@ def load_users():
             "role": str(row.get("role", "")),
             "name": str(row.get("name", "")),
             "cliente": str(row.get("cliente", "")),
+            "idioma": normalize_language(row.get("idioma", "es")),
         }
 
     return users
@@ -1979,6 +2007,10 @@ def login():
                 st.session_state["role"] = str(user.get("role", "")).strip()
                 st.session_state["name"] = str(user.get("name", "")).strip()
                 st.session_state["cliente"] = str(user.get("cliente", "")).strip()
+                st.session_state["language"] = normalize_language(
+                    user.get("idioma", "es")
+                )
+                st.session_state.pop("language_selector", None)
                 st.rerun()
             else:
                 st.error("Usuario o contraseña incorrectos, o usuario inactivo.")
@@ -1986,7 +2018,7 @@ def login():
 
 
 def logout_button():
-    if st.sidebar.button("Cerrar sesión", use_container_width=True):
+    if st.sidebar.button(ui("Cerrar sesión"), use_container_width=True):
         for k in [
             "logged_in",
             "auth",
@@ -1994,6 +2026,8 @@ def logout_button():
             "role",
             "name",
             "cliente",
+            "language",
+            "language_selector",
             "menu",
         ]:
             st.session_state.pop(k, None)
@@ -2283,6 +2317,32 @@ def menu_por_servicios_cliente_para_equipo(cliente_nombre):
     return limpio
 
 
+def guardar_idioma_usuario(username: str, idioma: str):
+    username = str(username or "").strip()
+    idioma = normalize_language(idioma)
+
+    if not username:
+        return
+
+    if usar_postgres():
+        asegurar_idioma_usuarios_postgres()
+        with get_postgres_engine().begin() as conn:
+            conn.execute(
+                sql_text(
+                    'UPDATE "usuarios" SET "idioma" = :idioma '
+                    'WHERE "username" = :username'
+                ),
+                {"idioma": idioma, "username": username},
+            )
+        _limpiar_cache_postgres()
+        return
+
+    usuarios = load_users_df()
+    mask = usuarios["username"].astype(str).eq(username)
+    usuarios.loc[mask, "idioma"] = idioma
+    save_users_df(usuarios)
+
+
 def sidebar():
     logo_path = ASSETS_DIR / "isologo_sidebar_limpio.png"
     if not logo_path.exists():
@@ -2311,6 +2371,26 @@ def sidebar():
 
     role = st.session_state.get("role")
 
+    if role in ["admin_general", "admin", "equipo"]:
+        idioma_actual = current_language()
+        if "language_selector" not in st.session_state:
+            st.session_state["language_selector"] = idioma_actual
+
+        idioma_elegido = st.sidebar.selectbox(
+            "Language / Idioma",
+            list(LANGUAGES.keys()),
+            format_func=lambda value: LANGUAGES[value],
+            key="language_selector",
+        )
+
+        if idioma_elegido != idioma_actual:
+            guardar_idioma_usuario(
+                st.session_state.get("username", ""),
+                idioma_elegido,
+            )
+            st.session_state["language"] = idioma_elegido
+            st.rerun()
+
     # Migra la selección guardada de sesiones abiertas antes del cambio de nombre.
     for menu_key in ["menu_cliente_v2", "menu_admin", "menu_equipo_cliente"]:
         if st.session_state.get(menu_key) == "Objetivos":
@@ -2335,13 +2415,14 @@ def sidebar():
             st.session_state["menu_cliente_v2"] = destino_menu_cliente
 
         menu = st.sidebar.radio(
-            "Menú",
+            ui("Menú"),
             opciones_cliente,
+            format_func=ui,
             key="menu_cliente_v2",
         )
     elif role in ["admin_general", "admin"]:
         menu = st.sidebar.radio(
-            "Menú",
+            ui("Menú"),
             [
                 "Dashboard AM",
                 "Edición rápida",
@@ -2359,6 +2440,7 @@ def sidebar():
                 "Actividad",
                 "Vista cliente",
             ],
+            format_func=ui,
             key="menu_admin",
         )
     else:
@@ -2369,7 +2451,7 @@ def sidebar():
             menu = "Sin clientes asignados"
         else:
             cliente_equipo = st.sidebar.selectbox(
-                "Cliente asignado",
+                ui("Cliente asignado"),
                 clientes_asignados,
                 key="cliente_equipo_activo",
             )
@@ -2391,7 +2473,7 @@ def sidebar():
                     border: 1px solid rgba(255,255,255,0.18);
                 ">
                     <div style="font-size: 0.72rem; text-transform: uppercase; letter-spacing: .08em; color: rgba(255,255,255,0.72);">
-                        Cliente activo
+                        {ui("Cliente activo")}
                     </div>
                     <div style="font-size: 1.02rem; font-weight: 800; color: white; margin-top: 3px; line-height: 1.2;">
                         {cliente_equipo_html}
@@ -2402,8 +2484,9 @@ def sidebar():
             )
 
             menu = st.sidebar.radio(
-                "Portal del cliente",
+                ui("Portal del cliente"),
                 menu_por_servicios_cliente_para_equipo(cliente_equipo),
+                format_func=ui,
                 key="menu_equipo_cliente",
             )
 
@@ -2418,8 +2501,8 @@ def sidebar():
     st.sidebar.markdown(
         f"""
         <div style="font-size: 0.9rem; line-height: 1.6;">
-            <strong>Usuario:</strong> {nombre_sidebar}<br>
-            <strong>Rol:</strong> {role_sidebar}
+            <strong>{ui("Usuario")}:</strong> {nombre_sidebar}<br>
+            <strong>{ui("Rol")}:</strong> {role_sidebar}
         </div>
         """,
         unsafe_allow_html=True,
@@ -2436,6 +2519,8 @@ def sidebar():
 
 
 def header(title, subtitle=""):
+    title = ui(title)
+    subtitle = ui(subtitle)
     st.markdown(
         f"""
         <div style="margin-bottom: 26px;">
@@ -4111,7 +4196,7 @@ def render_onboarding_cliente():
 
     usuarios_df = read_csv(
         USUARIOS_PATH,
-        ["username", "password", "role", "name", "cliente", "activo"],
+        ["username", "password", "role", "name", "cliente", "activo", "idioma"],
     )
 
     for col in ["servicio_digital", "servicio_consultoria", "servicio_contabilidad"]:
@@ -4255,6 +4340,7 @@ def render_onboarding_cliente():
                     "name": name.strip() if name.strip() else cliente_limpio,
                     "cliente": cliente_limpio,
                     "activo": "Sí",
+                    "idioma": "es",
                 }
 
                 usuarios_actualizado = pd.concat(
@@ -4381,6 +4467,11 @@ def render_usuarios(clientes):
         with col3:
             cliente = st.selectbox("Cliente asociado solo si el rol es cliente", clientes_lista)
             activo = st.selectbox("Activo", ["Sí", "No"])
+            idioma = st.selectbox(
+                "Idioma",
+                list(LANGUAGES.keys()),
+                format_func=lambda value: LANGUAGES[value],
+            )
 
         st.markdown("#### Permisos para equipo interno")
         st.info("Los permisos del equipo se calculan según los clientes asignados. La asignación se gestiona más abajo.")
@@ -4409,6 +4500,7 @@ def render_usuarios(clientes):
                         "name": name,
                         "cliente": cliente,
                         "activo": activo,
+                        "idioma": idioma,
                         "permiso_todos": "Sí" if permiso_todos else "No",
                         "permiso_digital": "Sí" if permiso_digital else "No",
                         "permiso_consultoria": "Sí" if permiso_consultoria else "No",
@@ -4486,6 +4578,11 @@ def render_usuarios(clientes):
             "name": st.column_config.TextColumn("Nombre visible"),
             "cliente": st.column_config.SelectboxColumn("Cliente asociado solo para rol cliente", options=clientes_lista),
             "activo": st.column_config.SelectboxColumn("Activo", options=["Sí", "No"], required=True),
+            "idioma": st.column_config.SelectboxColumn(
+                "Idioma",
+                options=list(LANGUAGES.keys()),
+                required=True,
+            ),
             "permiso_todos": st.column_config.SelectboxColumn("Todos los servicios", options=["Sí", "No"], required=True),
             "permiso_digital": st.column_config.SelectboxColumn("Ecosistema digital", options=["Sí", "No"], required=True),
             "permiso_consultoria": st.column_config.SelectboxColumn("Consultoría", options=["Sí", "No"], required=True),
@@ -5414,7 +5511,7 @@ def render_objetivos(cliente="", modo="cliente"):
             else:
                 clientes_opciones = sorted(clientes_df["cliente"].dropna().astype(str).unique().tolist())
 
-        with st.expander("Crear nuevo frente de trabajo", expanded=False):
+        with st.expander(ui("Crear nuevo frente de trabajo"), expanded=False):
             if not clientes_opciones:
                 st.info("No hay clientes cargados.")
             else:
@@ -5428,8 +5525,8 @@ def render_objetivos(cliente="", modo="cliente"):
                         else:
                             cliente_sel = st.selectbox("Cliente", clientes_opciones)
 
-                        objetivo_txt = st.text_input("Frente de trabajo", placeholder="Ejemplo: análisis de régimen PADIC")
-                        descripcion = st.text_area("Descripción", placeholder="Detalle del frente, alcance o entregable esperado.")
+                        objetivo_txt = st.text_input(ui("Frente de trabajo"), placeholder="Example: review the operating model" if current_language() == "en" else "Ejemplo: análisis de régimen PADIC")
+                        descripcion = st.text_area(ui("Descripción"), placeholder="Workstream scope or expected deliverable." if current_language() == "en" else "Detalle del frente, alcance o entregable esperado.")
                         checklist_txt = st.text_area(
                             "Checklist / workflow",
                             placeholder="Un paso por línea. Ejemplo:\nRelevar información inicial\nAnalizar normativa\nPreparar informe\nRevisar con cliente",
@@ -5439,12 +5536,12 @@ def render_objetivos(cliente="", modo="cliente"):
                     with c2:
                         mes_ref = st.text_input("Mes", value=date.today().strftime("%Y-%m"))
                         responsable_am = st.text_input(
-                            "Responsable AM",
+                            ui("Responsable AM"),
                             value=nombre_usuario or "AM Consultora",
                         )
 
                         responsable_cliente = st.text_input(
-                            "Responsable del cliente",
+                            ui("Responsable del cliente"),
                             placeholder=(
                                 "Persona del cliente que participa "
                                 "o debe validar"
@@ -5452,14 +5549,15 @@ def render_objetivos(cliente="", modo="cliente"):
                         )
 
                         prioridad = st.selectbox(
-                            "Prioridad",
+                            ui("Prioridad"),
                             prioridades,
                             index=1,
+                            format_func=ui,
                         )
-                        estado = st.selectbox("Estado inicial", estados)
-                        fecha_limite = st.date_input("Fecha límite", value=date.today())
+                        estado = st.selectbox(ui("Estado inicial"), estados, format_func=ui)
+                        fecha_limite = st.date_input(ui("Fecha límite"), value=date.today())
 
-                    crear = st.form_submit_button("Crear frente de trabajo", use_container_width=True)
+                    crear = st.form_submit_button(ui("Crear frente de trabajo"), use_container_width=True)
 
                     if crear:
                         if not objetivo_txt.strip():
@@ -5750,7 +5848,7 @@ def render_objetivos(cliente="", modo="cliente"):
         ].copy()
 
     busqueda_objetivos = st.text_input(
-        "🔎 Buscar en el plan de trabajo",
+        "🔎 " + ui("Buscar en el plan de trabajo"),
         placeholder=(
             "Frente, descripción, responsable, "
             "cliente o comentario..."
@@ -5781,7 +5879,7 @@ def render_objetivos(cliente="", modo="cliente"):
             )
 
             clientes_filtro = st.multiselect(
-                "Cliente",
+                ui("Cliente"),
                 clientes_lista,
                 default=[],
                 key=(
@@ -5795,7 +5893,7 @@ def render_objetivos(cliente="", modo="cliente"):
 
     with f2:
         estados_filtro = st.multiselect(
-            "Estado",
+            ui("Estado"),
             estados,
             default=[
                 "Pendiente",
@@ -5803,6 +5901,7 @@ def render_objetivos(cliente="", modo="cliente"):
                 "En revisión",
                 "Pausado",
             ],
+            format_func=ui,
             key=(
                 f"objetivos_estado_multi_"
                 f"{modo}_{cliente or 'admin'}"
@@ -5811,9 +5910,10 @@ def render_objetivos(cliente="", modo="cliente"):
 
     with f3:
         prioridades_filtro = st.multiselect(
-            "Prioridad",
+            ui("Prioridad"),
             prioridades,
             default=[],
+            format_func=ui,
             key=(
                 f"objetivos_prioridad_multi_"
                 f"{modo}_{cliente or 'admin'}"
@@ -5854,7 +5954,7 @@ def render_objetivos(cliente="", modo="cliente"):
 
     with f4:
         responsables_am_filtro = st.multiselect(
-            "Responsable AM",
+            ui("Responsable AM"),
             responsables_am_disponibles,
             default=[],
             key=(
@@ -10279,7 +10379,7 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
     # ========================================================
 
     with st.container(border=True):
-        st.markdown("### 📥 Captura rápida")
+        st.markdown("### 📥 " + ui("Captura rápida"))
 
         mensaje_captura = st.session_state.pop(
             "mensaje_captura_rapida",
@@ -10308,7 +10408,7 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
             st.session_state[clave_captura] = ""
 
         captura_rapida = st.text_area(
-            "¿Qué tenés pendiente?",
+            ui("¿Qué tenés pendiente?"),
             placeholder=(
                 "Ejemplo: revisar el presupuesto de pauta de Ritual"
             ),
@@ -10324,14 +10424,14 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
 
         with captura_opciones:
             una_por_linea = st.checkbox(
-                "Crear una tarjeta por cada línea",
+                ui("Crear una tarjeta por cada línea"),
                 value=False,
                 key=f"captura_por_linea_{modo}_{cliente_fijo}",
             )
 
         with captura_boton:
             crear_captura = st.button(
-                "Crear tarjeta",
+                ui("Crear tarjeta"),
                 type="primary",
                 use_container_width=True,
                 key=f"crear_captura_{modo}_{cliente_fijo}",
@@ -10479,7 +10579,7 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
 
             with col_1:
                 unidad_sel = st.selectbox(
-                    "Unidad",
+                    ui("Unidad"),
                     unidades_opciones
                     + ["Agregar nueva unidad"],
                     key=(
@@ -10561,14 +10661,15 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
 
             with col_2:
                 responsable_sel = st.selectbox(
-                    "Responsable",
+                    ui("Responsable"),
                     responsables,
                 )
 
                 prioridad_sel = st.selectbox(
-                    "Prioridad",
+                    ui("Prioridad"),
                     prioridades,
                     index=1,
+                    format_func=ui,
                 )
 
                 fecha_limite = st.date_input(
@@ -10582,18 +10683,19 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
                 )
 
                 es_recurrente = st.checkbox(
-                    "Tarea recurrente",
+                    ui("Tarea recurrente"),
                     value=False,
                 )
 
                 if es_recurrente:
                     frecuencia_sel = st.selectbox(
-                        "Frecuencia",
+                        ui("Frecuencia"),
                         frecuencias,
+                        format_func=ui,
                     )
 
                     intervalo_sel = st.number_input(
-                        "Repetir cada",
+                        ui("Repetir cada"),
                         min_value=1,
                         max_value=24,
                         value=1,
@@ -10604,7 +10706,7 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
                     intervalo_sel = 1
 
             crear = st.form_submit_button(
-                "Crear tarea",
+                ui("Crear tarea"),
                 use_container_width=True,
             )
 
@@ -10711,11 +10813,11 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
     # Filtros
     # ========================================================
 
-    st.markdown("### Tablero")
+    st.markdown("### " + ("Board" if current_language() == "en" else "Tablero"))
 
     busqueda_tareas = st.text_input(
-        "🔎 Buscar tarjetas",
-        placeholder="Título, descripción, cliente, responsable...",
+        "🔎 " + ui("Buscar tarjetas"),
+        placeholder="Title, description, client, owner..." if current_language() == "en" else "Título, descripción, cliente, responsable...",
         key=f"busqueda_tareas_visible_{modo}_{cliente_fijo}",
     )
 
@@ -10724,7 +10826,7 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
 
     with f1:
         estados_filtro = st.multiselect(
-            "Estado",
+            ui("Estado"),
             [
                 "Activas",
                 "A priorizar",
@@ -10735,12 +10837,13 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
                 "Finalizada",
             ],
             default=["Activas"],
+            format_func=ui,
             key=f"filtro_estado_tareas_multi_{modo}",
         )
 
     with f2:
         unidades_filtro = st.multiselect(
-            "Unidad",
+            ui("Unidad"),
             unidades_opciones,
             default=[],
             key=f"filtro_unidad_tareas_multi_{modo}",
@@ -10770,9 +10873,10 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
 
     with f3:
         clientes_filtro = st.multiselect(
-            "Cliente",
+            ui("Cliente"),
             ["Sin cliente"] + clientes_en_tareas,
             default=[],
+            format_func=ui,
             key=f"filtro_cliente_tareas_multi_{modo}",
         )
 
@@ -10789,17 +10893,19 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
 
     with f4:
         responsables_filtro = st.multiselect(
-            "Responsable",
+            ui("Responsable"),
             responsables_disponibles,
             default=[],
+            format_func=ui,
             key=f"filtro_responsable_tareas_multi_{modo}",
         )
 
     with f5:
         prioridades_filtro = st.multiselect(
-            "Prioridad",
+            ui("Prioridad"),
             prioridades,
             default=[],
+            format_func=ui,
             key=f"filtro_prioridad_tareas_multi_{modo}",
         )
 
@@ -10977,13 +11083,14 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
     # ========================================================
 
     criterio_columnas = st.radio(
-        "Organizar columnas por",
+        ui("Organizar tarjetas por"),
         [
             "Estado",
             "Fecha de vencimiento",
             "Unidad",
             "Cliente",
         ],
+        format_func=ui,
         horizontal=True,
         key=f"criterio_tareas_{modo}",
     )
@@ -11037,17 +11144,17 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
         )
 
         if pd.isna(fecha):
-            return "⚪ Sin fecha"
+            return "⚪ " + ui("Sin fecha")
 
         hoy = date.today()
         fecha_tarea = fecha.date()
         fecha_txt = fecha.strftime("%d/%m")
 
         if fecha_tarea < hoy:
-            return f"🔴 Vencida · {fecha_txt}"
+            return f"🔴 {'Overdue' if current_language() == 'en' else 'Vencida'} · {fecha_txt}"
 
         if fecha_tarea == hoy:
-            return f"🟠 Hoy · {fecha_txt}"
+            return f"🟠 {'Today' if current_language() == 'en' else 'Hoy'} · {fecha_txt}"
 
         return f"📅 {fecha_txt}"
 
@@ -11055,9 +11162,9 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
         prioridad = str(valor or "Media")
 
         mapa = {
-            "Alta": "🔴 Alta",
-            "Media": "🟡 Media",
-            "Baja": "🟢 Baja",
+            "Alta": "🔴 " + ui("Alta"),
+            "Media": "🟡 " + ui("Media"),
+            "Baja": "🟢 " + ui("Baja"),
         }
 
         return mapa.get(
@@ -11198,7 +11305,7 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
                     )
                     else grupo
                 )
-                st.markdown(f"#### {titulo_grupo}")
+                st.markdown(f"#### {ui(titulo_grupo)}")
                 total_grupo = len(subset)
                 subset_visible = subset.head(
                     int(limite_por_columna)
@@ -11395,9 +11502,9 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
                         st.caption(resumen_linea)
 
                         texto_boton = (
-                            "Cerrar"
+                            ("Close" if current_language() == "en" else "Cerrar")
                             if tarjeta_abierta
-                            else "Abrir"
+                            else ("Open" if current_language() == "en" else "Abrir")
                         )
 
                         if st.button(
@@ -11456,7 +11563,7 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
                                 )
 
                             nueva_unidad = st.selectbox(
-                                "Unidad",
+                                ui("Unidad"),
                                 unidades_edicion,
                                 index=(
                                     unidades_edicion.index(
@@ -11473,7 +11580,7 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
                             )
 
                             nueva_prioridad = st.selectbox(
-                                "Prioridad",
+                                ui("Prioridad"),
                                 prioridades,
                                 index=(
                                     prioridades.index(
@@ -11483,6 +11590,7 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
                                     in prioridades
                                     else 1
                                 ),
+                                format_func=ui,
                                 key=(
                                     f"prioridad_detalle_"
                                     f"{tarea_id}"
@@ -11490,7 +11598,7 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
                             )
 
                             nuevo_estado = st.selectbox(
-                                "Estado / columna",
+                                "Status / column" if current_language() == "en" else "Estado / columna",
                                 estados_kanban,
                                 index=(
                                     estados_kanban.index(
@@ -11500,6 +11608,7 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
                                     in estados_kanban
                                     else 0
                                 ),
+                                format_func=ui,
                                 key=(
                                     f"estado_detalle_"
                                     f"{tarea_id}"
@@ -11507,7 +11616,7 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
                             )
 
                             nueva_descripcion = st.text_area(
-                                "Descripción",
+                                ui("Descripción"),
                                 value=descripcion_txt,
                                 height=100,
                                 key=(
@@ -11517,7 +11626,7 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
                             )
 
                             nueva_categoria = st.text_input(
-                                "Categoría",
+                                ui("Categoría"),
                                 value=categoria_txt,
                                 key=(
                                     f"categoria_detalle_"
