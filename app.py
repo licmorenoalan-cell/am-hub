@@ -864,6 +864,16 @@ st.markdown(
             color: white !important;
         }}
 
+        section[data-testid="stSidebar"] div[data-baseweb="select"] > div {{
+            background: rgba(255, 255, 255, 0.12) !important;
+            border-color: rgba(255, 255, 255, 0.34) !important;
+        }}
+
+        section[data-testid="stSidebar"] div[data-baseweb="select"] > div:hover {{
+            background: rgba(255, 255, 255, 0.18) !important;
+            border-color: rgba(255, 255, 255, 0.52) !important;
+        }}
+
         .main-title {{
             font-size: 2.1rem;
             font-weight: 800;
