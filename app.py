@@ -9790,6 +9790,8 @@ def siguiente_fecha_tarea(fecha_actual, frecuencia, intervalo=1):
         siguiente = fecha + pd.DateOffset(weeks=intervalo)
     elif frecuencia == "Mensual":
         siguiente = fecha + pd.DateOffset(months=intervalo)
+    elif frecuencia == "Semestral":
+        siguiente = fecha + pd.DateOffset(months=6 * intervalo)
     elif frecuencia == "Primer día hábil del mes":
         mes_objetivo = fecha + pd.DateOffset(months=intervalo)
         siguiente = pd.Timestamp(
@@ -9963,6 +9965,7 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
         "Diaria",
         "Semanal",
         "Mensual",
+        "Semestral",
         "Primer día hábil del mes",
         "Último día hábil del mes",
     ]

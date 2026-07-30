@@ -69,6 +69,7 @@ EN = {
     "Diaria": "Daily",
     "Semanal": "Weekly",
     "Mensual": "Monthly",
+    "Semestral": "Every six months",
     "Primer día hábil del mes": "First business day of the month",
     "Último día hábil del mes": "Last business day of the month",
     "Vencidas": "Overdue",
