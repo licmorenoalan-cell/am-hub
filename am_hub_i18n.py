@@ -70,6 +70,7 @@ EN = {
     "Semanal": "Weekly",
     "Mensual": "Monthly",
     "Primer día hábil del mes": "First business day of the month",
+    "Último día hábil del mes": "Last business day of the month",
     "Vencidas": "Overdue",
     "Vencen hoy": "Due today",
     "Próximos 7 días": "Next 7 days",

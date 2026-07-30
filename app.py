@@ -9799,6 +9799,18 @@ def siguiente_fecha_tarea(fecha_actual, frecuencia, intervalo=1):
         )
         while siguiente.weekday() >= 5:
             siguiente += pd.DateOffset(days=1)
+    elif frecuencia == "Último día hábil del mes":
+        mes_objetivo = fecha + pd.DateOffset(months=intervalo)
+        siguiente = (
+            pd.Timestamp(
+                year=mes_objetivo.year,
+                month=mes_objetivo.month,
+                day=1,
+            )
+            + pd.offsets.MonthEnd(1)
+        )
+        while siguiente.weekday() >= 5:
+            siguiente -= pd.DateOffset(days=1)
     else:
         siguiente = fecha
 
@@ -9952,6 +9964,7 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
         "Semanal",
         "Mensual",
         "Primer día hábil del mes",
+        "Último día hábil del mes",
     ]
 
     unidades_base = [
