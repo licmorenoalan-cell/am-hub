@@ -53,6 +53,22 @@ class CoreTests(unittest.TestCase):
             "2026-09-30",
         )
 
+    def test_recurrencia_semestral_alterna_febrero_y_agosto(self):
+        self.assertEqual(
+            _siguiente_fecha_tarea(
+                "2026-08-03",
+                "Semestral",
+            ),
+            "2027-02-03",
+        )
+        self.assertEqual(
+            _siguiente_fecha_tarea(
+                "2027-02-03",
+                "Semestral",
+            ),
+            "2027-08-03",
+        )
+
     def test_traduccion_local_preserva_valores_desconocidos(self):
         self.assertEqual(translate("Pendiente", "en"), "Pending")
         self.assertEqual(translate("Cliente inventado", "en"), "Cliente inventado")
