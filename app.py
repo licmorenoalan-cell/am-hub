@@ -583,6 +583,84 @@ def eliminar_adjuntos_de_tarea(tarea_id: str):
     cargar_archivo_tarea.clear()
 
 
+def duplicar_adjuntos_de_tarea(
+    tarea_origen_id: str,
+    tarea_destino_id: str,
+    cargado_por: str,
+) -> int:
+    """Copia adjuntos sólo al duplicar; no afecta la carga normal del tablero."""
+    origen = str(tarea_origen_id).strip()
+    destino = str(tarea_destino_id).strip()
+    if not origen or not destino:
+        return 0
+
+    if usar_postgres():
+        asegurar_tabla_tarea_archivos()
+        with get_postgres_engine().begin() as conn:
+            archivos = conn.execute(
+                sql_text(
+                    'SELECT "nombre", "tipo", "tamano", "contenido_base64" '
+                    'FROM "tarea_archivos" WHERE "tarea_id" = :tarea_id'
+                ),
+                {"tarea_id": origen},
+            ).mappings().all()
+            registros = [
+                {
+                    "id": f"ADJ-{uuid.uuid4().hex}",
+                    "tarea_id": destino,
+                    "nombre": str(archivo.get("nombre", "")),
+                    "tipo": str(archivo.get("tipo", "")),
+                    "tamano": int(archivo.get("tamano", 0) or 0),
+                    "contenido_base64": str(
+                        archivo.get("contenido_base64", "")
+                    ),
+                    "fecha_carga": pd.Timestamp.now(
+                        tz="America/Argentina/Buenos_Aires"
+                    ).isoformat(),
+                    "cargado_por": str(cargado_por),
+                }
+                for archivo in archivos
+            ]
+            if registros:
+                conn.execute(
+                    sql_text(
+                        'INSERT INTO "tarea_archivos" ('
+                        '"id", "tarea_id", "nombre", "tipo", "tamano", '
+                        '"contenido_base64", "fecha_carga", "cargado_por") '
+                        'VALUES (:id, :tarea_id, :nombre, :tipo, :tamano, '
+                        ':contenido_base64, :fecha_carga, :cargado_por)'
+                    ),
+                    registros,
+                )
+    else:
+        archivos = read_csv(TAREA_ARCHIVOS_PATH, TAREA_ARCHIVOS_COLUMNAS)
+        originales = archivos[
+            archivos["tarea_id"].astype(str).eq(origen)
+        ].copy()
+        registros = []
+        for _, archivo in originales.iterrows():
+            copia = archivo.to_dict()
+            copia["id"] = f"ADJ-{uuid.uuid4().hex}"
+            copia["tarea_id"] = destino
+            copia["fecha_carga"] = pd.Timestamp.now(
+                tz="America/Argentina/Buenos_Aires"
+            ).isoformat()
+            copia["cargado_por"] = str(cargado_por)
+            registros.append(copia)
+        if registros:
+            save_csv(
+                pd.concat(
+                    [archivos, pd.DataFrame(registros)],
+                    ignore_index=True,
+                ),
+                TAREA_ARCHIVOS_PATH,
+            )
+
+    cargar_adjuntos_tarea.clear()
+    cargar_archivo_tarea.clear()
+    return len(registros)
+
+
 def actualizar_postgres_por_id(tabla: str, registro_id: str, cambios: dict):
     """Actualiza una sola fila sin sincronizar ni borrar el resto de la tabla."""
     engine = get_postgres_engine()
@@ -10162,6 +10240,83 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
 
         return True, ""
 
+    def duplicar_tarea(row_tarea):
+        tarea_origen_id = str(row_tarea.get("id", "")).strip()
+        if not tarea_origen_id:
+            return False, "No se encontró la tarea original."
+
+        nueva_id = f"TAR-{uuid.uuid4().hex}"
+        nueva_tarea = {
+            columna: _normalizar_valor_postgres(
+                row_tarea.get(columna, "")
+            )
+            for columna in columnas_tareas_internas()
+        }
+        nueva_tarea["id"] = nueva_id
+        nueva_tarea["id_externo"] = ""
+        nueva_tarea["fecha_carga"] = date.today().strftime("%Y-%m-%d")
+        nueva_tarea["creado_por"] = nombre_usuario
+        nueva_tarea["fecha_actualizacion"] = date.today().strftime(
+            "%Y-%m-%d"
+        )
+        nueva_tarea["actualizado_por"] = nombre_usuario
+
+        if nueva_tarea.get("recurrente") == "Sí":
+            nueva_tarea["serie_id"] = f"SER-{uuid.uuid4().hex}"
+            nueva_tarea["ocurrencia"] = "1"
+
+        try:
+            if usar_postgres():
+                insertar_postgres_registros("tareas", [nueva_tarea])
+            else:
+                tareas_actualizadas = normalizar_tareas_internas(
+                    cargar_tareas_internas()
+                )
+                save_csv(
+                    pd.concat(
+                        [tareas_actualizadas, pd.DataFrame([nueva_tarea])],
+                        ignore_index=True,
+                    ),
+                    TAREAS_PATH,
+                )
+
+            cantidad_adjuntos = duplicar_adjuntos_de_tarea(
+                tarea_origen_id,
+                nueva_id,
+                nombre_usuario,
+            )
+            registrar_actividad(
+                "duplicar",
+                "tareas",
+                nueva_id,
+                (
+                    f"Origen: {tarea_origen_id}. "
+                    f"Adjuntos copiados: {cantidad_adjuntos}"
+                ),
+            )
+            return True, nueva_id
+        except Exception as exc:
+            try:
+                if usar_postgres():
+                    eliminar_postgres_por_id("tareas", nueva_id)
+                else:
+                    tareas_actualizadas = normalizar_tareas_internas(
+                        cargar_tareas_internas()
+                    )
+                    save_csv(
+                        tareas_actualizadas[
+                            ~tareas_actualizadas["id"].astype(str).eq(nueva_id)
+                        ].copy(),
+                        TAREAS_PATH,
+                    )
+                eliminar_adjuntos_de_tarea(nueva_id)
+            except Exception:
+                LOGGER.exception(
+                    "No se pudo revertir la duplicación de %s",
+                    tarea_origen_id,
+                )
+            return False, str(exc)
+
     # ========================================================
     # Helper: cambio rápido de estado
     # ========================================================
@@ -12181,6 +12336,27 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
 
                             if puede_eliminar_tareas:
                                 st.divider()
+                                if st.button(
+                                    "Duplicar tarjeta",
+                                    key=f"duplicar_tarea_{tarea_id}",
+                                    use_container_width=True,
+                                    help=(
+                                        "Crea una copia independiente con "
+                                        "los mismos datos y archivos."
+                                    ),
+                                ):
+                                    duplicada, resultado_duplicar = (
+                                        duplicar_tarea(row)
+                                    )
+                                    if duplicada:
+                                        st.session_state[
+                                            "tarea_abierta_id"
+                                        ] = resultado_duplicar
+                                        st.success("Tarjeta duplicada.")
+                                        st.rerun()
+                                    else:
+                                        st.error(resultado_duplicar)
+
                                 confirmar_eliminacion = (
                                     st.checkbox(
                                         "Confirmo eliminar esta tarjeta",
