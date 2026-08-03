@@ -10052,12 +10052,16 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
         "AM Consultora",
         "Comunidad",
         "BRC Trading",
+        "Universidad",
+        "Personal",
     ]
 
     colores_unidad = {
         "AM Consultora": "🟦",
         "Comunidad": "🟩",
         "BRC Trading": "🟧",
+        "Universidad": "🟪",
+        "Personal": "🟨",
     }
 
     usuarios_equipo = usuarios_equipo_disponibles()
@@ -10192,6 +10196,16 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
     for unidad in unidades_base + unidades_existentes:
         if unidad and unidad not in unidades_opciones:
             unidades_opciones.append(unidad)
+
+    proyectos_opciones = sorted(
+        tareas_full["proyecto"]
+        .dropna()
+        .astype(str)
+        .str.strip()
+        .loc[lambda serie: serie.ne("") & serie.ne("Sin proyecto")]
+        .unique()
+        .tolist()
+    )
 
     puede_eliminar_tareas = (
         modo == "admin"
@@ -11524,6 +11538,10 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
                         or "AM Consultora"
                     )
 
+                    proyecto_txt = str(
+                        row.get("proyecto", "") or ""
+                    ).strip()
+
                     cliente_txt = str(
                         row.get("cliente", "") or ""
                     )
@@ -11743,11 +11761,11 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
                                     unidad_txt
                                 )
 
-                            opcion_nuevo_proyecto = "Agregar nuevo proyecto"
-                            unidades_edicion.append(opcion_nuevo_proyecto)
+                            opcion_nueva_unidad = "Agregar nueva unidad"
+                            unidades_edicion.append(opcion_nueva_unidad)
 
                             nueva_unidad_seleccionada = st.selectbox(
-                                "Proyecto / unidad",
+                                ui("Unidad"),
                                 unidades_edicion,
                                 index=(
                                     unidades_edicion.index(
@@ -11765,14 +11783,41 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
 
                             if (
                                 nueva_unidad_seleccionada
-                                == opcion_nuevo_proyecto
+                                == opcion_nueva_unidad
                             ):
                                 nueva_unidad = st.text_input(
+                                    "Nombre de la nueva unidad",
+                                    key=f"nueva_unidad_detalle_{tarea_id}",
+                                ).strip()
+                            else:
+                                nueva_unidad = nueva_unidad_seleccionada
+
+                            proyectos_edicion = list(proyectos_opciones)
+                            if (
+                                proyecto_txt
+                                and proyecto_txt not in proyectos_edicion
+                            ):
+                                proyectos_edicion.append(proyecto_txt)
+                            opcion_nuevo_proyecto = "Agregar nuevo proyecto"
+                            proyectos_edicion.append(opcion_nuevo_proyecto)
+
+                            proyecto_seleccionado = st.selectbox(
+                                "Proyecto",
+                                proyectos_edicion,
+                                index=(
+                                    proyectos_edicion.index(proyecto_txt)
+                                    if proyecto_txt in proyectos_edicion
+                                    else 0
+                                ),
+                                key=f"proyecto_detalle_{tarea_id}",
+                            )
+                            if proyecto_seleccionado == opcion_nuevo_proyecto:
+                                nuevo_proyecto = st.text_input(
                                     "Nombre del nuevo proyecto",
                                     key=f"nuevo_proyecto_detalle_{tarea_id}",
                                 ).strip()
                             else:
-                                nueva_unidad = nueva_unidad_seleccionada
+                                nuevo_proyecto = proyecto_seleccionado
 
                             nueva_prioridad = st.selectbox(
                                 ui("Prioridad"),
@@ -12197,6 +12242,12 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
                                         )
                                         st.stop()
 
+                                    if not nuevo_proyecto.strip():
+                                        st.error(
+                                            "Ingresá el nombre del proyecto."
+                                        )
+                                        st.stop()
+
                                     tareas_actualizadas.loc[
                                         mask,
                                         "tarea",
@@ -12210,7 +12261,7 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
                                     tareas_actualizadas.loc[
                                         mask,
                                         "proyecto",
-                                    ] = nueva_unidad
+                                    ] = nuevo_proyecto
 
                                     tareas_actualizadas.loc[
                                         mask,
