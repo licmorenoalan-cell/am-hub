@@ -1702,12 +1702,23 @@ if pagina_pocket == "📋 Mi tablero":
                 if unidad not in unidades_tarjeta:
                     unidades_tarjeta.append(unidad)
 
-                unidad_editada = st.selectbox(
-                    "Unidad",
+                opcion_nuevo_proyecto = "Agregar nuevo proyecto"
+                unidades_tarjeta.append(opcion_nuevo_proyecto)
+
+                unidad_seleccionada = st.selectbox(
+                    "Proyecto / unidad",
                     unidades_tarjeta,
                     index=unidades_tarjeta.index(unidad),
                     key=f"pocket_unidad_{tarea_id}",
                 )
+
+                if unidad_seleccionada == opcion_nuevo_proyecto:
+                    unidad_editada = st.text_input(
+                        "Nombre del nuevo proyecto",
+                        key=f"pocket_nuevo_proyecto_{tarea_id}",
+                    ).strip()
+                else:
+                    unidad_editada = unidad_seleccionada
 
                 prioridad_editada = st.selectbox(
                     "Prioridad",
@@ -1801,6 +1812,10 @@ if pagina_pocket == "📋 Mi tablero":
                         f"{tarea_id}"
                     ),
                 ):
+                    if not unidad_editada.strip():
+                        st.error("Ingresá el nombre del proyecto.")
+                        st.stop()
+
                     actualizar_detalle_tarea(
                         tarea_id=tarea_id,
                         unidad=unidad_editada,
