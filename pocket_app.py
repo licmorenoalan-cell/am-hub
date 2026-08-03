@@ -659,6 +659,7 @@ def serializar_checklist(items):
 
 def actualizar_detalle_tarea(
     tarea_id,
+    unidad,
     estado,
     responsable,
     prioridad,
@@ -719,6 +720,8 @@ def actualizar_detalle_tarea(
                 """
                 UPDATE tareas
                 SET
+                    unidad = :unidad,
+                    proyecto = :proyecto,
                     estado = :estado,
                     responsable_am = :responsable,
                     prioridad = :prioridad,
@@ -733,6 +736,8 @@ def actualizar_detalle_tarea(
                 """
             ),
             {
+                "unidad": unidad,
+                "proyecto": unidad,
                 "estado": estado,
                 "responsable": responsable,
                 "prioridad": prioridad,
@@ -929,7 +934,7 @@ if pagina_pocket == "📋 Mi tablero":
         st.info(pocket_ui("Todavía no hay tareas."))
         st.stop()
 
-    unidades_disponibles = sorted(
+    unidades_existentes = (
         tareas["unidad"]
         .replace("", "AM Consultora")
         .astype(str)
@@ -938,6 +943,13 @@ if pagina_pocket == "📋 Mi tablero":
         .unique()
         .tolist()
     )
+    unidades_disponibles = []
+    for unidad_disponible in UNIDADES + sorted(unidades_existentes):
+        if (
+            unidad_disponible
+            and unidad_disponible not in unidades_disponibles
+        ):
+            unidades_disponibles.append(unidad_disponible)
 
     clientes_disponibles = sorted([
         valor
@@ -1686,6 +1698,17 @@ if pagina_pocket == "📋 Mi tablero":
                     ),
                 )
 
+                unidades_tarjeta = list(unidades_disponibles)
+                if unidad not in unidades_tarjeta:
+                    unidades_tarjeta.append(unidad)
+
+                unidad_editada = st.selectbox(
+                    "Unidad",
+                    unidades_tarjeta,
+                    index=unidades_tarjeta.index(unidad),
+                    key=f"pocket_unidad_{tarea_id}",
+                )
+
                 prioridad_editada = st.selectbox(
                     "Prioridad",
                     [
@@ -1732,14 +1755,20 @@ if pagina_pocket == "📋 Mi tablero":
                     ),
                 )
 
-                cliente_editado = st.text_input(
-                    "Cliente",
-                    value=cliente,
-                    key=(
-                        f"pocket_cliente_"
-                        f"{tarea_id}"
-                    ),
-                )
+                if unidad_editada == "AM Consultora":
+                    cliente_editado = st.text_input(
+                        "Cliente",
+                        value=cliente,
+                        key=(
+                            f"pocket_cliente_"
+                            f"{tarea_id}"
+                        ),
+                    )
+                else:
+                    cliente_editado = ""
+                    st.caption(
+                        "Esta unidad no requiere un cliente asociado."
+                    )
 
                 comentario_nuevo = st.text_area(
                     "Comentario",
@@ -1774,6 +1803,7 @@ if pagina_pocket == "📋 Mi tablero":
                 ):
                     actualizar_detalle_tarea(
                         tarea_id=tarea_id,
+                        unidad=unidad_editada,
                         estado=nuevo_estado,
                         responsable=responsable_editado,
                         prioridad=prioridad_editada,
