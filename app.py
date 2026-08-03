@@ -11743,8 +11743,11 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
                                     unidad_txt
                                 )
 
-                            nueva_unidad = st.selectbox(
-                                ui("Unidad"),
+                            opcion_nuevo_proyecto = "Agregar nuevo proyecto"
+                            unidades_edicion.append(opcion_nuevo_proyecto)
+
+                            nueva_unidad_seleccionada = st.selectbox(
+                                "Proyecto / unidad",
                                 unidades_edicion,
                                 index=(
                                     unidades_edicion.index(
@@ -11759,6 +11762,17 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
                                     f"{tarea_id}"
                                 ),
                             )
+
+                            if (
+                                nueva_unidad_seleccionada
+                                == opcion_nuevo_proyecto
+                            ):
+                                nueva_unidad = st.text_input(
+                                    "Nombre del nuevo proyecto",
+                                    key=f"nuevo_proyecto_detalle_{tarea_id}",
+                                ).strip()
+                            else:
+                                nueva_unidad = nueva_unidad_seleccionada
 
                             nueva_prioridad = st.selectbox(
                                 ui("Prioridad"),
@@ -12174,6 +12188,12 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
                                     if not nuevo_titulo.strip():
                                         st.error(
                                             "El título no puede quedar vacío."
+                                        )
+                                        st.stop()
+
+                                    if not nueva_unidad.strip():
+                                        st.error(
+                                            "Ingresá el nombre del proyecto."
                                         )
                                         st.stop()
 
