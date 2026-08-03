@@ -91,12 +91,16 @@ UNIDADES = [
     "AM Consultora",
     "Comunidad",
     "BRC Trading",
+    "Universidad",
+    "Personal",
 ]
 
 COLORES_UNIDAD = {
     "AM Consultora": "🟦",
     "Comunidad": "🟩",
     "BRC Trading": "🟧",
+    "Universidad": "🟪",
+    "Personal": "🟨",
 }
 
 
@@ -660,6 +664,7 @@ def serializar_checklist(items):
 def actualizar_detalle_tarea(
     tarea_id,
     unidad,
+    proyecto,
     estado,
     responsable,
     prioridad,
@@ -737,7 +742,7 @@ def actualizar_detalle_tarea(
             ),
             {
                 "unidad": unidad,
-                "proyecto": unidad,
+                "proyecto": proyecto,
                 "estado": estado,
                 "responsable": responsable,
                 "prioridad": prioridad,
@@ -950,6 +955,19 @@ if pagina_pocket == "📋 Mi tablero":
             and unidad_disponible not in unidades_disponibles
         ):
             unidades_disponibles.append(unidad_disponible)
+
+    proyectos_disponibles = sorted([
+        valor
+        for valor in (
+            tareas["proyecto"]
+            .fillna("")
+            .astype(str)
+            .str.strip()
+            .unique()
+            .tolist()
+        )
+        if valor and valor != "Sin proyecto"
+    ])
 
     clientes_disponibles = sorted([
         valor
@@ -1479,6 +1497,9 @@ if pagina_pocket == "📋 Mi tablero":
             )
             or "AM Consultora"
         )
+        proyecto = str(
+            row.get("proyecto", "") or ""
+        ).strip()
         cliente = str(
             row.get("cliente", "") or ""
         )
@@ -1702,23 +1723,47 @@ if pagina_pocket == "📋 Mi tablero":
                 if unidad not in unidades_tarjeta:
                     unidades_tarjeta.append(unidad)
 
-                opcion_nuevo_proyecto = "Agregar nuevo proyecto"
-                unidades_tarjeta.append(opcion_nuevo_proyecto)
+                opcion_nueva_unidad = "Agregar nueva unidad"
+                unidades_tarjeta.append(opcion_nueva_unidad)
 
                 unidad_seleccionada = st.selectbox(
-                    "Proyecto / unidad",
+                    "Unidad",
                     unidades_tarjeta,
                     index=unidades_tarjeta.index(unidad),
                     key=f"pocket_unidad_{tarea_id}",
                 )
 
-                if unidad_seleccionada == opcion_nuevo_proyecto:
+                if unidad_seleccionada == opcion_nueva_unidad:
                     unidad_editada = st.text_input(
+                        "Nombre de la nueva unidad",
+                        key=f"pocket_nueva_unidad_{tarea_id}",
+                    ).strip()
+                else:
+                    unidad_editada = unidad_seleccionada
+
+                proyectos_tarjeta = list(proyectos_disponibles)
+                if proyecto and proyecto not in proyectos_tarjeta:
+                    proyectos_tarjeta.append(proyecto)
+                opcion_nuevo_proyecto = "Agregar nuevo proyecto"
+                proyectos_tarjeta.append(opcion_nuevo_proyecto)
+
+                proyecto_seleccionado = st.selectbox(
+                    "Proyecto",
+                    proyectos_tarjeta,
+                    index=(
+                        proyectos_tarjeta.index(proyecto)
+                        if proyecto in proyectos_tarjeta
+                        else 0
+                    ),
+                    key=f"pocket_proyecto_{tarea_id}",
+                )
+                if proyecto_seleccionado == opcion_nuevo_proyecto:
+                    proyecto_editado = st.text_input(
                         "Nombre del nuevo proyecto",
                         key=f"pocket_nuevo_proyecto_{tarea_id}",
                     ).strip()
                 else:
-                    unidad_editada = unidad_seleccionada
+                    proyecto_editado = proyecto_seleccionado
 
                 prioridad_editada = st.selectbox(
                     "Prioridad",
@@ -1813,12 +1858,17 @@ if pagina_pocket == "📋 Mi tablero":
                     ),
                 ):
                     if not unidad_editada.strip():
+                        st.error("Ingresá el nombre de la unidad.")
+                        st.stop()
+
+                    if not proyecto_editado.strip():
                         st.error("Ingresá el nombre del proyecto.")
                         st.stop()
 
                     actualizar_detalle_tarea(
                         tarea_id=tarea_id,
                         unidad=unidad_editada,
+                        proyecto=proyecto_editado,
                         estado=nuevo_estado,
                         responsable=responsable_editado,
                         prioridad=prioridad_editada,
