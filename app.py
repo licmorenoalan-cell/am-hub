@@ -10432,6 +10432,108 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
 
         return True, ""
 
+    def eliminar_item_checklist(
+        tarea_id,
+        indice_item,
+    ):
+        try:
+            indice_item = int(indice_item)
+        except (TypeError, ValueError):
+            return False, "No se pudo identificar el ítem."
+
+        if usar_postgres():
+            try:
+                with get_postgres_engine().begin() as conn:
+                    fila = conn.execute(
+                        sql_text(
+                            'SELECT "checklist" FROM "tareas" '
+                            'WHERE "id" = :tarea_id FOR UPDATE'
+                        ),
+                        {"tarea_id": str(tarea_id)},
+                    ).mappings().first()
+
+                    if fila is None:
+                        return False, "No se encontró la tarea."
+
+                    items = parsear_checklist_tarea(
+                        fila.get("checklist", "")
+                    )
+
+                    if not 0 <= indice_item < len(items):
+                        return False, "No se encontró el ítem."
+
+                    items.pop(indice_item)
+                    avance = avance_checklist_tarea(items)
+
+                    conn.execute(
+                        sql_text(
+                            'UPDATE "tareas" SET '
+                            '"checklist" = :checklist, '
+                            '"avance" = :avance, '
+                            '"fecha_actualizacion" = :fecha, '
+                            '"actualizado_por" = :usuario '
+                            'WHERE "id" = :tarea_id'
+                        ),
+                        {
+                            "checklist": serializar_checklist_tarea(items),
+                            "avance": avance,
+                            "fecha": date.today().strftime("%Y-%m-%d"),
+                            "usuario": nombre_usuario,
+                            "tarea_id": str(tarea_id),
+                        },
+                    )
+
+                _limpiar_cache_postgres()
+                return True, ""
+            except Exception as exc:
+                LOGGER.exception(
+                    "No se pudo eliminar el ítem %s de la tarea %s",
+                    indice_item,
+                    tarea_id,
+                )
+                return False, str(exc)
+
+        tareas_actualizadas = normalizar_tareas_internas(
+            cargar_tareas_internas()
+        )
+
+        mask = (
+            tareas_actualizadas["id"]
+            .astype(str)
+            .eq(str(tarea_id))
+        )
+
+        if not mask.any():
+            return False, "No se encontró la tarea."
+
+        items = parsear_checklist_tarea(
+            tareas_actualizadas.loc[mask, "checklist"].iloc[0]
+        )
+
+        if not 0 <= indice_item < len(items):
+            return False, "No se encontró el ítem."
+
+        items.pop(indice_item)
+        tareas_actualizadas.loc[
+            mask,
+            "checklist",
+        ] = serializar_checklist_tarea(items)
+        tareas_actualizadas.loc[
+            mask,
+            "avance",
+        ] = avance_checklist_tarea(items)
+        tareas_actualizadas.loc[
+            mask,
+            "fecha_actualizacion",
+        ] = date.today().strftime("%Y-%m-%d")
+        tareas_actualizadas.loc[
+            mask,
+            "actualizado_por",
+        ] = nombre_usuario
+        save_csv(tareas_actualizadas, TAREAS_PATH)
+
+        return True, ""
+
     # ========================================================
     # Helper: cambio rápido de estado
     # ========================================================
@@ -12156,15 +12258,57 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
                                                         "error_checklist_inline"
                                                     ] = mensaje
 
-                                            st.text_input(
-                                                "Editar ítem",
-                                                key=clave_texto,
-                                                label_visibility="collapsed",
-                                                on_change=guardar_nombre_item,
-                                                help=(
-                                                    "Presioná Enter para guardar."
-                                                ),
+                                            editar_col, eliminar_col = (
+                                                st.columns(
+                                                    [8, 1],
+                                                    vertical_alignment="center",
+                                                )
                                             )
+
+                                            with editar_col:
+                                                st.text_input(
+                                                    "Editar ítem",
+                                                    key=clave_texto,
+                                                    label_visibility="collapsed",
+                                                    on_change=guardar_nombre_item,
+                                                    help=(
+                                                        "Presioná Enter para guardar."
+                                                    ),
+                                                )
+
+                                            with eliminar_col:
+                                                if st.button(
+                                                    "🗑",
+                                                    key=(
+                                                        f"eliminar_check_"
+                                                        f"{tarea_id}_{i}"
+                                                    ),
+                                                    help="Eliminar ítem",
+                                                    type="tertiary",
+                                                ):
+                                                    eliminado, mensaje = (
+                                                        eliminar_item_checklist(
+                                                            tarea_id,
+                                                            i,
+                                                        )
+                                                    )
+
+                                                    if eliminado:
+                                                        st.session_state[
+                                                            clave_edicion
+                                                        ] = False
+                                                        st.session_state.pop(
+                                                            clave_texto,
+                                                            None,
+                                                        )
+                                                        st.session_state[
+                                                            "mensaje_checklist_inline"
+                                                        ] = "Ítem eliminado."
+                                                        st.rerun()
+                                                    else:
+                                                        st.session_state[
+                                                            "error_checklist_inline"
+                                                        ] = mensaje
                                         else:
                                             if st.button(
                                                 texto_item,
