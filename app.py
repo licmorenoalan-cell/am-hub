@@ -12284,7 +12284,7 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
                                                         f"{tarea_id}_{i}"
                                                     ),
                                                     help="Eliminar ítem",
-                                                    type="tertiary",
+                                                    type="secondary",
                                                 ):
                                                     eliminado, mensaje = (
                                                         eliminar_item_checklist(
@@ -12316,7 +12316,7 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
                                                     f"abrir_edicion_check_"
                                                     f"{tarea_id}_{i}"
                                                 ),
-                                                type="tertiary",
+                                                type="secondary",
                                                 help="Editar nombre",
                                             ):
                                                 st.session_state[
