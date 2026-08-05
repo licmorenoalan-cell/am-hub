@@ -10331,6 +10331,107 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
                 )
             return False, str(exc)
 
+    def actualizar_texto_item_checklist(
+        tarea_id,
+        indice_item,
+        nuevo_texto,
+    ):
+        texto_limpio = str(nuevo_texto or "").strip()
+
+        if not texto_limpio:
+            return False, "El nombre del ítem no puede quedar vacío."
+
+        try:
+            indice_item = int(indice_item)
+        except (TypeError, ValueError):
+            return False, "No se pudo identificar el ítem."
+
+        if usar_postgres():
+            try:
+                with get_postgres_engine().begin() as conn:
+                    fila = conn.execute(
+                        sql_text(
+                            'SELECT "checklist" FROM "tareas" '
+                            'WHERE "id" = :tarea_id FOR UPDATE'
+                        ),
+                        {"tarea_id": str(tarea_id)},
+                    ).mappings().first()
+
+                    if fila is None:
+                        return False, "No se encontró la tarea."
+
+                    items = parsear_checklist_tarea(
+                        fila.get("checklist", "")
+                    )
+
+                    if not 0 <= indice_item < len(items):
+                        return False, "No se encontró el ítem."
+
+                    items[indice_item]["texto"] = texto_limpio
+
+                    conn.execute(
+                        sql_text(
+                            'UPDATE "tareas" SET '
+                            '"checklist" = :checklist, '
+                            '"fecha_actualizacion" = :fecha, '
+                            '"actualizado_por" = :usuario '
+                            'WHERE "id" = :tarea_id'
+                        ),
+                        {
+                            "checklist": serializar_checklist_tarea(items),
+                            "fecha": date.today().strftime("%Y-%m-%d"),
+                            "usuario": nombre_usuario,
+                            "tarea_id": str(tarea_id),
+                        },
+                    )
+
+                _limpiar_cache_postgres()
+                return True, ""
+            except Exception as exc:
+                LOGGER.exception(
+                    "No se pudo renombrar el ítem %s de la tarea %s",
+                    indice_item,
+                    tarea_id,
+                )
+                return False, str(exc)
+
+        tareas_actualizadas = normalizar_tareas_internas(
+            cargar_tareas_internas()
+        )
+
+        mask = (
+            tareas_actualizadas["id"]
+            .astype(str)
+            .eq(str(tarea_id))
+        )
+
+        if not mask.any():
+            return False, "No se encontró la tarea."
+
+        items = parsear_checklist_tarea(
+            tareas_actualizadas.loc[mask, "checklist"].iloc[0]
+        )
+
+        if not 0 <= indice_item < len(items):
+            return False, "No se encontró el ítem."
+
+        items[indice_item]["texto"] = texto_limpio
+        tareas_actualizadas.loc[
+            mask,
+            "checklist",
+        ] = serializar_checklist_tarea(items)
+        tareas_actualizadas.loc[
+            mask,
+            "fecha_actualizacion",
+        ] = date.today().strftime("%Y-%m-%d")
+        tareas_actualizadas.loc[
+            mask,
+            "actualizado_por",
+        ] = nombre_usuario
+        save_csv(tareas_actualizadas, TAREAS_PATH)
+
+        return True, ""
+
     # ========================================================
     # Helper: cambio rápido de estado
     # ========================================================
@@ -11725,6 +11826,25 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
                         if tarjeta_abierta:
                             st.divider()
 
+                            mensaje_checklist_inline = (
+                                st.session_state.pop(
+                                    "mensaje_checklist_inline",
+                                    "",
+                                )
+                            )
+                            error_checklist_inline = (
+                                st.session_state.pop(
+                                    "error_checklist_inline",
+                                    "",
+                                )
+                            )
+
+                            if mensaje_checklist_inline:
+                                st.success(mensaje_checklist_inline)
+
+                            if error_checklist_inline:
+                                st.error(error_checklist_inline)
+
                             if descripcion_txt:
                                 st.write(descripcion_txt)
 
@@ -11962,32 +12082,109 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
                                 for i, item in enumerate(
                                     checklist_items
                                 ):
-                                    marcado = st.checkbox(
-                                        str(
-                                            item.get(
-                                                "texto",
-                                                "",
-                                            )
-                                        ),
-                                        value=bool(
-                                            item.get(
-                                                "hecho",
-                                                False,
-                                            )
-                                        ),
-                                        key=(
-                                            f"check_detalle_"
-                                            f"{tarea_id}_{i}"
-                                        ),
+                                    texto_item = str(
+                                        item.get("texto", "")
+                                    ).strip()
+                                    clave_edicion = (
+                                        f"editar_check_detalle_"
+                                        f"{tarea_id}_{i}"
+                                    )
+                                    clave_texto = (
+                                        f"texto_check_detalle_"
+                                        f"{tarea_id}_{i}"
                                     )
 
-                                    checklist_actualizado.append({
-                                        "texto": str(
-                                            item.get(
-                                                "texto",
-                                                "",
+                                    check_item_col, texto_item_col = (
+                                        st.columns(
+                                            [1, 8],
+                                            vertical_alignment="center",
+                                        )
+                                    )
+
+                                    with check_item_col:
+                                        marcado = st.checkbox(
+                                            f"Completado: {texto_item}",
+                                            value=bool(
+                                                item.get(
+                                                    "hecho",
+                                                    False,
+                                                )
+                                            ),
+                                            key=(
+                                                f"check_detalle_"
+                                                f"{tarea_id}_{i}"
+                                            ),
+                                            label_visibility="collapsed",
+                                        )
+
+                                    with texto_item_col:
+                                        if st.session_state.get(
+                                            clave_edicion,
+                                            False,
+                                        ):
+                                            if clave_texto not in st.session_state:
+                                                st.session_state[
+                                                    clave_texto
+                                                ] = texto_item
+
+                                            def guardar_nombre_item(
+                                                tarea_id_actual=tarea_id,
+                                                indice_actual=i,
+                                                clave_texto_actual=clave_texto,
+                                                clave_edicion_actual=clave_edicion,
+                                            ):
+                                                guardado, mensaje = (
+                                                    actualizar_texto_item_checklist(
+                                                        tarea_id_actual,
+                                                        indice_actual,
+                                                        st.session_state.get(
+                                                            clave_texto_actual,
+                                                            "",
+                                                        ),
+                                                    )
+                                                )
+
+                                                if guardado:
+                                                    st.session_state[
+                                                        clave_edicion_actual
+                                                    ] = False
+                                                    st.session_state[
+                                                        "mensaje_checklist_inline"
+                                                    ] = "Ítem actualizado."
+                                                else:
+                                                    st.session_state[
+                                                        "error_checklist_inline"
+                                                    ] = mensaje
+
+                                            st.text_input(
+                                                "Editar ítem",
+                                                key=clave_texto,
+                                                label_visibility="collapsed",
+                                                on_change=guardar_nombre_item,
+                                                help=(
+                                                    "Presioná Enter para guardar."
+                                                ),
                                             )
-                                        ),
+                                        else:
+                                            if st.button(
+                                                texto_item,
+                                                key=(
+                                                    f"abrir_edicion_check_"
+                                                    f"{tarea_id}_{i}"
+                                                ),
+                                                type="tertiary",
+                                                help="Editar nombre",
+                                            ):
+                                                st.session_state[
+                                                    clave_texto
+                                                ] = texto_item
+                                                st.session_state[
+                                                    clave_edicion
+                                                ] = True
+                                                st.rerun()
+
+                                    checklist_actualizado.append({
+                                        "texto": texto_item,
                                         "hecho": marcado,
                                     })
                             else:
