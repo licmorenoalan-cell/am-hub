@@ -1062,6 +1062,29 @@ st.markdown(
             color: white;
         }}
 
+        /* Checklist interno: filas compactas sin afectar otros botones. */
+        div[class*="st-key-abrir_edicion_check_"] {{
+            margin-bottom: -0.65rem;
+        }}
+
+        div[class*="st-key-abrir_edicion_check_"] button {{
+            min-height: 2rem !important;
+            padding: 0.15rem 0.55rem !important;
+            justify-content: flex-start;
+            text-align: left;
+        }}
+
+        div[class*="st-key-check_detalle_"],
+        div[class*="st-key-texto_check_detalle_"],
+        div[class*="st-key-eliminar_check_"] {{
+            margin-bottom: -0.65rem;
+        }}
+
+        div[class*="st-key-eliminar_check_"] button {{
+            min-height: 2rem !important;
+            padding: 0.15rem 0.35rem !important;
+        }}
+
         @media (max-width: 768px) {{
             .block-container {{
                 padding-top: 1rem;
@@ -12196,6 +12219,18 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
                                         f"{tarea_id}_{i}"
                                     )
 
+                                    def abrir_edicion_item(
+                                        texto_actual=texto_item,
+                                        clave_texto_actual=clave_texto,
+                                        clave_edicion_actual=clave_edicion,
+                                    ):
+                                        st.session_state[
+                                            clave_texto_actual
+                                        ] = texto_actual
+                                        st.session_state[
+                                            clave_edicion_actual
+                                        ] = True
+
                                     (
                                         check_item_col,
                                         texto_item_col,
@@ -12203,6 +12238,7 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
                                     ) = (
                                         st.columns(
                                             [1, 7, 1],
+                                            gap="small",
                                             vertical_alignment="center",
                                         )
                                     )
@@ -12272,7 +12308,7 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
                                                 ),
                                             )
                                         else:
-                                            if st.button(
+                                            st.button(
                                                 texto_item,
                                                 key=(
                                                     f"abrir_edicion_check_"
@@ -12280,14 +12316,8 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
                                                 ),
                                                 type="secondary",
                                                 help="Editar nombre",
-                                            ):
-                                                st.session_state[
-                                                    clave_texto
-                                                ] = texto_item
-                                                st.session_state[
-                                                    clave_edicion
-                                                ] = True
-                                                st.rerun()
+                                                on_click=abrir_edicion_item,
+                                            )
 
                                     with accion_item_col:
                                         if st.session_state.get(
