@@ -774,6 +774,43 @@ def serializar_checklist(items):
     )
 
 
+def agregar_item_checklist_pocket(tarea_id, texto_item):
+    texto_limpio = str(texto_item or "").strip()
+    if not texto_limpio:
+        raise ValueError("Escribí el nombre del ítem.")
+
+    usuario = get_secret("POCKET_USERNAME", "alan")
+    hoy = date.today().strftime("%Y-%m-%d")
+    with get_engine().begin() as conn:
+        fila = conn.execute(
+            text(
+                'SELECT checklist FROM tareas WHERE id = :id FOR UPDATE'
+            ),
+            {"id": str(tarea_id)},
+        ).mappings().first()
+        if fila is None:
+            raise ValueError("No se encontró la tarea.")
+        items = parsear_checklist(fila.get("checklist", ""))
+        items.append({"texto": texto_limpio, "hecho": False})
+        completos = sum(1 for item in items if item.get("hecho"))
+        avance = int(round(completos * 100 / len(items))) if items else 0
+        conn.execute(
+            text(
+                'UPDATE tareas SET checklist = :checklist, '
+                'avance = :avance, fecha_actualizacion = :fecha, '
+                'actualizado_por = :usuario WHERE id = :id'
+            ),
+            {
+                "checklist": serializar_checklist(items),
+                "avance": avance,
+                "fecha": hoy,
+                "usuario": usuario,
+                "id": str(tarea_id),
+            },
+        )
+    limpiar_cache()
+
+
 def actualizar_detalle_tarea(
     tarea_id,
     unidad,
@@ -1790,9 +1827,58 @@ if pagina_pocket == "📋 Mi tablero":
                         })
                 else:
                     checklist_actualizado = []
-                    st.caption(
-                        "Sin checklist cargado."
+                    st.caption("Sin checklist cargado.")
+
+                mensaje_item_pocket = st.session_state.pop(
+                    "pocket_mensaje_item",
+                    "",
+                )
+                error_item_pocket = st.session_state.pop(
+                    "pocket_error_item",
+                    "",
+                )
+                if mensaje_item_pocket:
+                    st.success(mensaje_item_pocket)
+                if error_item_pocket:
+                    st.error(error_item_pocket)
+
+                clave_mostrar_item = f"pocket_mostrar_item_{tarea_id}"
+                clave_item = f"pocket_nuevo_item_{tarea_id}"
+                if st.session_state.get(clave_mostrar_item, False):
+                    def guardar_item_pocket(
+                        tarea_id_actual=tarea_id,
+                        clave_item_actual=clave_item,
+                        clave_mostrar_actual=clave_mostrar_item,
+                    ):
+                        try:
+                            agregar_item_checklist_pocket(
+                                tarea_id_actual,
+                                st.session_state.get(clave_item_actual, ""),
+                            )
+                            st.session_state[clave_item_actual] = ""
+                            st.session_state[clave_mostrar_actual] = False
+                            st.session_state[
+                                "pocket_mensaje_item"
+                            ] = "Ítem agregado."
+                        except Exception as exc:
+                            st.session_state[
+                                "pocket_error_item"
+                            ] = str(exc)
+
+                    st.text_input(
+                        "Nuevo ítem",
+                        placeholder="Escribí y presioná Enter",
+                        key=clave_item,
+                        on_change=guardar_item_pocket,
+                        label_visibility="collapsed",
                     )
+                elif st.button(
+                    "+ Agregar ítem",
+                    key=f"pocket_abrir_item_{tarea_id}",
+                    use_container_width=True,
+                ):
+                    st.session_state[clave_mostrar_item] = True
+                    st.rerun()
 
                 responsables_tarjeta_mapa = (
                     mapa_responsables_equipo()
