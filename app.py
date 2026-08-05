@@ -10490,6 +10490,75 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
 
         return True, ""
 
+    def agregar_item_checklist(tarea_id, texto_item):
+        texto_limpio = str(texto_item or "").strip()
+        if not texto_limpio:
+            return False, "Escribí el nombre del ítem."
+
+        if usar_postgres():
+            try:
+                with get_postgres_engine().begin() as conn:
+                    fila = conn.execute(
+                        sql_text(
+                            'SELECT "checklist" FROM "tareas" '
+                            'WHERE "id" = :tarea_id FOR UPDATE'
+                        ),
+                        {"tarea_id": str(tarea_id)},
+                    ).mappings().first()
+                    if fila is None:
+                        return False, "No se encontró la tarea."
+                    items = parsear_checklist_tarea(
+                        fila.get("checklist", "")
+                    )
+                    items.append({"texto": texto_limpio, "hecho": False})
+                    conn.execute(
+                        sql_text(
+                            'UPDATE "tareas" SET "checklist" = :checklist, '
+                            '"avance" = :avance, '
+                            '"fecha_actualizacion" = :fecha, '
+                            '"actualizado_por" = :usuario '
+                            'WHERE "id" = :tarea_id'
+                        ),
+                        {
+                            "checklist": serializar_checklist_tarea(items),
+                            "avance": avance_checklist_tarea(items),
+                            "fecha": date.today().strftime("%Y-%m-%d"),
+                            "usuario": nombre_usuario,
+                            "tarea_id": str(tarea_id),
+                        },
+                    )
+                _limpiar_cache_postgres()
+                return True, ""
+            except Exception as exc:
+                LOGGER.exception(
+                    "No se pudo agregar un ítem a la tarea %s",
+                    tarea_id,
+                )
+                return False, str(exc)
+
+        tareas_actualizadas = normalizar_tareas_internas(
+            cargar_tareas_internas()
+        )
+        mask = tareas_actualizadas["id"].astype(str).eq(str(tarea_id))
+        if not mask.any():
+            return False, "No se encontró la tarea."
+        items = parsear_checklist_tarea(
+            tareas_actualizadas.loc[mask, "checklist"].iloc[0]
+        )
+        items.append({"texto": texto_limpio, "hecho": False})
+        tareas_actualizadas.loc[mask, "checklist"] = (
+            serializar_checklist_tarea(items)
+        )
+        tareas_actualizadas.loc[mask, "avance"] = avance_checklist_tarea(
+            items
+        )
+        tareas_actualizadas.loc[mask, "fecha_actualizacion"] = (
+            date.today().strftime("%Y-%m-%d")
+        )
+        tareas_actualizadas.loc[mask, "actualizado_por"] = nombre_usuario
+        save_csv(tareas_actualizadas, TAREAS_PATH)
+        return True, ""
+
     def eliminar_item_checklist(
         tarea_id,
         indice_item,
@@ -12423,15 +12492,60 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
                             else:
                                 checklist_actualizado = []
 
-                            nuevos_items_txt = st.text_area(
-                                "Agregar ítems",
-                                placeholder="Un ítem por línea",
-                                height=70,
-                                key=(
-                                    f"agregar_items_"
-                                    f"{tarea_id}"
-                                ),
+                            clave_mostrar_nuevo_item = (
+                                f"mostrar_nuevo_item_{tarea_id}"
                             )
+                            clave_nuevo_item = f"nuevo_item_{tarea_id}"
+
+                            if st.session_state.get(
+                                clave_mostrar_nuevo_item,
+                                False,
+                            ):
+                                def guardar_nuevo_item(
+                                    tarea_id_actual=tarea_id,
+                                    clave_item_actual=clave_nuevo_item,
+                                    clave_mostrar_actual=(
+                                        clave_mostrar_nuevo_item
+                                    ),
+                                ):
+                                    guardado, mensaje = agregar_item_checklist(
+                                        tarea_id_actual,
+                                        st.session_state.get(
+                                            clave_item_actual,
+                                            "",
+                                        ),
+                                    )
+                                    if guardado:
+                                        st.session_state[clave_item_actual] = ""
+                                        st.session_state[
+                                            clave_mostrar_actual
+                                        ] = False
+                                        st.session_state[
+                                            "mensaje_checklist_inline"
+                                        ] = "Ítem agregado."
+                                    else:
+                                        st.session_state[
+                                            "error_checklist_inline"
+                                        ] = mensaje
+
+                                st.text_input(
+                                    "Nuevo ítem",
+                                    placeholder="Escribí y presioná Enter",
+                                    key=clave_nuevo_item,
+                                    on_change=guardar_nuevo_item,
+                                    label_visibility="collapsed",
+                                )
+                            elif st.button(
+                                "+ Agregar ítem",
+                                key=f"abrir_nuevo_item_{tarea_id}",
+                                use_container_width=True,
+                            ):
+                                st.session_state[
+                                    clave_mostrar_nuevo_item
+                                ] = True
+                                st.rerun()
+
+                            nuevos_items_txt = ""
 
                             cantidad_actualizaciones = len([
                                 linea
