@@ -12196,9 +12196,13 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
                                         f"{tarea_id}_{i}"
                                     )
 
-                                    check_item_col, texto_item_col = (
+                                    (
+                                        check_item_col,
+                                        texto_item_col,
+                                        accion_item_col,
+                                    ) = (
                                         st.columns(
-                                            [1, 8],
+                                            [1, 7, 1],
                                             vertical_alignment="center",
                                         )
                                     )
@@ -12258,57 +12262,15 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
                                                         "error_checklist_inline"
                                                     ] = mensaje
 
-                                            editar_col, eliminar_col = (
-                                                st.columns(
-                                                    [8, 1],
-                                                    vertical_alignment="center",
-                                                )
+                                            st.text_input(
+                                                "Editar ítem",
+                                                key=clave_texto,
+                                                label_visibility="collapsed",
+                                                on_change=guardar_nombre_item,
+                                                help=(
+                                                    "Presioná Enter para guardar."
+                                                ),
                                             )
-
-                                            with editar_col:
-                                                st.text_input(
-                                                    "Editar ítem",
-                                                    key=clave_texto,
-                                                    label_visibility="collapsed",
-                                                    on_change=guardar_nombre_item,
-                                                    help=(
-                                                        "Presioná Enter para guardar."
-                                                    ),
-                                                )
-
-                                            with eliminar_col:
-                                                if st.button(
-                                                    "🗑",
-                                                    key=(
-                                                        f"eliminar_check_"
-                                                        f"{tarea_id}_{i}"
-                                                    ),
-                                                    help="Eliminar ítem",
-                                                    type="secondary",
-                                                ):
-                                                    eliminado, mensaje = (
-                                                        eliminar_item_checklist(
-                                                            tarea_id,
-                                                            i,
-                                                        )
-                                                    )
-
-                                                    if eliminado:
-                                                        st.session_state[
-                                                            clave_edicion
-                                                        ] = False
-                                                        st.session_state.pop(
-                                                            clave_texto,
-                                                            None,
-                                                        )
-                                                        st.session_state[
-                                                            "mensaje_checklist_inline"
-                                                        ] = "Ítem eliminado."
-                                                        st.rerun()
-                                                    else:
-                                                        st.session_state[
-                                                            "error_checklist_inline"
-                                                        ] = mensaje
                                         else:
                                             if st.button(
                                                 texto_item,
@@ -12326,6 +12288,44 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
                                                     clave_edicion
                                                 ] = True
                                                 st.rerun()
+
+                                    with accion_item_col:
+                                        if st.session_state.get(
+                                            clave_edicion,
+                                            False,
+                                        ):
+                                            if st.button(
+                                                "🗑",
+                                                key=(
+                                                    f"eliminar_check_"
+                                                    f"{tarea_id}_{i}"
+                                                ),
+                                                help="Eliminar ítem",
+                                                type="secondary",
+                                            ):
+                                                eliminado, mensaje = (
+                                                    eliminar_item_checklist(
+                                                        tarea_id,
+                                                        i,
+                                                    )
+                                                )
+
+                                                if eliminado:
+                                                    st.session_state[
+                                                        clave_edicion
+                                                    ] = False
+                                                    st.session_state.pop(
+                                                        clave_texto,
+                                                        None,
+                                                    )
+                                                    st.session_state[
+                                                        "mensaje_checklist_inline"
+                                                    ] = "Ítem eliminado."
+                                                    st.rerun()
+                                                else:
+                                                    st.session_state[
+                                                        "error_checklist_inline"
+                                                    ] = mensaje
 
                                     checklist_actualizado.append({
                                         "texto": texto_item,

@@ -4,9 +4,11 @@ import unittest
 
 
 class StreamlitCompatibilityTests(unittest.TestCase):
+    def setUp(self):
+        self.app_path = Path(__file__).resolve().parents[1] / "app.py"
+
     def test_tipos_de_boton_compatibles_con_streamlit_instalado(self):
-        app_path = Path(__file__).resolve().parents[1] / "app.py"
-        tree = ast.parse(app_path.read_text(encoding="utf-8"))
+        tree = ast.parse(self.app_path.read_text(encoding="utf-8"))
         tipos_permitidos = {"primary", "secondary"}
         incompatibles = []
 
@@ -29,6 +31,14 @@ class StreamlitCompatibilityTests(unittest.TestCase):
                     )
 
         self.assertEqual(incompatibles, [])
+
+    def test_checklist_editable_usa_una_sola_grilla(self):
+        source = self.app_path.read_text(encoding="utf-8")
+        checklist = source.index('st.markdown("**Checklist**")')
+        inicio = source.index("texto_item = str(", checklist)
+        fin = source.index("checklist_actualizado.append", inicio)
+
+        self.assertEqual(source[inicio:fin].count("st.columns("), 1)
 
 
 if __name__ == "__main__":
