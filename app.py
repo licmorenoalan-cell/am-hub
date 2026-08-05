@@ -59,6 +59,7 @@ INDICADORES_MOVIMIENTOS_PATH = DATA_DIR / "indicadores_movimientos.csv"
 CUENTA_CORRIENTE_PATH = DATA_DIR / "cuenta_corriente.csv"
 ACTIVIDAD_PATH = DATA_DIR / "actividad.csv"
 TAREA_ARCHIVOS_PATH = DATA_DIR / "tarea_archivos.csv"
+MATERIAL_ARCHIVOS_PATH = DATA_DIR / "material_archivos.csv"
 
 ACTIVIDAD_COLUMNS = [
     "id",
@@ -370,6 +371,8 @@ def _limpiar_cache_postgres():
         "cargar_dashboard_admin",
         "cargar_adjuntos_tarea",
         "cargar_archivo_tarea",
+        "cargar_adjuntos_material",
+        "cargar_archivo_material",
     ]:
         try:
             globals()[cache_func_name].clear()
@@ -391,6 +394,15 @@ TAREA_ARCHIVO_MAX_BYTES = 8 * 1024 * 1024
 TAREA_ARCHIVOS_MAX_POR_CARGA = 5
 TAREA_ARCHIVOS_MAX_POR_TAREA = 20
 TAREA_ARCHIVOS_MAX_TOTAL_BYTES = 40 * 1024 * 1024
+
+MATERIAL_ARCHIVOS_COLUMNAS = [
+    "id", "material_id", "nombre", "tipo", "tamano",
+    "contenido_base64", "fecha_carga", "cargado_por",
+]
+MATERIAL_ARCHIVO_MAX_BYTES = 15 * 1024 * 1024
+MATERIAL_ARCHIVOS_MAX_POR_CARGA = 5
+MATERIAL_ARCHIVOS_MAX_POR_PEDIDO = 20
+MATERIAL_ARCHIVOS_MAX_TOTAL_BYTES = 80 * 1024 * 1024
 
 
 @st.cache_resource(show_spinner=False)
@@ -671,6 +683,190 @@ def duplicar_adjuntos_de_tarea(
     cargar_adjuntos_tarea.clear()
     cargar_archivo_tarea.clear()
     return len(registros)
+
+
+@st.cache_resource(show_spinner=False)
+def asegurar_tabla_material_archivos():
+    if not usar_postgres():
+        return True
+    with get_postgres_engine().begin() as conn:
+        conn.execute(
+            sql_text(
+                'CREATE TABLE IF NOT EXISTS "material_archivos" ('
+                '"id" TEXT PRIMARY KEY, "material_id" TEXT NOT NULL, '
+                '"nombre" TEXT NOT NULL, "tipo" TEXT, "tamano" BIGINT, '
+                '"contenido_base64" TEXT NOT NULL, "fecha_carga" TEXT, '
+                '"cargado_por" TEXT)'
+            )
+        )
+        conn.execute(
+            sql_text(
+                'CREATE INDEX IF NOT EXISTS "idx_material_archivos_material" '
+                'ON "material_archivos" ("material_id")'
+            )
+        )
+    return True
+
+
+@st.cache_data(ttl=120, show_spinner=False)
+def cargar_adjuntos_material(material_id):
+    material_id = str(material_id).strip()
+    columnas = [
+        columna
+        for columna in MATERIAL_ARCHIVOS_COLUMNAS
+        if columna != "contenido_base64"
+    ]
+    if usar_postgres():
+        asegurar_tabla_material_archivos()
+        with get_postgres_engine().connect() as conn:
+            return pd.read_sql(
+                sql_text(
+                    'SELECT "id", "material_id", "nombre", "tipo", '
+                    '"tamano", "fecha_carga", "cargado_por" '
+                    'FROM "material_archivos" '
+                    'WHERE "material_id" = :material_id '
+                    'ORDER BY "fecha_carga" DESC'
+                ),
+                conn,
+                params={"material_id": material_id},
+            ).fillna("")
+    archivos = read_csv(
+        MATERIAL_ARCHIVOS_PATH,
+        MATERIAL_ARCHIVOS_COLUMNAS,
+    )
+    if archivos.empty:
+        return pd.DataFrame(columns=columnas)
+    vista = archivos[
+        archivos["material_id"].astype(str).eq(material_id)
+    ].copy()
+    return vista[columnas].sort_values("fecha_carga", ascending=False)
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def cargar_archivo_material(archivo_id, material_id):
+    if usar_postgres():
+        asegurar_tabla_material_archivos()
+        with get_postgres_engine().connect() as conn:
+            fila = conn.execute(
+                sql_text(
+                    'SELECT "nombre", "tipo", "contenido_base64" '
+                    'FROM "material_archivos" WHERE "id" = :archivo_id '
+                    'AND "material_id" = :material_id'
+                ),
+                {
+                    "archivo_id": str(archivo_id),
+                    "material_id": str(material_id),
+                },
+            ).mappings().first()
+        return dict(fila) if fila else {}
+    archivos = read_csv(
+        MATERIAL_ARCHIVOS_PATH,
+        MATERIAL_ARCHIVOS_COLUMNAS,
+    )
+    encontrados = archivos[
+        archivos["id"].astype(str).eq(str(archivo_id))
+        & archivos["material_id"].astype(str).eq(str(material_id))
+    ]
+    return encontrados.iloc[0].to_dict() if not encontrados.empty else {}
+
+
+def guardar_adjuntos_material(material_id, archivos, cargado_por):
+    archivos = list(archivos or [])
+    if not archivos:
+        raise ValueError("Seleccioná al menos un archivo.")
+    if len(archivos) > MATERIAL_ARCHIVOS_MAX_POR_CARGA:
+        raise ValueError("Podés cargar hasta 5 archivos por vez.")
+
+    existentes = cargar_adjuntos_material(str(material_id))
+    if len(existentes) + len(archivos) > MATERIAL_ARCHIVOS_MAX_POR_PEDIDO:
+        raise ValueError("Cada pedido admite hasta 20 archivos.")
+
+    registros = []
+    for archivo in archivos:
+        contenido = archivo.getvalue()
+        if len(contenido) > MATERIAL_ARCHIVO_MAX_BYTES:
+            raise ValueError(f'"{archivo.name}" supera el límite de 15 MB.')
+        registros.append({
+            "id": f"MADJ-{uuid.uuid4().hex}",
+            "material_id": str(material_id),
+            "nombre": str(archivo.name),
+            "tipo": str(archivo.type or "application/octet-stream"),
+            "tamano": len(contenido),
+            "contenido_base64": base64.b64encode(contenido).decode("ascii"),
+            "fecha_carga": pd.Timestamp.now(
+                tz="America/Argentina/Buenos_Aires"
+            ).isoformat(),
+            "cargado_por": str(cargado_por),
+        })
+
+    total_existente = pd.to_numeric(
+        existentes.get("tamano", pd.Series(dtype="float64")),
+        errors="coerce",
+    ).fillna(0).sum()
+    if (
+        total_existente + sum(item["tamano"] for item in registros)
+        > MATERIAL_ARCHIVOS_MAX_TOTAL_BYTES
+    ):
+        raise ValueError("Los archivos no pueden superar 80 MB por pedido.")
+
+    if usar_postgres():
+        asegurar_tabla_material_archivos()
+        with get_postgres_engine().begin() as conn:
+            conn.execute(
+                sql_text(
+                    'INSERT INTO "material_archivos" ('
+                    '"id", "material_id", "nombre", "tipo", "tamano", '
+                    '"contenido_base64", "fecha_carga", "cargado_por") '
+                    'VALUES (:id, :material_id, :nombre, :tipo, :tamano, '
+                    ':contenido_base64, :fecha_carga, :cargado_por)'
+                ),
+                registros,
+            )
+    else:
+        actuales = read_csv(
+            MATERIAL_ARCHIVOS_PATH,
+            MATERIAL_ARCHIVOS_COLUMNAS,
+        )
+        save_csv(
+            pd.concat([actuales, pd.DataFrame(registros)], ignore_index=True),
+            MATERIAL_ARCHIVOS_PATH,
+        )
+    cargar_adjuntos_material.clear()
+    cargar_archivo_material.clear()
+    return len(registros)
+
+
+def eliminar_adjunto_material(archivo_id, material_id):
+    if usar_postgres():
+        asegurar_tabla_material_archivos()
+        with get_postgres_engine().begin() as conn:
+            resultado = conn.execute(
+                sql_text(
+                    'DELETE FROM "material_archivos" '
+                    'WHERE "id" = :archivo_id '
+                    'AND "material_id" = :material_id'
+                ),
+                {
+                    "archivo_id": str(archivo_id),
+                    "material_id": str(material_id),
+                },
+            )
+        if not resultado.rowcount:
+            raise ValueError("No se encontró el archivo.")
+    else:
+        archivos = read_csv(
+            MATERIAL_ARCHIVOS_PATH,
+            MATERIAL_ARCHIVOS_COLUMNAS,
+        )
+        mascara = (
+            archivos["id"].astype(str).eq(str(archivo_id))
+            & archivos["material_id"].astype(str).eq(str(material_id))
+        )
+        if not mascara.any():
+            raise ValueError("No se encontró el archivo.")
+        save_csv(archivos[~mascara].copy(), MATERIAL_ARCHIVOS_PATH)
+    cargar_adjuntos_material.clear()
+    cargar_archivo_material.clear()
 
 
 def actualizar_postgres_por_id(tabla: str, registro_id: str, cambios: dict):
@@ -3557,6 +3753,117 @@ def render_aprobaciones(cliente, contenidos):
         )
 
 
+def render_archivos_material(material_id, cargado_por, clave_contexto):
+    clave_abierto = f"archivos_material_abierto_{clave_contexto}_{material_id}"
+    if not st.session_state.get(clave_abierto, False):
+        if st.button(
+            "📎 Archivos",
+            key=f"abrir_archivos_material_{clave_contexto}_{material_id}",
+            use_container_width=True,
+        ):
+            st.session_state[clave_abierto] = True
+            st.rerun()
+        return
+
+    with st.expander("📎 Archivos del pedido", expanded=True):
+        if st.button(
+            "Cerrar archivos",
+            key=f"cerrar_archivos_material_{clave_contexto}_{material_id}",
+            use_container_width=True,
+        ):
+            st.session_state[clave_abierto] = False
+            st.rerun()
+
+        nuevos = st.file_uploader(
+            "Cargar archivos",
+            accept_multiple_files=True,
+            key=f"subida_material_{clave_contexto}_{material_id}",
+            help="Hasta 5 archivos por vez y 15 MB por archivo.",
+        )
+        if st.button(
+            "Subir archivos",
+            key=f"guardar_archivos_material_{clave_contexto}_{material_id}",
+            disabled=not nuevos,
+            use_container_width=True,
+        ):
+            try:
+                cantidad = guardar_adjuntos_material(
+                    material_id,
+                    nuevos,
+                    cargado_por,
+                )
+                st.success(f"{cantidad} archivo(s) cargado(s).")
+                st.rerun()
+            except Exception as exc:
+                st.error(str(exc))
+
+        adjuntos = cargar_adjuntos_material(material_id)
+        if adjuntos.empty:
+            st.caption("Todavía no hay archivos cargados.")
+            return
+
+        for _, adjunto in adjuntos.iterrows():
+            archivo_id = str(adjunto.get("id", ""))
+            nombre = str(adjunto.get("nombre", "archivo"))
+            preparar_key = (
+                f"material_archivo_preparado_{clave_contexto}_{material_id}"
+            )
+            c_nombre, c_accion = st.columns([3, 1])
+            with c_nombre:
+                st.caption(
+                    f"{nombre} · {float(adjunto.get('tamano', 0) or 0) / 1048576:.2f} MB"
+                )
+            with c_accion:
+                if st.button(
+                    "Descargar",
+                    key=f"preparar_material_{clave_contexto}_{archivo_id}",
+                ):
+                    st.session_state[preparar_key] = archivo_id
+
+            if st.session_state.get(preparar_key) == archivo_id:
+                archivo = cargar_archivo_material(archivo_id, material_id)
+                st.download_button(
+                    f"Guardar {nombre}",
+                    data=base64.b64decode(
+                        str(archivo.get("contenido_base64", ""))
+                    ),
+                    file_name=str(archivo.get("nombre", nombre)),
+                    mime=str(
+                        archivo.get("tipo", "application/octet-stream")
+                    ),
+                    key=f"descargar_material_{clave_contexto}_{archivo_id}",
+                    use_container_width=True,
+                )
+
+        archivo_eliminar = st.selectbox(
+            "Archivo a eliminar",
+            adjuntos["id"].astype(str).tolist(),
+            format_func=lambda valor: dict(
+                zip(
+                    adjuntos["id"].astype(str),
+                    adjuntos["nombre"].astype(str),
+                )
+            ).get(valor, valor),
+            key=f"selector_eliminar_material_{clave_contexto}_{material_id}",
+        )
+        confirmar = st.checkbox(
+            "Confirmo eliminar el archivo",
+            key=f"confirmar_eliminar_material_{clave_contexto}_{material_id}",
+        )
+        if st.button(
+            "Eliminar archivo",
+            key=f"eliminar_material_{clave_contexto}_{material_id}",
+            disabled=not confirmar,
+            use_container_width=True,
+        ):
+            try:
+                eliminar_adjunto_material(archivo_eliminar, material_id)
+                st.success("Archivo eliminado.")
+                st.rerun()
+            except Exception as exc:
+                st.error(str(exc))
+
+
 def render_materiales(cliente, materiales=None):
     header(
         "Pedidos de material",
@@ -3763,6 +4070,15 @@ def render_materiales(cliente, materiales=None):
                     ),
                     height=100,
                     key=f"comentario_material_cliente_{material_id}",
+                )
+
+                render_archivos_material(
+                    material_id,
+                    st.session_state.get(
+                        "name",
+                        st.session_state.get("username", "Cliente"),
+                    ),
+                    "cliente",
                 )
 
                 b1, b2 = st.columns(2)
@@ -9411,6 +9727,12 @@ def render_materiales_gestion(cliente_fijo="", modo="admin"):
                     link_entrega,
                     use_container_width=True,
                 )
+
+            render_archivos_material(
+                material_id,
+                nombre_usuario,
+                modo,
+            )
 
             with st.expander("Revisar y actualizar pedido"):
                 nueva_solicitud = st.text_input(
