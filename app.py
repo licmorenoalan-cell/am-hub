@@ -203,6 +203,18 @@ def asegurar_columnas_objetivos_postgres():
     return True
 
 
+@st.cache_resource
+def asegurar_columnas_tareas_postgres():
+    with get_postgres_engine().begin() as conn:
+        conn.execute(
+            sql_text(
+                'ALTER TABLE "tareas" ADD COLUMN IF NOT EXISTS '
+                '"archivos_habilitados" TEXT'
+            )
+        )
+    return True
+
+
 def tabla_postgres_para_path(path):
     try:
         filename = Path(path).name
@@ -9749,6 +9761,7 @@ def columnas_tareas_internas():
         "creado_por",
         "fecha_actualizacion",
         "actualizado_por",
+        "archivos_habilitados",
     ]
 
 
@@ -10090,6 +10103,9 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
     usuarios_equipo = usuarios_equipo_disponibles()
     responsables = ["Sin asignar"] + usuarios_equipo
 
+    if usar_postgres():
+        asegurar_columnas_tareas_postgres()
+
     tareas_full = normalizar_tareas_internas(
         cargar_tareas_internas()
     )
@@ -10276,6 +10292,25 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
         eliminar_adjuntos_de_tarea(tarea_id)
 
         return True, ""
+
+    def configurar_archivos_tarea(tarea_id, habilitar):
+        valor = "Sí" if habilitar else "No"
+        if usar_postgres():
+            actualizar_postgres_por_id(
+                "tareas",
+                str(tarea_id),
+                {"archivos_habilitados": valor},
+            )
+            return
+
+        tareas_actualizadas = normalizar_tareas_internas(
+            cargar_tareas_internas()
+        )
+        mask = tareas_actualizadas["id"].astype(str).eq(str(tarea_id))
+        if not mask.any():
+            raise ValueError("No se encontró la tarea.")
+        tareas_actualizadas.loc[mask, "archivos_habilitados"] = valor
+        save_csv(tareas_actualizadas, TAREAS_PATH)
 
     def duplicar_tarea(row_tarea):
         tarea_origen_id = str(row_tarea.get("id", "")).strip()
@@ -11970,9 +12005,6 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
                             if error_checklist_inline:
                                 st.error(error_checklist_inline)
 
-                            if descripcion_txt:
-                                st.write(descripcion_txt)
-
                             responsables_edicion = list(
                                 responsables
                             )
@@ -12100,15 +12132,42 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
                                 ),
                             )
 
-                            nueva_descripcion = st.text_area(
-                                ui("Descripción"),
-                                value=descripcion_txt,
-                                height=100,
-                                key=(
-                                    f"descripcion_detalle_"
-                                    f"{tarea_id}"
-                                ),
+                            clave_mostrar_descripcion = (
+                                f"mostrar_descripcion_{tarea_id}"
                             )
+                            mostrar_descripcion = bool(
+                                descripcion_txt.strip()
+                            ) or st.session_state.get(
+                                clave_mostrar_descripcion,
+                                False,
+                            )
+
+                            if mostrar_descripcion:
+                                with st.expander(
+                                    ui("Descripción"),
+                                    expanded=False,
+                                ):
+                                    nueva_descripcion = st.text_area(
+                                        ui("Descripción"),
+                                        value=descripcion_txt,
+                                        height=90,
+                                        key=(
+                                            f"descripcion_detalle_"
+                                            f"{tarea_id}"
+                                        ),
+                                        label_visibility="collapsed",
+                                    )
+                            else:
+                                nueva_descripcion = ""
+                                if st.button(
+                                    "+ Agregar descripción",
+                                    key=f"agregar_descripcion_{tarea_id}",
+                                    use_container_width=True,
+                                ):
+                                    st.session_state[
+                                        clave_mostrar_descripcion
+                                    ] = True
+                                    st.rerun()
 
                             nueva_categoria = st.text_input(
                                 ui("Categoría"),
@@ -12374,181 +12433,240 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
                                 ),
                             )
 
-                            nuevo_comentario = st.text_area(
-                                "Comentario",
-                                placeholder=(
-                                    "Agregar actualización..."
-                                ),
-                                height=70,
-                                key=(
-                                    f"comentario_detalle_"
-                                    f"{tarea_id}"
-                                ),
-                            )
+                            cantidad_actualizaciones = len([
+                                linea
+                                for linea in comentarios_txt.splitlines()
+                                if linea.strip()
+                            ])
+                            titulo_actualizaciones = "📝 Actualizaciones"
+                            if cantidad_actualizaciones:
+                                titulo_actualizaciones += (
+                                    f" ({cantidad_actualizaciones})"
+                                )
 
-                            if comentarios_txt:
-                                with st.expander(
-                                    "Historial"
-                                ):
-                                    st.write(
-                                        comentarios_txt
-                                    )
-
-                            st.markdown("**Archivos adjuntos**")
-                            st.caption(
-                                "Se cargan sólo al abrir esta tarjeta. Máximo "
-                                "5 archivos por vez, 8 MB por archivo y 40 MB "
-                                "en total."
-                            )
-
-                            nuevos_adjuntos = st.file_uploader(
-                                "Agregar archivos",
-                                type=[
-                                    "pdf", "doc", "docx", "xls", "xlsx",
-                                    "csv", "txt", "png", "jpg", "jpeg",
-                                    "webp", "zip",
-                                ],
-                                accept_multiple_files=True,
-                                key=f"adjuntos_tarea_{tarea_id}",
-                            )
-
-                            if st.button(
-                                "Subir archivos",
-                                key=f"subir_adjuntos_{tarea_id}",
-                                use_container_width=True,
-                                disabled=not nuevos_adjuntos,
+                            with st.expander(
+                                titulo_actualizaciones,
+                                expanded=False,
                             ):
-                                try:
-                                    cantidad_adjuntos = guardar_adjuntos_tarea(
-                                        tarea_id,
-                                        nuevos_adjuntos,
-                                        nombre_usuario,
-                                    )
-                                    st.success(
-                                        f"{cantidad_adjuntos} archivo(s) cargado(s)."
-                                    )
-                                    st.rerun()
-                                except Exception as exc:
-                                    st.error(str(exc))
-
-                            adjuntos_tarea = cargar_adjuntos_tarea(tarea_id)
-                            if adjuntos_tarea.empty:
-                                st.caption("Todavía no hay archivos adjuntos.")
-                            else:
-                                for _, adjunto in adjuntos_tarea.iterrows():
-                                    adjunto_id = str(adjunto.get("id", ""))
-                                    adjunto_nombre = str(
-                                        adjunto.get("nombre", "archivo")
-                                    )
-                                    try:
-                                        adjunto_mb = float(
-                                            adjunto.get("tamano", 0) or 0
-                                        ) / (1024 * 1024)
-                                    except Exception:
-                                        adjunto_mb = 0
-
-                                    with st.container(border=True):
-                                        st.markdown(f"**{adjunto_nombre}**")
-                                        st.caption(
-                                            f"{adjunto_mb:.2f} MB · "
-                                            f"{adjunto.get('cargado_por', '')}"
-                                        )
-
-                                        preparar_key = (
-                                            f"adjunto_preparado_{tarea_id}"
-                                        )
-                                        if st.button(
-                                            "Preparar descarga",
-                                            key=(
-                                                f"preparar_adjunto_{adjunto_id}"
-                                            ),
-                                            use_container_width=True,
-                                        ):
-                                            st.session_state[preparar_key] = (
-                                                adjunto_id
-                                            )
-
-                                        if (
-                                            st.session_state.get(preparar_key)
-                                            == adjunto_id
-                                        ):
-                                            archivo_adjunto = cargar_archivo_tarea(
-                                                adjunto_id,
-                                                tarea_id,
-                                            )
-                                            contenido_b64 = str(
-                                                archivo_adjunto.get(
-                                                    "contenido_base64",
-                                                    "",
-                                                )
-                                                or ""
-                                            )
-                                            try:
-                                                st.download_button(
-                                                    "Descargar",
-                                                    data=base64.b64decode(
-                                                        contenido_b64
-                                                    ),
-                                                    file_name=str(
-                                                        archivo_adjunto.get(
-                                                            "nombre",
-                                                            adjunto_nombre,
-                                                        )
-                                                    ),
-                                                    mime=str(
-                                                        archivo_adjunto.get(
-                                                            "tipo",
-                                                            "application/octet-stream",
-                                                        )
-                                                    ),
-                                                    key=(
-                                                        f"descargar_adjunto_"
-                                                        f"{adjunto_id}"
-                                                    ),
-                                                    use_container_width=True,
-                                                )
-                                            except Exception:
-                                                st.error(
-                                                    "No se pudo preparar el archivo."
-                                                )
-
-                                ids_adjuntos = (
-                                    adjuntos_tarea["id"].astype(str).tolist()
-                                )
-                                nombres_adjuntos = dict(
-                                    zip(
-                                        adjuntos_tarea["id"].astype(str),
-                                        adjuntos_tarea["nombre"].astype(str),
-                                    )
-                                )
-                                adjunto_eliminar = st.selectbox(
-                                    "Archivo a eliminar",
-                                    ids_adjuntos,
-                                    format_func=lambda valor: nombres_adjuntos.get(
-                                        valor,
-                                        valor,
+                                if comentarios_txt:
+                                    st.caption("Más recientes primero")
+                                    for actualizacion in reversed([
+                                        linea.strip()
+                                        for linea in comentarios_txt.splitlines()
+                                        if linea.strip()
+                                    ]):
+                                        st.markdown(f"- {actualizacion}")
+                                    st.divider()
+                                nuevo_comentario = st.text_area(
+                                    "Nueva actualización",
+                                    placeholder="Escribir actualización...",
+                                    height=70,
+                                    key=(
+                                        f"comentario_detalle_"
+                                        f"{tarea_id}"
                                     ),
-                                    key=f"eliminar_adjunto_sel_{tarea_id}",
                                 )
-                                confirma_adjunto = st.checkbox(
-                                    "Confirmo eliminar el archivo seleccionado",
-                                    key=f"confirmar_adjunto_{tarea_id}",
-                                )
+
+                            archivos_habilitados = (
+                                str(
+                                    row.get("archivos_habilitados", "")
+                                ).strip()
+                                == "Sí"
+                            )
+
+                            if not archivos_habilitados:
                                 if st.button(
-                                    "Eliminar archivo",
-                                    key=f"eliminar_adjunto_{tarea_id}",
-                                    disabled=not confirma_adjunto,
+                                    "📎 Habilitar archivos",
+                                    key=f"habilitar_archivos_{tarea_id}",
                                     use_container_width=True,
+                                    help=(
+                                        "Muestra la carga de archivos sólo "
+                                        "para esta tarjeta."
+                                    ),
                                 ):
                                     try:
-                                        eliminar_adjunto_tarea(
-                                            adjunto_eliminar,
+                                        configurar_archivos_tarea(
                                             tarea_id,
+                                            True,
                                         )
-                                        st.success("Archivo eliminado.")
                                         st.rerun()
                                     except Exception as exc:
                                         st.error(str(exc))
+                            else:
+                                with st.expander(
+                                    "📎 Archivos adjuntos",
+                                    expanded=False,
+                                ):
+                                    if st.button(
+                                        "Ocultar sección de archivos",
+                                        key=f"deshabilitar_archivos_{tarea_id}",
+                                        use_container_width=True,
+                                        help=(
+                                            "Oculta la sección sin borrar "
+                                            "los archivos existentes."
+                                        ),
+                                    ):
+                                        configurar_archivos_tarea(
+                                            tarea_id,
+                                            False,
+                                        )
+                                        st.rerun()
+
+                                    st.markdown("**Archivos adjuntos**")
+                                    st.caption(
+                                        "Se cargan sólo al abrir esta tarjeta. Máximo "
+                                        "5 archivos por vez, 8 MB por archivo y 40 MB "
+                                        "en total."
+                                    )
+
+                                    nuevos_adjuntos = st.file_uploader(
+                                        "Agregar archivos",
+                                        type=[
+                                            "pdf", "doc", "docx", "xls", "xlsx",
+                                            "csv", "txt", "png", "jpg", "jpeg",
+                                            "webp", "zip",
+                                        ],
+                                        accept_multiple_files=True,
+                                        key=f"adjuntos_tarea_{tarea_id}",
+                                    )
+
+                                    if st.button(
+                                        "Subir archivos",
+                                        key=f"subir_adjuntos_{tarea_id}",
+                                        use_container_width=True,
+                                        disabled=not nuevos_adjuntos,
+                                    ):
+                                        try:
+                                            cantidad_adjuntos = guardar_adjuntos_tarea(
+                                                tarea_id,
+                                                nuevos_adjuntos,
+                                                nombre_usuario,
+                                            )
+                                            st.success(
+                                                f"{cantidad_adjuntos} archivo(s) cargado(s)."
+                                            )
+                                            st.rerun()
+                                        except Exception as exc:
+                                            st.error(str(exc))
+
+                                    adjuntos_tarea = cargar_adjuntos_tarea(tarea_id)
+                                    if adjuntos_tarea.empty:
+                                        st.caption("Todavía no hay archivos adjuntos.")
+                                    else:
+                                        for _, adjunto in adjuntos_tarea.iterrows():
+                                            adjunto_id = str(adjunto.get("id", ""))
+                                            adjunto_nombre = str(
+                                                adjunto.get("nombre", "archivo")
+                                            )
+                                            try:
+                                                adjunto_mb = float(
+                                                    adjunto.get("tamano", 0) or 0
+                                                ) / (1024 * 1024)
+                                            except Exception:
+                                                adjunto_mb = 0
+
+                                            with st.container(border=True):
+                                                st.markdown(f"**{adjunto_nombre}**")
+                                                st.caption(
+                                                    f"{adjunto_mb:.2f} MB · "
+                                                    f"{adjunto.get('cargado_por', '')}"
+                                                )
+
+                                                preparar_key = (
+                                                    f"adjunto_preparado_{tarea_id}"
+                                                )
+                                                if st.button(
+                                                    "Preparar descarga",
+                                                    key=(
+                                                        f"preparar_adjunto_{adjunto_id}"
+                                                    ),
+                                                    use_container_width=True,
+                                                ):
+                                                    st.session_state[preparar_key] = (
+                                                        adjunto_id
+                                                    )
+
+                                                if (
+                                                    st.session_state.get(preparar_key)
+                                                    == adjunto_id
+                                                ):
+                                                    archivo_adjunto = cargar_archivo_tarea(
+                                                        adjunto_id,
+                                                        tarea_id,
+                                                    )
+                                                    contenido_b64 = str(
+                                                        archivo_adjunto.get(
+                                                            "contenido_base64",
+                                                            "",
+                                                        )
+                                                        or ""
+                                                    )
+                                                    try:
+                                                        st.download_button(
+                                                            "Descargar",
+                                                            data=base64.b64decode(
+                                                                contenido_b64
+                                                            ),
+                                                            file_name=str(
+                                                                archivo_adjunto.get(
+                                                                    "nombre",
+                                                                    adjunto_nombre,
+                                                                )
+                                                            ),
+                                                            mime=str(
+                                                                archivo_adjunto.get(
+                                                                    "tipo",
+                                                                    "application/octet-stream",
+                                                                )
+                                                            ),
+                                                            key=(
+                                                                f"descargar_adjunto_"
+                                                                f"{adjunto_id}"
+                                                            ),
+                                                            use_container_width=True,
+                                                        )
+                                                    except Exception:
+                                                        st.error(
+                                                            "No se pudo preparar el archivo."
+                                                        )
+
+                                        ids_adjuntos = (
+                                            adjuntos_tarea["id"].astype(str).tolist()
+                                        )
+                                        nombres_adjuntos = dict(
+                                            zip(
+                                                adjuntos_tarea["id"].astype(str),
+                                                adjuntos_tarea["nombre"].astype(str),
+                                            )
+                                        )
+                                        adjunto_eliminar = st.selectbox(
+                                            "Archivo a eliminar",
+                                            ids_adjuntos,
+                                            format_func=lambda valor: nombres_adjuntos.get(
+                                                valor,
+                                                valor,
+                                            ),
+                                            key=f"eliminar_adjunto_sel_{tarea_id}",
+                                        )
+                                        confirma_adjunto = st.checkbox(
+                                            "Confirmo eliminar el archivo seleccionado",
+                                            key=f"confirmar_adjunto_{tarea_id}",
+                                        )
+                                        if st.button(
+                                            "Eliminar archivo",
+                                            key=f"eliminar_adjunto_{tarea_id}",
+                                            disabled=not confirma_adjunto,
+                                            use_container_width=True,
+                                        ):
+                                            try:
+                                                eliminar_adjunto_tarea(
+                                                    adjunto_eliminar,
+                                                    tarea_id,
+                                                )
+                                                st.success("Archivo eliminado.")
+                                                st.rerun()
+                                            except Exception as exc:
+                                                st.error(str(exc))
 
                             if st.button(
                                 "Guardar cambios",

@@ -1,6 +1,8 @@
 import hmac
 import os
 import secrets
+import base64
+import uuid
 from datetime import date
 from pathlib import Path
 import re
@@ -258,6 +260,7 @@ def asegurar_columnas():
         "creado_por": "text",
         "fecha_actualizacion": "text",
         "actualizado_por": "text",
+        "archivos_habilitados": "text",
     }
 
     with engine.begin() as conn:
@@ -269,6 +272,15 @@ def asegurar_columnas():
                     f'"{columna}" {tipo}'
                 )
             )
+        conn.execute(
+            text(
+                'CREATE TABLE IF NOT EXISTS "tarea_archivos" ('
+                '"id" TEXT PRIMARY KEY, "tarea_id" TEXT NOT NULL, '
+                '"nombre" TEXT NOT NULL, "tipo" TEXT, "tamano" BIGINT, '
+                '"contenido_base64" TEXT NOT NULL, "fecha_carga" TEXT, '
+                '"cargado_por" TEXT)'
+            )
+        )
 
 
 @st.cache_data(
@@ -300,6 +312,7 @@ def cargar_tareas():
             intervalo,
             fecha_carga,
             fecha_actualizacion
+            , archivos_habilitados
         FROM tareas
         ORDER BY
             CASE prioridad
@@ -318,6 +331,105 @@ def cargar_tareas():
             consulta,
             conn,
         ).fillna("")
+
+
+@st.cache_data(ttl=120, show_spinner=False)
+def cargar_adjuntos_pocket(tarea_id):
+    with get_engine().connect() as conn:
+        return pd.read_sql(
+            text(
+                'SELECT id, nombre, tipo, tamano, fecha_carga, cargado_por '
+                'FROM tarea_archivos WHERE tarea_id = :tarea_id '
+                'ORDER BY fecha_carga DESC'
+            ),
+            conn,
+            params={"tarea_id": str(tarea_id)},
+        ).fillna("")
+
+
+def configurar_archivos_pocket(tarea_id, habilitar):
+    with get_engine().begin() as conn:
+        conn.execute(
+            text(
+                'UPDATE tareas SET archivos_habilitados = :valor '
+                'WHERE id = :id'
+            ),
+            {
+                "valor": "Sí" if habilitar else "No",
+                "id": str(tarea_id),
+            },
+        )
+    limpiar_cache()
+
+
+def guardar_adjuntos_pocket(tarea_id, archivos):
+    archivos = list(archivos or [])
+    if not archivos:
+        return 0
+    if len(archivos) > 5:
+        raise ValueError("Podés cargar hasta 5 archivos por vez.")
+
+    existentes = cargar_adjuntos_pocket(tarea_id)
+    if len(existentes) + len(archivos) > 20:
+        raise ValueError("Cada tarjeta admite hasta 20 archivos.")
+
+    usuario = get_secret("POCKET_USERNAME", "alan")
+    registros = []
+    for archivo in archivos:
+        contenido = archivo.getvalue()
+        if len(contenido) > 8 * 1024 * 1024:
+            raise ValueError(f'"{archivo.name}" supera el límite de 8 MB.')
+        registros.append({
+            "id": f"ADJ-{uuid.uuid4().hex}",
+            "tarea_id": str(tarea_id),
+            "nombre": str(archivo.name),
+            "tipo": str(archivo.type or "application/octet-stream"),
+            "tamano": len(contenido),
+            "contenido_base64": base64.b64encode(contenido).decode("ascii"),
+            "fecha_carga": pd.Timestamp.now(
+                tz="America/Argentina/Buenos_Aires"
+            ).isoformat(),
+            "cargado_por": usuario,
+        })
+
+    total_existente = pd.to_numeric(
+        existentes.get("tamano", pd.Series(dtype="float64")),
+        errors="coerce",
+    ).fillna(0).sum()
+    total_nuevo = sum(registro["tamano"] for registro in registros)
+    if total_existente + total_nuevo > 40 * 1024 * 1024:
+        raise ValueError(
+            "Los adjuntos de la tarjeta no pueden superar 40 MB en total."
+        )
+
+    with get_engine().begin() as conn:
+        conn.execute(
+            text(
+                'INSERT INTO tarea_archivos '
+                '(id, tarea_id, nombre, tipo, tamano, contenido_base64, '
+                'fecha_carga, cargado_por) VALUES '
+                '(:id, :tarea_id, :nombre, :tipo, :tamano, '
+                ':contenido_base64, :fecha_carga, :cargado_por)'
+            ),
+            registros,
+        )
+    cargar_adjuntos_pocket.clear()
+    return len(registros)
+
+
+def cargar_archivo_pocket(archivo_id, tarea_id):
+    with get_engine().connect() as conn:
+        fila = conn.execute(
+            text(
+                'SELECT nombre, tipo, contenido_base64 FROM tarea_archivos '
+                'WHERE id = :archivo_id AND tarea_id = :tarea_id'
+            ),
+            {
+                "archivo_id": str(archivo_id),
+                "tarea_id": str(tarea_id),
+            },
+        ).mappings().first()
+    return dict(fila) if fila else {}
 
 
 @st.cache_data(
@@ -398,6 +510,7 @@ def mapa_responsables_equipo():
 
 def limpiar_cache():
     cargar_tareas.clear()
+    cargar_adjuntos_pocket.clear()
 
 
 def insertar_tareas(
@@ -1519,6 +1632,9 @@ if pagina_pocket == "📋 Mi tablero":
         categoria = str(
             row.get("categoria", "") or ""
         )
+        archivos_habilitados = (
+            str(row.get("archivos_habilitados", "")).strip() == "Sí"
+        )
 
         with st.container(border=True):
             etiqueta_unidad = (
@@ -1629,7 +1745,8 @@ if pagina_pocket == "📋 Mi tablero":
                 )
 
                 if descripcion:
-                    st.write(descripcion)
+                    with st.expander("Descripción", expanded=False):
+                        st.write(descripcion)
 
                 checklist_items = parsear_checklist(
                     row.get("checklist", "")
@@ -1826,27 +1943,131 @@ if pagina_pocket == "📋 Mi tablero":
                         "Esta unidad no requiere un cliente asociado."
                     )
 
-                comentario_nuevo = st.text_area(
-                    "Comentario",
-                    placeholder=(
-                        "Agregar actualización..."
-                    ),
-                    height=80,
-                    key=(
-                        f"pocket_comentario_"
-                        f"{tarea_id}"
-                    ),
-                )
-
                 historial = str(
                     row.get("comentarios", "") or ""
                 )
 
-                if historial:
-                    with st.expander(
-                        "Historial"
+                cantidad_actualizaciones = len([
+                    linea
+                    for linea in historial.splitlines()
+                    if linea.strip()
+                ])
+                titulo_actualizaciones = "📝 Actualizaciones"
+                if cantidad_actualizaciones:
+                    titulo_actualizaciones += f" ({cantidad_actualizaciones})"
+
+                with st.expander(
+                    titulo_actualizaciones,
+                    expanded=False,
+                ):
+                    if historial:
+                        st.caption("Más recientes primero")
+                        for actualizacion in reversed([
+                            linea.strip()
+                            for linea in historial.splitlines()
+                            if linea.strip()
+                        ]):
+                            st.markdown(f"- {actualizacion}")
+                        st.divider()
+                    comentario_nuevo = st.text_area(
+                        "Nueva actualización",
+                        placeholder="Escribir actualización...",
+                        height=70,
+                        key=f"pocket_comentario_{tarea_id}",
+                    )
+
+                if not archivos_habilitados:
+                    if st.button(
+                        "📎 Habilitar archivos",
+                        key=f"pocket_habilitar_archivos_{tarea_id}",
+                        use_container_width=True,
                     ):
-                        st.write(historial)
+                        configurar_archivos_pocket(tarea_id, True)
+                        st.rerun()
+                else:
+                    with st.expander("📎 Archivos adjuntos", expanded=False):
+                        if st.button(
+                            "Ocultar sección de archivos",
+                            key=f"pocket_ocultar_archivos_{tarea_id}",
+                            use_container_width=True,
+                            help="Oculta la sección sin borrar los archivos.",
+                        ):
+                            configurar_archivos_pocket(tarea_id, False)
+                            st.rerun()
+
+                        archivos_nuevos = st.file_uploader(
+                            "Agregar archivos",
+                            accept_multiple_files=True,
+                            key=f"pocket_adjuntos_{tarea_id}",
+                        )
+                        if st.button(
+                            "Subir archivos",
+                            key=f"pocket_subir_adjuntos_{tarea_id}",
+                            use_container_width=True,
+                            disabled=not archivos_nuevos,
+                        ):
+                            try:
+                                cantidad = guardar_adjuntos_pocket(
+                                    tarea_id,
+                                    archivos_nuevos,
+                                )
+                                st.success(f"{cantidad} archivo(s) cargado(s).")
+                                st.rerun()
+                            except Exception as exc:
+                                st.error(str(exc))
+
+                        adjuntos = cargar_adjuntos_pocket(tarea_id)
+                        if adjuntos.empty:
+                            st.caption("Todavía no hay archivos adjuntos.")
+                        else:
+                            for _, adjunto in adjuntos.iterrows():
+                                archivo_id = str(adjunto.get("id", ""))
+                                nombre_archivo = str(
+                                    adjunto.get("nombre", "archivo")
+                                )
+                                preparar_key = (
+                                    f"pocket_adjunto_preparado_{tarea_id}"
+                                )
+                                if st.button(
+                                    f"Preparar · {nombre_archivo}",
+                                    key=f"pocket_preparar_{archivo_id}",
+                                    use_container_width=True,
+                                ):
+                                    st.session_state[preparar_key] = archivo_id
+
+                                if (
+                                    st.session_state.get(preparar_key)
+                                    == archivo_id
+                                ):
+                                    archivo = cargar_archivo_pocket(
+                                        archivo_id,
+                                        tarea_id,
+                                    )
+                                    st.download_button(
+                                        f"Descargar · {nombre_archivo}",
+                                        data=base64.b64decode(
+                                            str(
+                                                archivo.get(
+                                                    "contenido_base64",
+                                                    "",
+                                                )
+                                            )
+                                        ),
+                                        file_name=str(
+                                            archivo.get(
+                                                "nombre",
+                                                nombre_archivo,
+                                            )
+                                        ),
+                                        mime=str(
+                                            archivo.get(
+                                                "tipo",
+                                                "application/octet-stream",
+                                            )
+                                        ),
+                                        key=f"pocket_descargar_{archivo_id}",
+                                        use_container_width=True,
+                                    )
 
                 if st.button(
                     "Guardar cambios",
