@@ -360,6 +360,105 @@ def cargar_plan_trabajo():
         return pd.read_sql(consulta, conn).fillna("")
 
 
+@st.cache_data(ttl=20, show_spinner=False)
+def cargar_cuenta_corriente_pocket():
+    # El comprobante se excluye: puede ser pesado y no hace falta para listar.
+    consulta = text(
+        """
+        SELECT id, cliente, mes, concepto, servicio, importe, estado,
+               fecha_factura, fecha_pago, observacion, fecha_carga,
+               cargado_por
+        FROM cuenta_corriente
+        ORDER BY mes DESC, fecha_factura DESC, id DESC
+        """
+    )
+    with get_engine().connect() as conn:
+        return pd.read_sql(consulta, conn).fillna("")
+
+
+@st.cache_data(ttl=120, show_spinner=False)
+def cargar_clientes_pocket():
+    with get_engine().connect() as conn:
+        filas = conn.execute(
+            text(
+                "SELECT cliente FROM clientes "
+                "WHERE TRIM(COALESCE(cliente, '')) <> '' "
+                "ORDER BY cliente"
+            )
+        ).scalars().all()
+    return [str(cliente).strip() for cliente in filas if str(cliente).strip()]
+
+
+def guardar_deuda_pocket(
+    cliente, mes, concepto, servicio, importe, estado,
+    fecha_factura, observacion,
+):
+    usuario = get_secret("POCKET_USERNAME", "alan")
+    hoy = date.today().strftime("%Y-%m-%d")
+    registro = {
+        "id": f"CC-{uuid.uuid4().hex[:12].upper()}",
+        "cliente": str(cliente).strip(),
+        "mes": str(mes).strip(),
+        "concepto": str(concepto).strip() or "Honorarios mensuales",
+        "servicio": str(servicio).strip() or "General",
+        "importe": float(importe),
+        "estado": str(estado).strip(),
+        "fecha_factura": fecha_factura.strftime("%Y-%m-%d"),
+        "fecha_pago": hoy if estado == "Pagado" else "",
+        "observacion": str(observacion).strip(),
+        "fecha_carga": hoy,
+        "cargado_por": usuario,
+    }
+    with get_engine().begin() as conn:
+        conn.execute(
+            text(
+                """
+                INSERT INTO cuenta_corriente
+                    (id, cliente, mes, concepto, servicio, importe, estado,
+                     fecha_factura, fecha_pago, observacion, fecha_carga,
+                     cargado_por, comprobante_nombre, comprobante_tipo,
+                     comprobante_base64)
+                VALUES
+                    (:id, :cliente, :mes, :concepto, :servicio, :importe,
+                     :estado, :fecha_factura, :fecha_pago, :observacion,
+                     :fecha_carga, :cargado_por, '', '', '')
+                """
+            ),
+            registro,
+        )
+    cargar_cuenta_corriente_pocket.clear()
+
+
+def registrar_pago_pocket(movimiento_id, fecha_pago, observacion):
+    usuario = get_secret("POCKET_USERNAME", "alan")
+    nota = str(observacion or "").strip()
+    agregado = (
+        f"{fecha_pago.strftime('%Y-%m-%d')} - Pago registrado por "
+        f"{usuario}" + (f": {nota}" if nota else "")
+    )
+    with get_engine().begin() as conn:
+        resultado = conn.execute(
+            text(
+                """
+                UPDATE cuenta_corriente
+                SET estado = 'Pagado', fecha_pago = :fecha_pago,
+                    observacion = CASE
+                        WHEN TRIM(COALESCE(observacion, '')) = '' THEN :nota
+                        ELSE observacion || E'\n' || :nota
+                    END
+                WHERE id = :id
+                """
+            ),
+            {
+                "id": str(movimiento_id),
+                "fecha_pago": fecha_pago.strftime("%Y-%m-%d"),
+                "nota": agregado,
+            },
+        )
+    cargar_cuenta_corriente_pocket.clear()
+    return bool(resultado.rowcount)
+
+
 @st.cache_data(ttl=120, show_spinner=False)
 def cargar_adjuntos_pocket(tarea_id):
     with get_engine().connect() as conn:
@@ -538,6 +637,8 @@ def mapa_responsables_equipo():
 def limpiar_cache():
     cargar_tareas.clear()
     cargar_plan_trabajo.clear()
+    cargar_cuenta_corriente_pocket.clear()
+    cargar_clientes_pocket.clear()
     cargar_adjuntos_pocket.clear()
 
 
@@ -1005,15 +1106,15 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-pagina_pocket = st.radio(
+pagina_pocket = st.selectbox(
     pocket_ui("Vista"),
     [
         "📥 Capturar",
         "📋 Mi tablero",
         "🤝 Plan de trabajo",
+        "💳 Cuenta corriente",
     ],
     format_func=pocket_ui,
-    horizontal=True,
     label_visibility="collapsed",
     key="pocket_pagina",
 )
@@ -2447,3 +2548,216 @@ if pagina_pocket == "🤝 Plan de trabajo":
                     for comentario in comentarios_frente.splitlines():
                         if comentario.strip():
                             st.caption(comentario.strip())
+
+
+if pagina_pocket == "💳 Cuenta corriente":
+    st.markdown("### Cuenta corriente")
+    st.caption("Pagos, deuda y movimientos por cliente.")
+
+    cuenta_pocket = cargar_cuenta_corriente_pocket()
+    clientes_base = cargar_clientes_pocket()
+    clientes_con_cuenta = (
+        cuenta_pocket.get("cliente", pd.Series(dtype="object"))
+        .fillna("").astype(str).str.strip().tolist()
+    )
+    clientes_cuenta = sorted(set(clientes_base + clientes_con_cuenta) - {""})
+
+    if not clientes_cuenta:
+        st.info("No hay clientes cargados.")
+        st.stop()
+
+    cliente_cuenta = st.selectbox(
+        "Cliente",
+        clientes_cuenta,
+        key="pocket_cc_cliente",
+    )
+
+    detalle_cuenta = cuenta_pocket[
+        cuenta_pocket["cliente"].astype(str).eq(cliente_cuenta)
+    ].copy()
+    detalle_cuenta["importe"] = pd.to_numeric(
+        detalle_cuenta.get("importe", 0), errors="coerce"
+    ).fillna(0)
+
+    def pesos_pocket(valor):
+        return f"$ {float(valor):,.0f}".replace(",", ".")
+
+    estados_sin_deuda = ["Pagado", "Bonificado"]
+    total_cuenta = float(detalle_cuenta["importe"].sum())
+    cobrado_cuenta = float(
+        detalle_cuenta.loc[
+            detalle_cuenta["estado"].astype(str).eq("Pagado"), "importe"
+        ].sum()
+    )
+    deuda_cuenta = float(
+        detalle_cuenta.loc[
+            ~detalle_cuenta["estado"].astype(str).isin(estados_sin_deuda),
+            "importe",
+        ].sum()
+    )
+
+    cc1, cc2, cc3 = st.columns(3)
+    cc1.metric("Total", pesos_pocket(total_cuenta))
+    cc2.metric("Cobrado", pesos_pocket(cobrado_cuenta))
+    cc3.metric("Deuda", pesos_pocket(deuda_cuenta))
+
+    with st.expander("➕ Cargar movimiento", expanded=False):
+        tab_deuda, tab_pago = st.tabs(["Nueva deuda", "Registrar pago"])
+
+        with tab_deuda:
+            with st.form("pocket_cc_nueva_deuda", clear_on_submit=True):
+                fecha_mes_deuda = st.date_input(
+                    "Período",
+                    value=date.today(),
+                    key="pocket_cc_mes_deuda",
+                )
+                concepto_deuda = st.text_input(
+                    "Concepto",
+                    value="Honorarios mensuales",
+                    key="pocket_cc_concepto_deuda",
+                )
+                servicio_deuda = st.selectbox(
+                    "Servicio",
+                    [
+                        "General", "Ecosistema digital", "Consultoría",
+                        "Contabilidad / Gestión",
+                    ],
+                    key="pocket_cc_servicio_deuda",
+                )
+                importe_deuda = st.number_input(
+                    "Importe",
+                    min_value=0.0,
+                    step=10000.0,
+                    key="pocket_cc_importe_deuda",
+                )
+                estado_deuda = st.selectbox(
+                    "Estado",
+                    [
+                        "Pendiente de facturar", "Facturado", "No pagado",
+                        "Vencido",
+                    ],
+                    key="pocket_cc_estado_deuda",
+                )
+                fecha_factura_deuda = st.date_input(
+                    "Fecha de emisión",
+                    value=date.today(),
+                    key="pocket_cc_fecha_deuda",
+                )
+                observacion_deuda = st.text_area(
+                    "Observación",
+                    key="pocket_cc_obs_deuda",
+                )
+                crear_deuda = st.form_submit_button(
+                    "Guardar deuda",
+                    type="primary",
+                    use_container_width=True,
+                )
+
+            if crear_deuda:
+                if importe_deuda <= 0:
+                    st.error("El importe debe ser mayor a cero.")
+                else:
+                    guardar_deuda_pocket(
+                        cliente=cliente_cuenta,
+                        mes=fecha_mes_deuda.strftime("%Y-%m"),
+                        concepto=concepto_deuda,
+                        servicio=servicio_deuda,
+                        importe=importe_deuda,
+                        estado=estado_deuda,
+                        fecha_factura=fecha_factura_deuda,
+                        observacion=observacion_deuda,
+                    )
+                    st.success("Deuda cargada.")
+                    st.rerun()
+
+        with tab_pago:
+            pendientes_pago = detalle_cuenta[
+                ~detalle_cuenta["estado"].astype(str).isin(estados_sin_deuda)
+            ].copy()
+
+            if pendientes_pago.empty:
+                st.info("Este cliente no tiene deudas pendientes.")
+            else:
+                opciones_pago = {}
+                for _, movimiento in pendientes_pago.iterrows():
+                    etiqueta_pago = (
+                        f"{movimiento.get('mes', '')} · "
+                        f"{movimiento.get('concepto', '')} · "
+                        f"{pesos_pocket(movimiento.get('importe', 0))}"
+                    )
+                    # El id evita perder movimientos con etiquetas iguales.
+                    opciones_pago[
+                        f"{etiqueta_pago} · {movimiento.get('id', '')}"
+                    ] = str(movimiento.get("id", ""))
+
+                with st.form("pocket_cc_registrar_pago", clear_on_submit=True):
+                    pago_seleccionado = st.selectbox(
+                        "Deuda a cancelar",
+                        list(opciones_pago.keys()),
+                        key="pocket_cc_pago_movimiento",
+                    )
+                    fecha_pago_pocket = st.date_input(
+                        "Fecha del pago",
+                        value=date.today(),
+                        key="pocket_cc_fecha_pago",
+                    )
+                    observacion_pago_pocket = st.text_area(
+                        "Observación",
+                        placeholder="Transferencia, banco o referencia...",
+                        key="pocket_cc_obs_pago",
+                    )
+                    guardar_pago = st.form_submit_button(
+                        "Registrar pago",
+                        type="primary",
+                        use_container_width=True,
+                    )
+
+                if guardar_pago:
+                    movimiento_id = opciones_pago.get(pago_seleccionado, "")
+                    if registrar_pago_pocket(
+                        movimiento_id,
+                        fecha_pago_pocket,
+                        observacion_pago_pocket,
+                    ):
+                        st.success("Pago registrado.")
+                        st.rerun()
+                    else:
+                        st.error("No se encontró el movimiento.")
+
+    st.markdown("#### Detalle")
+
+    if detalle_cuenta.empty:
+        st.info("Este cliente todavía no tiene movimientos.")
+    else:
+        estados_detalle = sorted(
+            valor for valor in detalle_cuenta["estado"].astype(str).unique()
+            if valor
+        )
+        filtro_estado_cuenta = st.multiselect(
+            "Filtrar estado",
+            estados_detalle,
+            key="pocket_cc_filtro_estado",
+        )
+        if filtro_estado_cuenta:
+            detalle_cuenta = detalle_cuenta[
+                detalle_cuenta["estado"].astype(str).isin(filtro_estado_cuenta)
+            ].copy()
+
+        for _, movimiento in detalle_cuenta.iterrows():
+            with st.container(border=True):
+                st.markdown(
+                    f"**{movimiento.get('concepto', '') or 'Movimiento'}**"
+                )
+                st.caption(
+                    f"{movimiento.get('mes', '')} · "
+                    f"{movimiento.get('estado', '')} · "
+                    f"{movimiento.get('servicio', '') or 'General'}"
+                )
+                st.markdown(f"### {pesos_pocket(movimiento.get('importe', 0))}")
+                fecha_pago_mov = str(movimiento.get("fecha_pago", "")).strip()
+                if fecha_pago_mov:
+                    st.caption(f"Pagado: {fecha_pago_mov}")
+                observacion_mov = str(movimiento.get("observacion", "")).strip()
+                if observacion_mov:
+                    with st.expander("Ver observación"):
+                        st.write(observacion_mov)
