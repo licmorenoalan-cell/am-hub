@@ -333,6 +333,33 @@ def cargar_tareas():
         ).fillna("")
 
 
+@st.cache_data(ttl=20, show_spinner=False)
+def cargar_plan_trabajo():
+    """Carga solo los campos necesarios para la vista móvil del plan."""
+    consulta = text(
+        """
+        SELECT
+            id, cliente, mes, objetivo, descripcion,
+            responsable_am, responsable_cliente, prioridad,
+            estado, avance, checklist, fecha_limite,
+            comentarios, fecha_actualizacion
+        FROM objetivos
+        ORDER BY
+            CASE prioridad
+                WHEN 'Alta' THEN 1
+                WHEN 'Media' THEN 2
+                WHEN 'Baja' THEN 3
+                ELSE 4
+            END,
+            NULLIF(fecha_limite, '') ASC NULLS LAST,
+            fecha_actualizacion DESC
+        """
+    )
+
+    with get_engine().connect() as conn:
+        return pd.read_sql(consulta, conn).fillna("")
+
+
 @st.cache_data(ttl=120, show_spinner=False)
 def cargar_adjuntos_pocket(tarea_id):
     with get_engine().connect() as conn:
@@ -510,6 +537,7 @@ def mapa_responsables_equipo():
 
 def limpiar_cache():
     cargar_tareas.clear()
+    cargar_plan_trabajo.clear()
     cargar_adjuntos_pocket.clear()
 
 
@@ -982,6 +1010,7 @@ pagina_pocket = st.radio(
     [
         "📥 Capturar",
         "📋 Mi tablero",
+        "🤝 Plan de trabajo",
     ],
     format_func=pocket_ui,
     horizontal=True,
@@ -2230,3 +2259,191 @@ if pagina_pocket == "📋 Mi tablero":
                         st.error(
                             "No se encontró la tarea."
                         )
+
+
+if pagina_pocket == "🤝 Plan de trabajo":
+    st.markdown("### " + pocket_ui("Plan de trabajo"))
+    st.caption(
+        "Seguimiento de frentes y compromisos con clientes."
+    )
+
+    plan = cargar_plan_trabajo()
+
+    if plan.empty:
+        st.info("No hay frentes de trabajo cargados.")
+        st.stop()
+
+    for columna, valor_default in {
+        "cliente": "",
+        "objetivo": "",
+        "descripcion": "",
+        "responsable_am": "",
+        "responsable_cliente": "",
+        "prioridad": "Media",
+        "estado": "Pendiente",
+        "avance": 0,
+        "checklist": "",
+        "fecha_limite": "",
+        "comentarios": "",
+        "mes": "",
+    }.items():
+        if columna not in plan.columns:
+            plan[columna] = valor_default
+
+    plan["estado"] = (
+        plan["estado"].astype(str).str.strip().replace("", "Pendiente")
+    )
+    plan["prioridad"] = (
+        plan["prioridad"].astype(str).str.strip().replace("", "Media")
+    )
+
+    clientes_plan = sorted(
+        valor for valor in plan["cliente"].astype(str).str.strip().unique()
+        if valor
+    )
+    estados_plan = [
+        "Pendiente", "En curso", "En revisión", "Pausado", "Finalizado"
+    ]
+    prioridades_plan = ["Alta", "Media", "Baja"]
+
+    with st.expander("🔎 " + pocket_ui("Filtros"), expanded=False):
+        buscar_plan = st.text_input(
+            "Buscar",
+            placeholder="Frente, cliente o responsable...",
+            key="pocket_plan_buscar",
+        )
+        clientes_plan_filtro = st.multiselect(
+            "Cliente",
+            clientes_plan,
+            key="pocket_plan_clientes",
+        )
+        estados_plan_filtro = st.multiselect(
+            "Estado",
+            estados_plan,
+            default=["Pendiente", "En curso", "En revisión", "Pausado"],
+            key="pocket_plan_estados",
+        )
+        prioridades_plan_filtro = st.multiselect(
+            "Prioridad",
+            prioridades_plan,
+            key="pocket_plan_prioridades",
+        )
+
+    plan_vista = plan.copy()
+
+    if clientes_plan_filtro:
+        plan_vista = plan_vista[
+            plan_vista["cliente"].astype(str).isin(clientes_plan_filtro)
+        ].copy()
+
+    # Una selección vacía también representa la vista normal: no muestra
+    # finalizados hasta que el usuario los elige expresamente.
+    if estados_plan_filtro:
+        plan_vista = plan_vista[
+            plan_vista["estado"].astype(str).isin(estados_plan_filtro)
+        ].copy()
+    else:
+        plan_vista = plan_vista[
+            plan_vista["estado"].astype(str).ne("Finalizado")
+        ].copy()
+
+    if prioridades_plan_filtro:
+        plan_vista = plan_vista[
+            plan_vista["prioridad"].astype(str).isin(prioridades_plan_filtro)
+        ].copy()
+
+    if str(buscar_plan or "").strip():
+        palabras = [
+            palabra.casefold()
+            for palabra in str(buscar_plan).split()
+            if palabra.strip()
+        ]
+        texto_plan = pd.Series("", index=plan_vista.index, dtype="object")
+        for columna in [
+            "objetivo", "descripcion", "cliente", "responsable_am",
+            "responsable_cliente", "comentarios", "mes",
+        ]:
+            texto_plan = (
+                texto_plan + " "
+                + plan_vista[columna].fillna("").astype(str).str.casefold()
+            )
+        mascara_plan = pd.Series(True, index=plan_vista.index)
+        for palabra in palabras:
+            mascara_plan &= texto_plan.str.contains(
+                palabra, regex=False, na=False
+            )
+        plan_vista = plan_vista[mascara_plan].copy()
+
+    total_plan = len(plan_vista)
+    en_marcha = int(
+        plan_vista["estado"].isin(["En curso", "En revisión"]).sum()
+    )
+    fechas_plan = pd.to_datetime(
+        plan_vista["fecha_limite"].replace("", pd.NA), errors="coerce"
+    )
+    vencidos_plan = int(
+        (
+            fechas_plan.notna()
+            & (fechas_plan < pd.Timestamp(date.today()))
+            & plan_vista["estado"].ne("Finalizado")
+        ).sum()
+    )
+
+    m1, m2, m3 = st.columns(3)
+    m1.metric("Visibles", total_plan)
+    m2.metric("En marcha", en_marcha)
+    m3.metric("Vencidos", vencidos_plan)
+
+    if plan_vista.empty:
+        st.info("No hay frentes para los filtros seleccionados.")
+        st.stop()
+
+    for _, frente in plan_vista.iterrows():
+        titulo = str(frente.get("objetivo", "") or "Frente sin título").strip()
+        cliente_frente = str(frente.get("cliente", "") or "Sin cliente").strip()
+        estado_frente = str(frente.get("estado", "Pendiente"))
+        prioridad_frente = str(frente.get("prioridad", "Media"))
+        avance_numero = pd.to_numeric(
+            frente.get("avance", 0), errors="coerce"
+        )
+        avance_frente = 0 if pd.isna(avance_numero) else int(avance_numero)
+        avance_frente = max(0, min(100, avance_frente))
+
+        with st.container(border=True):
+            st.markdown(f"**{titulo}**")
+            st.caption(
+                f"{cliente_frente} · {estado_frente} · "
+                f"{texto_prioridad(prioridad_frente)} · "
+                f"{texto_fecha(frente.get('fecha_limite', ''))}"
+            )
+            st.progress(avance_frente, text=f"{avance_frente}%")
+
+            with st.expander("Ver detalle", expanded=False):
+                descripcion_frente = str(frente.get("descripcion", "")).strip()
+                if descripcion_frente:
+                    st.markdown(descripcion_frente)
+
+                responsable_am = str(frente.get("responsable_am", "")).strip()
+                responsable_cliente = str(
+                    frente.get("responsable_cliente", "")
+                ).strip()
+                if responsable_am:
+                    st.caption(f"Responsable AM: {responsable_am}")
+                if responsable_cliente:
+                    st.caption(f"Responsable cliente: {responsable_cliente}")
+
+                checklist_frente = parsear_checklist(
+                    frente.get("checklist", "")
+                )
+                if checklist_frente:
+                    st.markdown("**Checklist**")
+                    for item in checklist_frente:
+                        marca = "✅" if item.get("hecho", False) else "⬜"
+                        st.write(f"{marca} {item.get('texto', '')}")
+
+                comentarios_frente = str(frente.get("comentarios", "")).strip()
+                if comentarios_frente:
+                    st.markdown("**Actualizaciones**")
+                    for comentario in comentarios_frente.splitlines():
+                        if comentario.strip():
+                            st.caption(comentario.strip())
