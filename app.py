@@ -3757,7 +3757,7 @@ def render_archivos_material(material_id, cargado_por, clave_contexto):
     clave_abierto = f"archivos_material_abierto_{clave_contexto}_{material_id}"
     if not st.session_state.get(clave_abierto, False):
         if st.button(
-            "📎 Archivos",
+            "📎 Subir / ver archivos",
             key=f"abrir_archivos_material_{clave_contexto}_{material_id}",
             use_container_width=True,
         ):
@@ -4048,7 +4048,7 @@ def render_materiales(cliente, materiales=None):
                 )
 
                 link_entrega = st.text_input(
-                    "Link del video o archivo",
+                    "Link del video o archivo (opcional)",
                     value=str(
                         row.get("link_entrega", "") or ""
                     ),
@@ -4080,6 +4080,10 @@ def render_materiales(cliente, materiales=None):
                     ),
                     "cliente",
                 )
+
+                tiene_archivos = not cargar_adjuntos_material(
+                    material_id
+                ).empty
 
                 b1, b2 = st.columns(2)
 
@@ -4137,6 +4141,7 @@ def render_materiales(cliente, materiales=None):
                     puede_entregar = bool(
                         link_entrega.strip()
                         or comentario.strip()
+                        or tiene_archivos
                         or medio in ["WhatsApp", "Mail"]
                     )
 
@@ -9804,8 +9809,11 @@ def render_materiales_gestion(cliente_fijo="", modo="admin"):
                 )
 
                 nuevo_link_entrega = st.text_input(
-                    "Link del material entregado",
+                    "Link del material entregado (opcional)",
                     value=str(row.get("link_entrega", "") or ""),
+                    placeholder=(
+                        "Drive, WeTransfer, Dropbox, Canva u otro enlace"
+                    ),
                     key=f"link_entrega_material_am_{material_id}",
                 )
 
