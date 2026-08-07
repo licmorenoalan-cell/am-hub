@@ -1041,6 +1041,98 @@ def actualizar_detalle_tarea(
     limpiar_cache()
 
 
+def actualizar_frente_pocket(
+    frente_id,
+    cliente,
+    mes,
+    objetivo,
+    descripcion,
+    responsable_am,
+    responsable_cliente,
+    prioridad,
+    estado,
+    fecha_limite,
+    checklist,
+    comentario,
+):
+    usuario = get_secret("POCKET_USERNAME", "alan")
+    hoy = date.today().strftime("%Y-%m-%d")
+    items = [
+        {
+            "texto": str(item.get("texto", "")).strip(),
+            "hecho": bool(item.get("hecho", False)),
+        }
+        for item in checklist
+        if str(item.get("texto", "")).strip()
+    ]
+    completos = sum(1 for item in items if item["hecho"])
+    avance = int(round(completos * 100 / len(items))) if items else 0
+
+    with get_engine().begin() as conn:
+        fila = conn.execute(
+            text(
+                "SELECT comentarios FROM objetivos "
+                "WHERE id = :id FOR UPDATE"
+            ),
+            {"id": str(frente_id)},
+        ).mappings().first()
+        if fila is None:
+            raise ValueError("No se encontró el frente de trabajo.")
+
+        historial = str(fila.get("comentarios", "") or "").strip()
+        comentario = str(comentario or "").strip()
+        if comentario:
+            agregado = f"{hoy} - {usuario}: {comentario}"
+            historial = (historial + "\n" + agregado).strip()
+
+        conn.execute(
+            text(
+                """
+                UPDATE objetivos
+                SET cliente = :cliente, mes = :mes, objetivo = :objetivo,
+                    descripcion = :descripcion, responsable = :responsable_am,
+                    responsable_am = :responsable_am,
+                    responsable_cliente = :responsable_cliente,
+                    prioridad = :prioridad, estado = :estado,
+                    fecha_limite = :fecha_limite, checklist = :checklist,
+                    avance = :avance, comentarios = :comentarios,
+                    fecha_actualizacion = :fecha_actualizacion,
+                    actualizado_por = :actualizado_por
+                WHERE id = :id
+                """
+            ),
+            {
+                "cliente": str(cliente).strip(),
+                "mes": str(mes).strip(),
+                "objetivo": str(objetivo).strip(),
+                "descripcion": str(descripcion).strip(),
+                "responsable_am": str(responsable_am).strip(),
+                "responsable_cliente": str(responsable_cliente).strip(),
+                "prioridad": str(prioridad).strip(),
+                "estado": str(estado).strip(),
+                "fecha_limite": str(fecha_limite).strip(),
+                "checklist": serializar_checklist(items),
+                "avance": avance,
+                "comentarios": historial,
+                "fecha_actualizacion": hoy,
+                "actualizado_por": usuario,
+                "id": str(frente_id),
+            },
+        )
+
+    cargar_plan_trabajo.clear()
+
+
+def eliminar_frente_pocket(frente_id):
+    with get_engine().begin() as conn:
+        resultado = conn.execute(
+            text("DELETE FROM objetivos WHERE id = :id"),
+            {"id": str(frente_id)},
+        )
+    cargar_plan_trabajo.clear()
+    return bool(resultado.rowcount)
+
+
 def texto_fecha(valor: str) -> str:
     fecha = pd.to_datetime(
         str(valor or "").strip(),
@@ -2499,7 +2591,12 @@ if pagina_pocket == "🤝 Plan de trabajo":
         st.info("No hay frentes para los filtros seleccionados.")
         st.stop()
 
+    clientes_edicion_plan = sorted(
+        set(clientes_plan + cargar_clientes_pocket()) - {""}
+    )
+
     for _, frente in plan_vista.iterrows():
+        frente_id = str(frente.get("id", ""))
         titulo = str(frente.get("objetivo", "") or "Frente sin título").strip()
         cliente_frente = str(frente.get("cliente", "") or "Sin cliente").strip()
         estado_frente = str(frente.get("estado", "Pendiente"))
@@ -2519,7 +2616,7 @@ if pagina_pocket == "🤝 Plan de trabajo":
             )
             st.progress(avance_frente, text=f"{avance_frente}%")
 
-            with st.expander("Ver detalle", expanded=False):
+            with st.expander("Ver y editar", expanded=False):
                 descripcion_frente = str(frente.get("descripcion", "")).strip()
                 if descripcion_frente:
                     st.markdown(descripcion_frente)
@@ -2548,6 +2645,186 @@ if pagina_pocket == "🤝 Plan de trabajo":
                     for comentario in comentarios_frente.splitlines():
                         if comentario.strip():
                             st.caption(comentario.strip())
+
+                with st.form(f"pocket_plan_form_{frente_id}"):
+                    objetivo_editado = st.text_input(
+                        "Frente de trabajo",
+                        value=titulo,
+                        key=f"pocket_plan_objetivo_{frente_id}",
+                    )
+                    descripcion_editada = st.text_area(
+                        "Descripción",
+                        value=descripcion_frente,
+                        key=f"pocket_plan_descripcion_{frente_id}",
+                    )
+
+                    indice_cliente = (
+                        clientes_edicion_plan.index(cliente_frente)
+                        if cliente_frente in clientes_edicion_plan else 0
+                    )
+                    cliente_editado = st.selectbox(
+                        "Cliente",
+                        clientes_edicion_plan,
+                        index=indice_cliente,
+                        key=f"pocket_plan_cliente_{frente_id}",
+                    )
+                    mes_editado = st.text_input(
+                        "Mes",
+                        value=str(frente.get("mes", "")).strip(),
+                        placeholder="AAAA-MM",
+                        key=f"pocket_plan_mes_{frente_id}",
+                    )
+
+                    e1, e2 = st.columns(2)
+                    with e1:
+                        estado_actual = (
+                            estado_frente if estado_frente in estados_plan
+                            else "Pendiente"
+                        )
+                        estado_editado = st.selectbox(
+                            "Estado",
+                            estados_plan,
+                            index=estados_plan.index(estado_actual),
+                            key=f"pocket_plan_estado_{frente_id}",
+                        )
+                    with e2:
+                        prioridad_actual = (
+                            prioridad_frente if prioridad_frente in prioridades_plan
+                            else "Media"
+                        )
+                        prioridad_editada = st.selectbox(
+                            "Prioridad",
+                            prioridades_plan,
+                            index=prioridades_plan.index(prioridad_actual),
+                            key=f"pocket_plan_prioridad_{frente_id}",
+                        )
+
+                    responsable_am_editado = st.text_input(
+                        "Responsable AM",
+                        value=responsable_am,
+                        key=f"pocket_plan_resp_am_{frente_id}",
+                    )
+                    responsable_cliente_editado = st.text_input(
+                        "Responsable cliente",
+                        value=responsable_cliente,
+                        key=f"pocket_plan_resp_cliente_{frente_id}",
+                    )
+
+                    fecha_actual_plan = pd.to_datetime(
+                        frente.get("fecha_limite", ""), errors="coerce"
+                    )
+                    sin_fecha_plan = st.checkbox(
+                        "Sin fecha de vencimiento",
+                        value=pd.isna(fecha_actual_plan),
+                        key=f"pocket_plan_sin_fecha_{frente_id}",
+                    )
+                    fecha_editada_plan = st.date_input(
+                        "Fecha de vencimiento",
+                        value=(
+                            date.today() if pd.isna(fecha_actual_plan)
+                            else fecha_actual_plan.date()
+                        ),
+                        disabled=sin_fecha_plan,
+                        key=f"pocket_plan_fecha_{frente_id}",
+                    )
+
+                    st.markdown("**Checklist**")
+                    checklist_editado = []
+                    for indice_item, item in enumerate(checklist_frente):
+                        texto_item_editado = st.text_input(
+                            f"Ítem {indice_item + 1}",
+                            value=str(item.get("texto", "")),
+                            key=(
+                                f"pocket_plan_item_texto_{frente_id}_"
+                                f"{indice_item}"
+                            ),
+                        )
+                        ci1, ci2 = st.columns(2)
+                        with ci1:
+                            hecho_item = st.checkbox(
+                                "Completado",
+                                value=bool(item.get("hecho", False)),
+                                key=(
+                                    f"pocket_plan_item_hecho_{frente_id}_"
+                                    f"{indice_item}"
+                                ),
+                            )
+                        with ci2:
+                            eliminar_item = st.checkbox(
+                                "Eliminar",
+                                value=False,
+                                key=(
+                                    f"pocket_plan_item_borrar_{frente_id}_"
+                                    f"{indice_item}"
+                                ),
+                            )
+                        if texto_item_editado.strip() and not eliminar_item:
+                            checklist_editado.append({
+                                "texto": texto_item_editado.strip(),
+                                "hecho": hecho_item,
+                            })
+
+                    nuevo_item_plan = st.text_input(
+                        "+ Agregar ítem",
+                        placeholder="Nuevo paso...",
+                        key=f"pocket_plan_item_nuevo_{frente_id}",
+                    )
+                    nueva_actualizacion = st.text_area(
+                        "Nueva actualización",
+                        placeholder="Escribí el avance o comentario...",
+                        key=f"pocket_plan_comentario_{frente_id}",
+                    )
+                    guardar_frente = st.form_submit_button(
+                        "Guardar cambios",
+                        type="primary",
+                        use_container_width=True,
+                    )
+
+                if guardar_frente:
+                    if not objetivo_editado.strip():
+                        st.error("El frente de trabajo no puede estar vacío.")
+                    else:
+                        if nuevo_item_plan.strip():
+                            checklist_editado.append({
+                                "texto": nuevo_item_plan.strip(),
+                                "hecho": False,
+                            })
+                        actualizar_frente_pocket(
+                            frente_id=frente_id,
+                            cliente=cliente_editado,
+                            mes=mes_editado,
+                            objetivo=objetivo_editado,
+                            descripcion=descripcion_editada,
+                            responsable_am=responsable_am_editado,
+                            responsable_cliente=responsable_cliente_editado,
+                            prioridad=prioridad_editada,
+                            estado=estado_editado,
+                            fecha_limite=(
+                                "" if sin_fecha_plan
+                                else fecha_editada_plan.strftime("%Y-%m-%d")
+                            ),
+                            checklist=checklist_editado,
+                            comentario=nueva_actualizacion,
+                        )
+                        st.success("Frente actualizado.")
+                        st.rerun()
+
+                st.divider()
+                confirmar_borrado_frente = st.checkbox(
+                    "Confirmo eliminar este frente",
+                    key=f"pocket_plan_confirmar_borrar_{frente_id}",
+                )
+                if st.button(
+                    "Eliminar frente",
+                    disabled=not confirmar_borrado_frente,
+                    use_container_width=True,
+                    key=f"pocket_plan_borrar_{frente_id}",
+                ):
+                    if eliminar_frente_pocket(frente_id):
+                        st.success("Frente eliminado.")
+                        st.rerun()
+                    else:
+                        st.error("No se encontró el frente.")
 
 
 if pagina_pocket == "💳 Cuenta corriente":
