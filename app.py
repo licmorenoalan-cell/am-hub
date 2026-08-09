@@ -210,7 +210,8 @@ def asegurar_columnas_tareas_postgres():
         conn.execute(
             sql_text(
                 'ALTER TABLE "tareas" ADD COLUMN IF NOT EXISTS '
-                '"archivos_habilitados" TEXT'
+                '"archivos_habilitados" TEXT, '
+                'ADD COLUMN IF NOT EXISTS "posicion_manual" TEXT'
             )
         )
     return True
@@ -10092,6 +10093,7 @@ def columnas_tareas_internas():
         "fecha_actualizacion",
         "actualizado_por",
         "archivos_habilitados",
+        "posicion_manual",
     ]
 
 
@@ -10384,6 +10386,7 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
         "name",
         username,
     )
+    puede_reordenar_tareas = role == "admin_general"
 
     header(
         "Centro de tareas",
@@ -12013,6 +12016,69 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
 
         return f"📅 {fecha_txt}"
 
+    def reordenar_tarea_en_dataframe(
+        dataframe,
+        tarea_id,
+        posicion,
+    ):
+        """Inserta la tarea en su columna y normaliza solo esa columna."""
+        vista_orden = dataframe.copy()
+        mask_tarea = vista_orden["id"].astype(str).eq(str(tarea_id))
+        if not mask_tarea.any():
+            return vista_orden, []
+
+        fila_tarea = vista_orden.loc[mask_tarea].iloc[0]
+
+        if criterio_columnas == "Estado":
+            grupo_destino = str(fila_tarea.get("estado", ""))
+            mask_grupo = vista_orden["estado"].astype(str).eq(grupo_destino)
+        elif criterio_columnas == "Fecha de vencimiento":
+            grupo_destino = grupo_vencimiento(fila_tarea.get("fecha_limite", ""))
+            mask_grupo = vista_orden["fecha_limite"].apply(
+                grupo_vencimiento
+            ).eq(grupo_destino)
+        elif criterio_columnas == "Unidad":
+            grupo_destino = str(fila_tarea.get("unidad", "AM Consultora"))
+            mask_grupo = vista_orden["unidad"].astype(str).eq(grupo_destino)
+        else:
+            grupo_destino = str(fila_tarea.get("cliente", "")).strip()
+            clientes_grupo = (
+                vista_orden["cliente"].fillna("").astype(str).str.strip()
+            )
+            mask_grupo = clientes_grupo.eq(grupo_destino)
+
+        grupo_df = vista_orden.loc[mask_grupo].copy()
+        grupo_df["_posicion_manual"] = pd.to_numeric(
+            grupo_df["posicion_manual"], errors="coerce"
+        )
+        grupo_df["_orden_prioridad"] = grupo_df["prioridad"].map({
+            "Alta": 1, "Media": 2, "Baja": 3,
+        }).fillna(4)
+        grupo_df["_orden_fecha"] = pd.to_datetime(
+            grupo_df["fecha_limite"], errors="coerce"
+        )
+        grupo_df = grupo_df.sort_values(
+            ["_posicion_manual", "_orden_prioridad", "_orden_fecha"],
+            ascending=[True, True, True],
+            na_position="last",
+        )
+
+        ids = [
+            valor for valor in grupo_df["id"].astype(str).tolist()
+            if valor != str(tarea_id)
+        ]
+        indice = max(0, min(int(posicion) - 1, len(ids)))
+        ids.insert(indice, str(tarea_id))
+        mapa_orden = {
+            valor: str(numero)
+            for numero, valor in enumerate(ids, start=1)
+        }
+        mask_ids = vista_orden["id"].astype(str).isin(mapa_orden)
+        vista_orden.loc[mask_ids, "posicion_manual"] = (
+            vista_orden.loc[mask_ids, "id"].astype(str).map(mapa_orden)
+        )
+        return vista_orden, ids
+
     def etiqueta_prioridad(valor):
         prioridad = str(valor or "Media")
 
@@ -12131,6 +12197,10 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
             }
 
             if not subset.empty:
+                subset["_posicion_manual"] = pd.to_numeric(
+                    subset["posicion_manual"],
+                    errors="coerce",
+                )
                 subset["_orden_prioridad"] = (
                     subset["prioridad"]
                     .map(orden_prioridad)
@@ -12144,10 +12214,11 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
 
                 subset = subset.sort_values(
                     [
+                        "_posicion_manual",
                         "_orden_prioridad",
                         "_orden_fecha",
                     ],
-                    ascending=[True, True],
+                    ascending=[True, True, True],
                     na_position="last",
                 )
 
@@ -12237,6 +12308,15 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
                             "fecha_limite",
                             "",
                         )
+                    )
+
+                    ids_orden_columna = (
+                        subset["id"].astype(str).tolist()
+                    )
+                    posicion_actual_columna = (
+                        ids_orden_columna.index(tarea_id) + 1
+                        if tarea_id in ids_orden_columna
+                        else len(ids_orden_columna)
                     )
 
                     descripcion_txt = str(
@@ -12615,6 +12695,22 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
                                     f"{tarea_id}"
                                 ),
                             )
+
+                            if puede_reordenar_tareas:
+                                posicion_deseada = st.number_input(
+                                    "Posición en esta columna",
+                                    min_value=1,
+                                    max_value=max(1, len(ids_orden_columna)),
+                                    value=posicion_actual_columna,
+                                    step=1,
+                                    key=f"posicion_tarea_{tarea_id}",
+                                    help=(
+                                        "1 aparece arriba. Al guardar se "
+                                        "reacomodan las demás tarjetas."
+                                    ),
+                                )
+                            else:
+                                posicion_deseada = posicion_actual_columna
 
                             nuevo_cliente = ""
 
@@ -13285,6 +13381,17 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
                                             + agregado
                                         ).strip()
 
+                                    ids_reordenados = []
+                                    if puede_reordenar_tareas:
+                                        (
+                                            tareas_actualizadas,
+                                            ids_reordenados,
+                                        ) = reordenar_tarea_en_dataframe(
+                                            tareas_actualizadas,
+                                            tarea_id,
+                                            posicion_deseada,
+                                        )
+
                                     finaliza_recurrente = (
                                         nuevo_estado
                                         == "Finalizada"
@@ -13315,6 +13422,28 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
                                             tarea_id,
                                             registro_actualizado,
                                         )
+
+                                        if ids_reordenados:
+                                            with get_postgres_engine().begin() as conn:
+                                                conn.execute(
+                                                    sql_text(
+                                                        'UPDATE "tareas" SET '
+                                                        '"posicion_manual" = :orden '
+                                                        'WHERE "id" = :tarea_id'
+                                                    ),
+                                                    [
+                                                        {
+                                                            "orden": str(indice),
+                                                            "tarea_id": tarea_orden_id,
+                                                        }
+                                                        for indice, tarea_orden_id
+                                                        in enumerate(
+                                                            ids_reordenados,
+                                                            start=1,
+                                                        )
+                                                    ],
+                                                )
+                                            _limpiar_cache_postgres()
                                     else:
                                         save_csv(
                                             tareas_actualizadas,
