@@ -261,6 +261,7 @@ def asegurar_columnas():
         "fecha_actualizacion": "text",
         "actualizado_por": "text",
         "archivos_habilitados": "text",
+        "posicion_manual": "text",
     }
 
     with engine.begin() as conn:
@@ -313,8 +314,14 @@ def cargar_tareas():
             fecha_carga,
             fecha_actualizacion
             , archivos_habilitados
+            , posicion_manual
         FROM tareas
         ORDER BY
+            CASE
+                WHEN posicion_manual ~ '^[0-9]+$'
+                THEN posicion_manual::integer
+                ELSE NULL
+            END ASC NULLS LAST,
             CASE prioridad
                 WHEN 'Alta' THEN 1
                 WHEN 'Media' THEN 2
