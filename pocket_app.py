@@ -1,4 +1,5 @@
 import hmac
+import html
 import os
 import secrets
 import base64
@@ -282,6 +283,12 @@ def asegurar_columnas():
                 '"cargado_por" TEXT)'
             )
         )
+        conn.execute(
+            text(
+                'ALTER TABLE "objetivos" ADD COLUMN IF NOT EXISTS '
+                '"responsable_tipo" TEXT'
+            )
+        )
 
 
 @st.cache_data(
@@ -347,7 +354,7 @@ def cargar_plan_trabajo():
         """
         SELECT
             id, cliente, mes, objetivo, descripcion,
-            responsable_am, responsable_cliente, prioridad,
+            responsable_am, responsable_cliente, responsable_tipo, prioridad,
             estado, avance, checklist, fecha_limite,
             comentarios, fecha_actualizacion
         FROM objetivos
@@ -563,6 +570,77 @@ def cargar_archivo_pocket(archivo_id, tarea_id):
             },
         ).mappings().first()
     return dict(fila) if fila else {}
+
+
+def render_archivos_frente_pocket(frente_id):
+    clave_abierto = f"pocket_archivos_frente_abierto_{frente_id}"
+    if not st.session_state.get(clave_abierto, False):
+        if st.button(
+            "📎 Adjuntar / ver archivos",
+            key=f"pocket_abrir_archivos_frente_{frente_id}",
+            use_container_width=True,
+        ):
+            st.session_state[clave_abierto] = True
+            st.rerun()
+        return
+
+    with st.container(border=True):
+        st.markdown("**📎 Archivos adjuntos**")
+        st.caption("Hasta 5 por vez y 8 MB por archivo.")
+        nuevos = st.file_uploader(
+            "Agregar archivos",
+            accept_multiple_files=True,
+            key=f"pocket_subir_archivos_frente_{frente_id}",
+        )
+        if st.button(
+            "Subir archivos",
+            key=f"pocket_guardar_archivos_frente_{frente_id}",
+            disabled=not nuevos,
+            use_container_width=True,
+        ):
+            try:
+                cantidad = guardar_adjuntos_pocket(frente_id, nuevos)
+                st.success(f"{cantidad} archivo(s) cargado(s).")
+                st.rerun()
+            except Exception as exc:
+                st.error(str(exc))
+
+        adjuntos = cargar_adjuntos_pocket(frente_id)
+        if adjuntos.empty:
+            st.caption("Todavía no hay archivos adjuntos.")
+        else:
+            for _, adjunto in adjuntos.iterrows():
+                archivo_id = str(adjunto.get("id", ""))
+                nombre = str(adjunto.get("nombre", "archivo"))
+                preparar = f"pocket_frente_archivo_preparado_{frente_id}"
+                if st.button(
+                    f"Preparar {nombre}",
+                    key=f"pocket_preparar_frente_{archivo_id}",
+                    use_container_width=True,
+                ):
+                    st.session_state[preparar] = archivo_id
+                if st.session_state.get(preparar) == archivo_id:
+                    archivo = cargar_archivo_pocket(archivo_id, frente_id)
+                    contenido = str(archivo.get("contenido_base64", "") or "")
+                    if contenido:
+                        st.download_button(
+                            f"Descargar {nombre}",
+                            data=base64.b64decode(contenido),
+                            file_name=str(archivo.get("nombre", nombre)),
+                            mime=str(
+                                archivo.get("tipo", "application/octet-stream")
+                            ),
+                            key=f"pocket_descargar_frente_{archivo_id}",
+                            use_container_width=True,
+                        )
+
+        if st.button(
+            "Cerrar archivos",
+            key=f"pocket_cerrar_archivos_frente_{frente_id}",
+            use_container_width=True,
+        ):
+            st.session_state[clave_abierto] = False
+            st.rerun()
 
 
 @st.cache_data(
@@ -1056,6 +1134,7 @@ def actualizar_frente_pocket(
     descripcion,
     responsable_am,
     responsable_cliente,
+    responsable_tipo,
     prioridad,
     estado,
     fecha_limite,
@@ -1100,6 +1179,7 @@ def actualizar_frente_pocket(
                     descripcion = :descripcion, responsable = :responsable_am,
                     responsable_am = :responsable_am,
                     responsable_cliente = :responsable_cliente,
+                    responsable_tipo = :responsable_tipo,
                     prioridad = :prioridad, estado = :estado,
                     fecha_limite = :fecha_limite, checklist = :checklist,
                     avance = :avance, comentarios = :comentarios,
@@ -1115,6 +1195,7 @@ def actualizar_frente_pocket(
                 "descripcion": str(descripcion).strip(),
                 "responsable_am": str(responsable_am).strip(),
                 "responsable_cliente": str(responsable_cliente).strip(),
+                "responsable_tipo": str(responsable_tipo).strip(),
                 "prioridad": str(prioridad).strip(),
                 "estado": str(estado).strip(),
                 "fecha_limite": str(fecha_limite).strip(),
@@ -1137,6 +1218,13 @@ def eliminar_frente_pocket(frente_id):
             {"id": str(frente_id)},
         )
     cargar_plan_trabajo.clear()
+    if resultado.rowcount:
+        with get_engine().begin() as conn:
+            conn.execute(
+                text("DELETE FROM tarea_archivos WHERE tarea_id = :id"),
+                {"id": str(frente_id)},
+            )
+        cargar_adjuntos_pocket.clear()
     return bool(resultado.rowcount)
 
 
@@ -2479,6 +2567,7 @@ if pagina_pocket == "🤝 Plan de trabajo":
         "descripcion": "",
         "responsable_am": "",
         "responsable_cliente": "",
+        "responsable_tipo": "AM Consultora",
         "prioridad": "Media",
         "estado": "Pendiente",
         "avance": 0,
@@ -2608,6 +2697,12 @@ if pagina_pocket == "🤝 Plan de trabajo":
         cliente_frente = str(frente.get("cliente", "") or "Sin cliente").strip()
         estado_frente = str(frente.get("estado", "Pendiente"))
         prioridad_frente = str(frente.get("prioridad", "Media"))
+        responsable_tipo_frente = str(
+            frente.get("responsable_tipo", "AM Consultora")
+            or "AM Consultora"
+        ).strip()
+        if responsable_tipo_frente not in ["AM Consultora", "Cliente"]:
+            responsable_tipo_frente = "AM Consultora"
         avance_numero = pd.to_numeric(
             frente.get("avance", 0), errors="coerce"
         )
@@ -2615,7 +2710,25 @@ if pagina_pocket == "🤝 Plan de trabajo":
         avance_frente = max(0, min(100, avance_frente))
 
         with st.container(border=True):
-            st.markdown(f"**{titulo}**")
+            etiqueta_frente = (
+                cliente_frente
+                if responsable_tipo_frente == "Cliente"
+                else "AM Consultora"
+            )
+            color_frente = (
+                "#15803D"
+                if responsable_tipo_frente == "Cliente"
+                else "#1D4ED8"
+            )
+            st.markdown(
+                '<div style="display:flex;align-items:center;gap:8px;'
+                'flex-wrap:wrap">'
+                f'<strong>{html.escape(titulo)}</strong>'
+                '<span style="padding:2px 8px;border-radius:999px;'
+                f'background:{color_frente};color:white;font-size:0.72rem;'
+                f'font-weight:700">{html.escape(etiqueta_frente)}</span></div>',
+                unsafe_allow_html=True,
+            )
             st.caption(
                 f"{cliente_frente} · {estado_frente} · "
                 f"{texto_prioridad(prioridad_frente)} · "
@@ -2716,6 +2829,14 @@ if pagina_pocket == "🤝 Plan de trabajo":
                         value=responsable_cliente,
                         key=f"pocket_plan_resp_cliente_{frente_id}",
                     )
+                    responsable_tipo_editado = st.selectbox(
+                        "Responsabilidad principal",
+                        ["AM Consultora", "Cliente"],
+                        index=(
+                            1 if responsable_tipo_frente == "Cliente" else 0
+                        ),
+                        key=f"pocket_plan_resp_tipo_{frente_id}",
+                    )
 
                     fecha_actual_plan = pd.to_datetime(
                         frente.get("fecha_limite", ""), errors="coerce"
@@ -2804,6 +2925,7 @@ if pagina_pocket == "🤝 Plan de trabajo":
                             descripcion=descripcion_editada,
                             responsable_am=responsable_am_editado,
                             responsable_cliente=responsable_cliente_editado,
+                            responsable_tipo=responsable_tipo_editado,
                             prioridad=prioridad_editada,
                             estado=estado_editado,
                             fecha_limite=(
@@ -2815,6 +2937,8 @@ if pagina_pocket == "🤝 Plan de trabajo":
                         )
                         st.success("Frente actualizado.")
                         st.rerun()
+
+                render_archivos_frente_pocket(frente_id)
 
                 st.divider()
                 confirmar_borrado_frente = st.checkbox(
