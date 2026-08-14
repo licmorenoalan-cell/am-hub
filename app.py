@@ -197,7 +197,9 @@ def asegurar_columnas_objetivos_postgres():
                 'ADD COLUMN IF NOT EXISTS '
                 '"responsable_am" TEXT, '
                 'ADD COLUMN IF NOT EXISTS '
-                '"responsable_cliente" TEXT'
+                '"responsable_cliente" TEXT, '
+                'ADD COLUMN IF NOT EXISTS '
+                '"responsable_tipo" TEXT'
             )
         )
 
@@ -5480,6 +5482,7 @@ def render_inicio_cliente_ejecutivo(cliente):
         "responsable",
         "responsable_am",
         "responsable_cliente",
+        "responsable_tipo",
         "prioridad",
         "estado",
         "avance",
@@ -5820,11 +5823,139 @@ def checklist_desde_textarea_objetivo(texto):
     return items
 
 
+def render_archivos_objetivo(
+    objetivo_id,
+    cargado_por,
+    puede_eliminar=True,
+):
+    """Adjuntos bajo demanda; reutiliza el almacenamiento liviano de tareas."""
+    clave_abierto = f"archivos_objetivo_abierto_{objetivo_id}"
+    if not st.session_state.get(clave_abierto, False):
+        if st.button(
+            "📎 Adjuntar / ver archivos",
+            key=f"abrir_archivos_objetivo_{objetivo_id}",
+            use_container_width=True,
+        ):
+            st.session_state[clave_abierto] = True
+            st.rerun()
+        return
+
+    with st.container(border=True):
+        cabecera, cerrar = st.columns([3, 1])
+        with cabecera:
+            st.markdown("**📎 Archivos adjuntos**")
+            st.caption(
+                "Máximo 5 por vez, 8 MB por archivo y 40 MB por tarjeta."
+            )
+        with cerrar:
+            if st.button(
+                "Cerrar",
+                key=f"cerrar_archivos_objetivo_{objetivo_id}",
+            ):
+                st.session_state[clave_abierto] = False
+                st.rerun()
+
+        nuevos_archivos = st.file_uploader(
+            "Agregar archivos",
+            type=[
+                "pdf", "doc", "docx", "xls", "xlsx", "csv", "txt",
+                "png", "jpg", "jpeg", "webp", "zip",
+            ],
+            accept_multiple_files=True,
+            key=f"subir_archivos_objetivo_{objetivo_id}",
+        )
+        if st.button(
+            "Subir archivos",
+            key=f"guardar_archivos_objetivo_{objetivo_id}",
+            disabled=not nuevos_archivos,
+            use_container_width=True,
+        ):
+            try:
+                cantidad = guardar_adjuntos_tarea(
+                    objetivo_id,
+                    nuevos_archivos,
+                    cargado_por,
+                )
+                st.success(f"{cantidad} archivo(s) cargado(s).")
+                st.rerun()
+            except Exception as exc:
+                st.error(str(exc))
+
+        adjuntos = cargar_adjuntos_tarea(objetivo_id)
+        if adjuntos.empty:
+            st.caption("Todavía no hay archivos adjuntos.")
+            return
+
+        for _, adjunto in adjuntos.iterrows():
+            archivo_id = str(adjunto.get("id", ""))
+            nombre = str(adjunto.get("nombre", "archivo"))
+            try:
+                tamano_mb = float(adjunto.get("tamano", 0) or 0) / 1048576
+            except Exception:
+                tamano_mb = 0
+            st.caption(
+                f"{nombre} · {tamano_mb:.2f} MB · "
+                f"{adjunto.get('cargado_por', '')}"
+            )
+            preparar_key = f"objetivo_archivo_preparado_{objetivo_id}"
+            if st.button(
+                f"Preparar {nombre}",
+                key=f"preparar_archivo_objetivo_{archivo_id}",
+                use_container_width=True,
+            ):
+                st.session_state[preparar_key] = archivo_id
+            if st.session_state.get(preparar_key) == archivo_id:
+                archivo = cargar_archivo_tarea(archivo_id, objetivo_id)
+                contenido = str(archivo.get("contenido_base64", "") or "")
+                if contenido:
+                    st.download_button(
+                        f"Descargar {nombre}",
+                        data=base64.b64decode(contenido),
+                        file_name=str(archivo.get("nombre", nombre)),
+                        mime=str(
+                            archivo.get("tipo", "application/octet-stream")
+                        ),
+                        key=f"descargar_archivo_objetivo_{archivo_id}",
+                        use_container_width=True,
+                    )
+
+        if puede_eliminar:
+            nombres = dict(zip(
+                adjuntos["id"].astype(str),
+                adjuntos["nombre"].astype(str),
+            ))
+            archivo_eliminar = st.selectbox(
+                "Archivo a eliminar",
+                list(nombres),
+                format_func=lambda valor: nombres.get(valor, valor),
+                key=f"archivo_eliminar_objetivo_{objetivo_id}",
+            )
+            confirmar = st.checkbox(
+                "Confirmo eliminar el archivo",
+                key=f"confirmar_archivo_objetivo_{objetivo_id}",
+            )
+            if st.button(
+                "Eliminar archivo",
+                key=f"eliminar_archivo_objetivo_{objetivo_id}",
+                disabled=not confirmar,
+                use_container_width=True,
+            ):
+                try:
+                    eliminar_adjunto_tarea(archivo_eliminar, objetivo_id)
+                    st.success("Archivo eliminado.")
+                    st.rerun()
+                except Exception as exc:
+                    st.error(str(exc))
+
+
 
 def render_objetivos(cliente="", modo="cliente"):
     role = st.session_state.get("role", "")
     username = st.session_state.get("username", "")
     nombre_usuario = st.session_state.get("name", username)
+
+    if usar_postgres():
+        asegurar_columnas_objetivos_postgres()
 
     if modo in ["admin", "equipo"]:
         subtitulo_plan = (
@@ -5845,6 +5976,7 @@ def render_objetivos(cliente="", modo="cliente"):
         "responsable",
         "responsable_am",
         "responsable_cliente",
+        "responsable_tipo",
         "prioridad",
         "estado",
         "avance",
@@ -5912,6 +6044,13 @@ def render_objetivos(cliente="", modo="cliente"):
         objetivos["responsable_cliente"]
         .astype(str)
         .str.strip()
+    )
+
+    objetivos["responsable_tipo"] = (
+        objetivos["responsable_tipo"]
+        .astype(str)
+        .str.strip()
+        .replace("", "AM Consultora")
     )
 
     # Compatibilidad con objetivos anteriores:
@@ -5993,6 +6132,15 @@ def render_objetivos(cliente="", modo="cliente"):
                             ),
                         )
 
+                        responsable_tipo = st.selectbox(
+                            "Responsabilidad principal",
+                            ["AM Consultora", "Cliente"],
+                            help=(
+                                "Define quién tiene la próxima acción "
+                                "y la etiqueta visible de la tarjeta."
+                            ),
+                        )
+
                         prioridad = st.selectbox(
                             ui("Prioridad"),
                             prioridades,
@@ -6028,6 +6176,7 @@ def render_objetivos(cliente="", modo="cliente"):
                                 "responsable_cliente": (
                                     responsable_cliente.strip()
                                 ),
+                                "responsable_tipo": responsable_tipo,
                                 "prioridad": prioridad,
                                 "estado": estado,
                                 "avance": avance_auto,
@@ -6246,6 +6395,7 @@ def render_objetivos(cliente="", modo="cliente"):
                     "No se encontró el frente de trabajo."
                 )
 
+            eliminar_adjuntos_de_tarea(objetivo_id)
             return
 
         objetivos_full = read_csv(
@@ -6277,6 +6427,7 @@ def render_objetivos(cliente="", modo="cliente"):
             objetivos_full.loc[~mask].copy(),
             OBJETIVOS_PATH,
         )
+        eliminar_adjuntos_de_tarea(objetivo_id)
 
 
     # ------------------------------------------------------------
@@ -6956,6 +7107,13 @@ def render_objetivos(cliente="", modo="cliente"):
                         )
                     )
 
+                    responsable_tipo_txt = str(
+                        row.get("responsable_tipo", "AM Consultora")
+                        or "AM Consultora"
+                    ).strip()
+                    if responsable_tipo_txt not in ["AM Consultora", "Cliente"]:
+                        responsable_tipo_txt = "AM Consultora"
+
                     prioridad_txt = str(
                         row.get(
                             "prioridad",
@@ -7016,8 +7174,27 @@ def render_objetivos(cliente="", modo="cliente"):
                                     cliente_txt
                                 )
 
+                            etiqueta_responsable = (
+                                cliente_txt
+                                if responsable_tipo_txt == "Cliente"
+                                else "AM Consultora"
+                            )
+                            color_etiqueta = (
+                                "#15803D"
+                                if responsable_tipo_txt == "Cliente"
+                                else "#1D4ED8"
+                            )
                             st.markdown(
-                                f"**{objetivo_txt}**"
+                                '<div style="display:flex;align-items:center;'
+                                'gap:8px;flex-wrap:wrap">'
+                                f'<strong>{html.escape(objetivo_txt)}</strong>'
+                                '<span style="display:inline-block;padding:'
+                                '2px 8px;border-radius:999px;color:white;'
+                                f'background:{color_etiqueta};font-size:0.72rem;'
+                                'font-weight:700;line-height:1.5">'
+                                f'{html.escape(etiqueta_responsable)}'
+                                '</span></div>',
+                                unsafe_allow_html=True,
                             )
 
                         with top_der:
@@ -7349,6 +7526,23 @@ def render_objetivos(cliente="", modo="cliente"):
                                     ),
                                 )
 
+                                nuevo_responsable_tipo = st.selectbox(
+                                    "Responsabilidad principal",
+                                    ["AM Consultora", "Cliente"],
+                                    index=(
+                                        1
+                                        if responsable_tipo_txt == "Cliente"
+                                        else 0
+                                    ),
+                                    key=(
+                                        f"resp_tipo_objetivo_{objetivo_id}"
+                                    ),
+                                    help=(
+                                        "Define quién tiene la próxima acción "
+                                        "y la etiqueta visible."
+                                    ),
+                                )
+
                                 if puede_editar_responsables:
                                     nuevo_responsable_am = (
                                         st.text_input(
@@ -7408,6 +7602,12 @@ def render_objetivos(cliente="", modo="cliente"):
                                         f"{objetivo_id}"
                                     ),
                                     height=90,
+                                )
+
+                                render_archivos_objetivo(
+                                    objetivo_id,
+                                    nombre_usuario,
+                                    puede_eliminar=puede_editar,
                                 )
 
                                 if st.button(
@@ -7474,6 +7674,9 @@ def render_objetivos(cliente="", modo="cliente"):
                                                 ),
                                                 "responsable_cliente": (
                                                     nuevo_responsable_cliente.strip()
+                                                ),
+                                                "responsable_tipo": (
+                                                    nuevo_responsable_tipo
                                                 ),
                                                 "avance": avance_final,
                                                 "checklist": (
