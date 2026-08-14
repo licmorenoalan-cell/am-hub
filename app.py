@@ -6134,7 +6134,7 @@ def render_objetivos(cliente="", modo="cliente"):
 
                         responsable_tipo = st.selectbox(
                             "Responsabilidad principal",
-                            ["AM Consultora", "Cliente"],
+                            ["AM Consultora", "Cliente", "Ambos"],
                             help=(
                                 "Define quién tiene la próxima acción "
                                 "y la etiqueta visible de la tarjeta."
@@ -7111,7 +7111,9 @@ def render_objetivos(cliente="", modo="cliente"):
                         row.get("responsable_tipo", "AM Consultora")
                         or "AM Consultora"
                     ).strip()
-                    if responsable_tipo_txt not in ["AM Consultora", "Cliente"]:
+                    if responsable_tipo_txt not in [
+                        "AM Consultora", "Cliente", "Ambos",
+                    ]:
                         responsable_tipo_txt = "AM Consultora"
 
                     prioridad_txt = str(
@@ -7174,26 +7176,28 @@ def render_objetivos(cliente="", modo="cliente"):
                                     cliente_txt
                                 )
 
-                            etiqueta_responsable = (
-                                cliente_txt
-                                if responsable_tipo_txt == "Cliente"
-                                else "AM Consultora"
-                            )
-                            color_etiqueta = (
-                                "#15803D"
-                                if responsable_tipo_txt == "Cliente"
-                                else "#1D4ED8"
+                            etiquetas_responsables = []
+                            if responsable_tipo_txt in ["AM Consultora", "Ambos"]:
+                                etiquetas_responsables.append(
+                                    ("AM Consultora", "#1D4ED8")
+                                )
+                            if responsable_tipo_txt in ["Cliente", "Ambos"]:
+                                etiquetas_responsables.append(
+                                    (cliente_txt or "Cliente", "#15803D")
+                                )
+                            etiquetas_html = "".join(
+                                '<span style="display:inline-block;padding:'
+                                '2px 8px;border-radius:999px;color:white;'
+                                f'background:{color};font-size:0.72rem;'
+                                'font-weight:700;line-height:1.5">'
+                                f'{html.escape(etiqueta)}</span>'
+                                for etiqueta, color in etiquetas_responsables
                             )
                             st.markdown(
                                 '<div style="display:flex;align-items:center;'
                                 'gap:8px;flex-wrap:wrap">'
                                 f'<strong>{html.escape(objetivo_txt)}</strong>'
-                                '<span style="display:inline-block;padding:'
-                                '2px 8px;border-radius:999px;color:white;'
-                                f'background:{color_etiqueta};font-size:0.72rem;'
-                                'font-weight:700;line-height:1.5">'
-                                f'{html.escape(etiqueta_responsable)}'
-                                '</span></div>',
+                                f'{etiquetas_html}</div>',
                                 unsafe_allow_html=True,
                             )
 
@@ -7528,11 +7532,10 @@ def render_objetivos(cliente="", modo="cliente"):
 
                                 nuevo_responsable_tipo = st.selectbox(
                                     "Responsabilidad principal",
-                                    ["AM Consultora", "Cliente"],
+                                    ["AM Consultora", "Cliente", "Ambos"],
                                     index=(
-                                        1
-                                        if responsable_tipo_txt == "Cliente"
-                                        else 0
+                                        ["AM Consultora", "Cliente", "Ambos"]
+                                        .index(responsable_tipo_txt)
                                     ),
                                     key=(
                                         f"resp_tipo_objetivo_{objetivo_id}"
