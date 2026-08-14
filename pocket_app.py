@@ -2701,7 +2701,9 @@ if pagina_pocket == "🤝 Plan de trabajo":
             frente.get("responsable_tipo", "AM Consultora")
             or "AM Consultora"
         ).strip()
-        if responsable_tipo_frente not in ["AM Consultora", "Cliente"]:
+        if responsable_tipo_frente not in [
+            "AM Consultora", "Cliente", "Ambos",
+        ]:
             responsable_tipo_frente = "AM Consultora"
         avance_numero = pd.to_numeric(
             frente.get("avance", 0), errors="coerce"
@@ -2710,23 +2712,22 @@ if pagina_pocket == "🤝 Plan de trabajo":
         avance_frente = max(0, min(100, avance_frente))
 
         with st.container(border=True):
-            etiqueta_frente = (
-                cliente_frente
-                if responsable_tipo_frente == "Cliente"
-                else "AM Consultora"
-            )
-            color_frente = (
-                "#15803D"
-                if responsable_tipo_frente == "Cliente"
-                else "#1D4ED8"
+            etiquetas_frente = []
+            if responsable_tipo_frente in ["AM Consultora", "Ambos"]:
+                etiquetas_frente.append(("AM Consultora", "#1D4ED8"))
+            if responsable_tipo_frente in ["Cliente", "Ambos"]:
+                etiquetas_frente.append((cliente_frente, "#15803D"))
+            etiquetas_frente_html = "".join(
+                '<span style="padding:2px 8px;border-radius:999px;'
+                f'background:{color};color:white;font-size:0.72rem;'
+                f'font-weight:700">{html.escape(etiqueta)}</span>'
+                for etiqueta, color in etiquetas_frente
             )
             st.markdown(
                 '<div style="display:flex;align-items:center;gap:8px;'
                 'flex-wrap:wrap">'
                 f'<strong>{html.escape(titulo)}</strong>'
-                '<span style="padding:2px 8px;border-radius:999px;'
-                f'background:{color_frente};color:white;font-size:0.72rem;'
-                f'font-weight:700">{html.escape(etiqueta_frente)}</span></div>',
+                f'{etiquetas_frente_html}</div>',
                 unsafe_allow_html=True,
             )
             st.caption(
@@ -2831,9 +2832,10 @@ if pagina_pocket == "🤝 Plan de trabajo":
                     )
                     responsable_tipo_editado = st.selectbox(
                         "Responsabilidad principal",
-                        ["AM Consultora", "Cliente"],
+                        ["AM Consultora", "Cliente", "Ambos"],
                         index=(
-                            1 if responsable_tipo_frente == "Cliente" else 0
+                            ["AM Consultora", "Cliente", "Ambos"]
+                            .index(responsable_tipo_frente)
                         ),
                         key=f"pocket_plan_resp_tipo_{frente_id}",
                     )
