@@ -219,6 +219,26 @@ def asegurar_columnas_tareas_postgres():
     return True
 
 
+@st.cache_resource
+def asegurar_columnas_cuenta_corriente_postgres():
+    if not usar_postgres():
+        return True
+    with get_postgres_engine().begin() as conn:
+        conn.execute(
+            sql_text(
+                'ALTER TABLE "cuenta_corriente" '
+                'ADD COLUMN IF NOT EXISTS "moneda" TEXT'
+            )
+        )
+        conn.execute(
+            sql_text(
+                'UPDATE "cuenta_corriente" SET "moneda" = \'ARS\' '
+                'WHERE TRIM(COALESCE("moneda", \'\')) = \'\''
+            )
+        )
+    return True
+
+
 def tabla_postgres_para_path(path):
     try:
         filename = Path(path).name
@@ -5340,6 +5360,7 @@ def render_resumen_cuenta_corriente_inicio(cliente):
         "concepto",
         "servicio",
         "importe",
+        "moneda",
         "estado",
         "fecha_factura",
         "fecha_pago",
@@ -5351,18 +5372,22 @@ def render_resumen_cuenta_corriente_inicio(cliente):
         "cargado_por",
     ]
 
+    if usar_postgres():
+        asegurar_columnas_cuenta_corriente_postgres()
     cuenta = read_csv_cliente(CUENTA_CORRIENTE_PATH, columnas, cliente)
 
-    def formato_pesos(valor):
+    def formato_moneda(valor, moneda="ARS"):
         try:
-            return f"$ {float(valor):,.0f}".replace(",", ".")
+            simbolo = "US$" if moneda == "USD" else "$"
+            decimales = 2 if moneda == "USD" else 0
+            return f"{simbolo} {float(valor):,.{decimales}f}".replace(",", ".")
         except Exception:
-            return "$ 0"
+            return "US$ 0.00" if moneda == "USD" else "$ 0"
 
     if cuenta is None or cuenta.empty:
-        saldo_adeudado = 0
+        saldos_adeudados = {"ARS": 0.0, "USD": 0.0}
         movimientos_pendientes = 0
-        resumen_servicios = pd.DataFrame(columns=["servicio", "importe"])
+        resumen_servicios = pd.DataFrame(columns=["servicio", "moneda", "importe"])
     else:
         cuenta = cuenta.copy().fillna("")
 
@@ -5370,6 +5395,8 @@ def render_resumen_cuenta_corriente_inicio(cliente):
             cuenta["servicio"] = "General"
 
         cuenta["servicio"] = cuenta["servicio"].replace("", "General")
+        cuenta["moneda"] = cuenta["moneda"].astype(str).str.strip().str.upper().replace("", "ARS")
+        cuenta.loc[~cuenta["moneda"].isin(["ARS", "USD"]), "moneda"] = "ARS"
         cuenta["importe"] = pd.to_numeric(cuenta["importe"], errors="coerce").fillna(0)
 
         estados_sin_deuda = ["Pagado", "Bonificado"]
@@ -5377,21 +5404,25 @@ def render_resumen_cuenta_corriente_inicio(cliente):
             ~cuenta["estado"].astype(str).isin(estados_sin_deuda)
         ].copy()
 
-        saldo_adeudado = pendientes["importe"].sum()
+        saldos_adeudados = {
+            moneda: float(pendientes.loc[pendientes["moneda"].eq(moneda), "importe"].sum())
+            for moneda in ["ARS", "USD"]
+        }
         movimientos_pendientes = len(pendientes)
 
         if pendientes.empty:
-            resumen_servicios = pd.DataFrame(columns=["servicio", "importe"])
+            resumen_servicios = pd.DataFrame(columns=["servicio", "moneda", "importe"])
         else:
             resumen_servicios = (
                 pendientes
-                .groupby("servicio", dropna=False)["importe"]
+                .groupby(["servicio", "moneda"], dropna=False)["importe"]
                 .sum()
                 .reset_index()
                 .sort_values("importe", ascending=False)
             )
 
-    if saldo_adeudado > 0:
+    hay_deuda = any(valor > 0 for valor in saldos_adeudados.values())
+    if hay_deuda:
         estado_label = "Pendiente de pago"
         boton_label = "Registrar pago"
         detalle = f"{movimientos_pendientes} movimiento(s) pendiente(s)"
@@ -5408,7 +5439,12 @@ def render_resumen_cuenta_corriente_inicio(cliente):
             st.markdown("**Saldo adeudado**")
 
         with c2:
-            st.markdown(f"### {formato_pesos(saldo_adeudado)}")
+            saldos_texto = " · ".join(
+                formato_moneda(saldos_adeudados[moneda], moneda)
+                for moneda in ["ARS", "USD"]
+                if saldos_adeudados[moneda] > 0
+            ) or "$ 0"
+            st.markdown(f"### {saldos_texto}")
             st.caption(detalle)
 
         with c3:
@@ -5416,7 +5452,9 @@ def render_resumen_cuenta_corriente_inicio(cliente):
                 servicios_txt = []
                 for _, row in resumen_servicios.iterrows():
                     servicio = str(row.get("servicio", "") or "General")
-                    importe_servicio = formato_pesos(row.get("importe", 0))
+                    importe_servicio = formato_moneda(
+                        row.get("importe", 0), row.get("moneda", "ARS")
+                    )
                     servicios_txt.append(f"{servicio}: {importe_servicio}")
                 st.caption("Detalle por servicio")
                 st.write(" · ".join(servicios_txt))
@@ -5425,7 +5463,7 @@ def render_resumen_cuenta_corriente_inicio(cliente):
                 st.write("Sin deuda por servicio")
 
         with c4:
-            if saldo_adeudado > 0:
+            if hay_deuda:
                 st.warning(estado_label)
             else:
                 st.success(estado_label)
@@ -8375,7 +8413,7 @@ def columnas_por_path(path):
             "observacion", "fecha_carga", "cargado_por",
         ],
         "cuenta_corriente.csv": [
-            "id", "cliente", "mes", "concepto", "importe", "estado",
+            "id", "cliente", "mes", "concepto", "importe", "moneda", "estado",
             "fecha_factura", "fecha_pago", "observacion", "comprobante_nombre",
             "comprobante_tipo", "comprobante_base64", "fecha_carga",
             "cargado_por",
@@ -8387,6 +8425,8 @@ def columnas_por_path(path):
 
 
 def cargar_cuenta_corriente(cliente=""):
+    if usar_postgres():
+        asegurar_columnas_cuenta_corriente_postgres()
     columns = [
         "id",
         "cliente",
@@ -8394,6 +8434,7 @@ def cargar_cuenta_corriente(cliente=""):
         "concepto",
         "servicio",
         "importe",
+        "moneda",
         "estado",
         "fecha_factura",
         "fecha_pago",
@@ -8446,6 +8487,7 @@ def render_cuenta_corriente_admin():
         "concepto",
         "servicio",
         "importe",
+        "moneda",
         "estado",
         "fecha_factura",
         "fecha_pago",
@@ -8495,11 +8537,13 @@ def render_cuenta_corriente_admin():
         except Exception:
             return date.today().strftime("%Y-%m")
 
-    def formato_pesos(valor):
+    def formato_moneda(valor, moneda="ARS"):
         try:
-            return f"$ {float(valor):,.0f}".replace(",", ".")
+            simbolo = "US$" if moneda == "USD" else "$"
+            decimales = 2 if moneda == "USD" else 0
+            return f"{simbolo} {float(valor):,.{decimales}f}".replace(",", ".")
         except Exception:
-            return "$ 0"
+            return "US$ 0.00" if moneda == "USD" else "$ 0"
 
     estados_pago = [
         "Pendiente de facturar",
@@ -8528,10 +8572,24 @@ def render_cuenta_corriente_admin():
                 with c2:
                     concepto = st.text_input("Concepto", value="Honorarios mensuales")
                     importe = st.number_input("Importe", min_value=0.0, step=10000.0)
+                    moneda = st.selectbox(
+                        "Moneda",
+                        ["ARS", "USD"],
+                        format_func=lambda valor: (
+                            "Pesos (ARS)" if valor == "ARS" else "Dólares (USD)"
+                        ),
+                    )
 
                 with c3:
                     estado = st.selectbox("Estado", estados_pago, index=0)
                     fecha_factura = st.date_input("Fecha factura / emisión", value=date.today())
+                    servicio_sel = st.selectbox(
+                        "Servicio",
+                        [
+                            "General", "Ecosistema digital", "Consultoría",
+                            "Contabilidad / Gestión",
+                        ],
+                    )
 
                 observacion = st.text_area("Observación")
 
@@ -8552,6 +8610,7 @@ def render_cuenta_corriente_admin():
                             "concepto": concepto.strip() or "Honorarios mensuales",
                             "servicio": servicio_sel,
                             "importe": importe,
+                            "moneda": moneda,
                             "estado": estado,
                             "fecha_factura": fecha_factura.strftime("%Y-%m-%d"),
                             "fecha_pago": date.today().strftime("%Y-%m-%d") if estado == "Pagado" else "",
@@ -8579,6 +8638,10 @@ def render_cuenta_corriente_admin():
     if "servicio" not in cuenta.columns:
         cuenta["servicio"] = "General"
     cuenta["servicio"] = cuenta["servicio"].replace("", "General")
+    cuenta["moneda"] = (
+        cuenta["moneda"].astype(str).str.strip().str.upper().replace("", "ARS")
+    )
+    cuenta.loc[~cuenta["moneda"].isin(["ARS", "USD"]), "moneda"] = "ARS"
     cuenta["importe"] = pd.to_numeric(cuenta["importe"], errors="coerce").fillna(0)
     cuenta["mes"] = cuenta["mes"].astype(str).str.strip().replace("", "Sin período")
 
@@ -8597,23 +8660,34 @@ def render_cuenta_corriente_admin():
 
     st.markdown("### Resumen consolidado")
 
-    total_general = float(cuenta["importe"].sum())
-    cobrado_general = float(cuenta["_cobrado"].sum())
-    pendiente_general = float(cuenta["_pendiente"].sum())
     clientes_con_deuda = int(
         cuenta.loc[cuenta["_pendiente"] > 0, "cliente"]
         .astype(str)
         .nunique()
     )
 
-    ck1, ck2, ck3, ck4 = st.columns(4)
-    ck1.metric("Total cargado", formato_pesos(total_general))
-    ck2.metric("Ingresos cobrados", formato_pesos(cobrado_general))
-    ck3.metric("Deuda pendiente", formato_pesos(pendiente_general))
-    ck4.metric("Clientes con deuda", clientes_con_deuda)
+    for moneda_resumen in ["ARS", "USD"]:
+        cuenta_moneda = cuenta[cuenta["moneda"].eq(moneda_resumen)]
+        total_general = float(cuenta_moneda["importe"].sum())
+        cobrado_general = float(cuenta_moneda["_cobrado"].sum())
+        pendiente_general = float(cuenta_moneda["_pendiente"].sum())
+        ck1, ck2, ck3 = st.columns(3)
+        ck1.metric(
+            f"Total {moneda_resumen}",
+            formato_moneda(total_general, moneda_resumen),
+        )
+        ck2.metric(
+            f"Cobrado {moneda_resumen}",
+            formato_moneda(cobrado_general, moneda_resumen),
+        )
+        ck3.metric(
+            f"Deuda {moneda_resumen}",
+            formato_moneda(pendiente_general, moneda_resumen),
+        )
+    st.caption(f"Clientes con deuda: {clientes_con_deuda}")
 
     resumen_mensual = (
-        cuenta.groupby("mes", as_index=False)
+        cuenta.groupby(["mes", "moneda"], as_index=False)
         .agg(
             total_cargado=("importe", "sum"),
             cobrado=("_cobrado", "sum"),
@@ -8625,7 +8699,7 @@ def render_cuenta_corriente_admin():
     )
 
     resumen_clientes = (
-        cuenta.groupby("cliente", as_index=False)
+        cuenta.groupby(["cliente", "moneda"], as_index=False)
         .agg(
             total_cargado=("importe", "sum"),
             cobrado=("_cobrado", "sum"),
@@ -8646,7 +8720,16 @@ def render_cuenta_corriente_admin():
         if resumen_mensual.empty:
             st.info("No hay períodos disponibles para consolidar.")
         else:
-            mensual_grafico = resumen_mensual.melt(
+            moneda_grafico = st.radio(
+                "Moneda del gráfico",
+                ["ARS", "USD"],
+                horizontal=True,
+                key="cc_moneda_grafico",
+            )
+            resumen_mensual_grafico = resumen_mensual[
+                resumen_mensual["moneda"].eq(moneda_grafico)
+            ]
+            mensual_grafico = resumen_mensual_grafico.melt(
                 id_vars=["mes"],
                 value_vars=["cobrado", "pendiente"],
                 var_name="situacion",
@@ -8656,7 +8739,10 @@ def render_cuenta_corriente_admin():
                 alt.Chart(mensual_grafico)
                 .mark_bar()
                 .encode(
-                    x=alt.X("mes:N", title="Mes", sort=resumen_mensual["mes"].tolist()),
+                    x=alt.X(
+                        "mes:N", title="Mes",
+                        sort=resumen_mensual_grafico["mes"].tolist(),
+                    ),
                     y=alt.Y("importe:Q", title="Importe"),
                     color=alt.Color(
                         "situacion:N",
@@ -8681,9 +8767,10 @@ def render_cuenta_corriente_admin():
                 hide_index=True,
                 column_config={
                     "mes": "Mes",
-                    "total_cargado": st.column_config.NumberColumn("Total cargado", format="$ %.0f"),
-                    "cobrado": st.column_config.NumberColumn("Cobrado", format="$ %.0f"),
-                    "pendiente": st.column_config.NumberColumn("Pendiente", format="$ %.0f"),
+                    "moneda": "Moneda",
+                    "total_cargado": st.column_config.NumberColumn("Total cargado", format="%.2f"),
+                    "cobrado": st.column_config.NumberColumn("Cobrado", format="%.2f"),
+                    "pendiente": st.column_config.NumberColumn("Pendiente", format="%.2f"),
                     "clientes": "Clientes",
                     "movimientos": "Movimientos",
                 },
@@ -8696,9 +8783,10 @@ def render_cuenta_corriente_admin():
             hide_index=True,
             column_config={
                 "cliente": "Cliente",
-                "total_cargado": st.column_config.NumberColumn("Total cargado", format="$ %.0f"),
-                "cobrado": st.column_config.NumberColumn("Cobrado", format="$ %.0f"),
-                "deuda_pendiente": st.column_config.NumberColumn("Deuda pendiente", format="$ %.0f"),
+                "moneda": "Moneda",
+                "total_cargado": st.column_config.NumberColumn("Total cargado", format="%.2f"),
+                "cobrado": st.column_config.NumberColumn("Cobrado", format="%.2f"),
+                "deuda_pendiente": st.column_config.NumberColumn("Deuda pendiente", format="%.2f"),
                 "movimientos": "Movimientos",
             },
         )
@@ -8734,6 +8822,7 @@ def render_cuenta_corriente_admin():
                 "concepto",
                 "servicio",
                 "importe",
+                "moneda",
                 "estado",
                 "fecha_factura",
                 "fecha_pago",
@@ -8767,7 +8856,7 @@ def render_cuenta_corriente_admin():
 
     st.markdown("### Resumen")
 
-    f1, f2, f3 = st.columns(3)
+    f1, f2, f3, f4 = st.columns(4)
 
     clientes_filtro = ["Todos"]
     if "cliente" in cuenta.columns:
@@ -8784,6 +8873,11 @@ def render_cuenta_corriente_admin():
         meses = sorted(cuenta["mes"].dropna().astype(str).unique().tolist())
         filtro_mes = st.selectbox("Mes", ["Todos"] + meses, key="cc_filtro_mes")
 
+    with f4:
+        filtro_moneda = st.selectbox(
+            "Moneda", ["ARS", "USD"], key="cc_filtro_moneda"
+        )
+
     vista = cuenta.copy()
 
     if filtro_cliente != "Todos":
@@ -8795,6 +8889,8 @@ def render_cuenta_corriente_admin():
     if filtro_mes != "Todos":
         vista = vista[vista["mes"].astype(str) == filtro_mes]
 
+    vista = vista[vista["moneda"].astype(str).eq(filtro_moneda)]
+
     if vista.empty:
         st.info("No hay movimientos para los filtros seleccionados.")
         return
@@ -8804,9 +8900,9 @@ def render_cuenta_corriente_admin():
     total = vista["importe"].sum()
 
     k1, k2, k3, k4 = st.columns(4)
-    k1.metric("Total cargado", formato_pesos(total))
-    k2.metric("Pagado", formato_pesos(pagado))
-    k3.metric("Deuda / pendiente", formato_pesos(deuda))
+    k1.metric("Total cargado", formato_moneda(total, filtro_moneda))
+    k2.metric("Pagado", formato_moneda(pagado, filtro_moneda))
+    k3.metric("Deuda / pendiente", formato_moneda(deuda, filtro_moneda))
     k4.metric("Movimientos", len(vista))
 
     st.markdown("### Detalle de cuenta corriente")
@@ -8817,6 +8913,7 @@ def render_cuenta_corriente_admin():
         "concepto",
         "servicio",
         "importe",
+        "moneda",
         "estado",
         "fecha_factura",
         "fecha_pago",
@@ -8858,6 +8955,7 @@ def render_cuenta_corriente_cliente(cliente):
         "concepto",
         "servicio",
         "importe",
+        "moneda",
         "estado",
         "fecha_factura",
         "fecha_pago",
@@ -8869,7 +8967,7 @@ def render_cuenta_corriente_cliente(cliente):
         "cargado_por",
     ]
 
-    cuenta = read_csv_cliente(CUENTA_CORRIENTE_PATH, columnas, cliente)
+    cuenta = cargar_cuenta_corriente(cliente)
 
     if cuenta is None or cuenta.empty:
         st.info("Todavía no hay movimientos de cuenta corriente cargados.")
@@ -8879,24 +8977,36 @@ def render_cuenta_corriente_cliente(cliente):
     if "servicio" not in cuenta.columns:
         cuenta["servicio"] = "General"
     cuenta["servicio"] = cuenta["servicio"].replace("", "General")
+    cuenta["moneda"] = cuenta["moneda"].astype(str).str.strip().str.upper().replace("", "ARS")
+    cuenta.loc[~cuenta["moneda"].isin(["ARS", "USD"]), "moneda"] = "ARS"
     cuenta["importe"] = pd.to_numeric(cuenta["importe"], errors="coerce").fillna(0)
     cuenta["mes"] = cuenta["mes"].astype(str)
 
-    estados_sin_deuda = ["Pagado", "Bonificado"]
-    deuda = cuenta[~cuenta["estado"].astype(str).isin(estados_sin_deuda)]["importe"].sum()
-    pagado = cuenta[cuenta["estado"].astype(str) == "Pagado"]["importe"].sum()
-    total = cuenta["importe"].sum()
+    moneda_cliente = st.selectbox(
+        "Moneda",
+        ["ARS", "USD"],
+        format_func=lambda valor: "Pesos (ARS)" if valor == "ARS" else "Dólares (USD)",
+        key=f"cc_moneda_cliente_{cliente}",
+    )
+    cuenta_vista = cuenta[cuenta["moneda"].eq(moneda_cliente)].copy()
 
-    def formato_pesos(valor):
+    estados_sin_deuda = ["Pagado", "Bonificado"]
+    deuda = cuenta_vista[~cuenta_vista["estado"].astype(str).isin(estados_sin_deuda)]["importe"].sum()
+    pagado = cuenta_vista[cuenta_vista["estado"].astype(str) == "Pagado"]["importe"].sum()
+    total = cuenta_vista["importe"].sum()
+
+    def formato_moneda(valor, moneda="ARS"):
         try:
-            return f"$ {float(valor):,.0f}".replace(",", ".")
+            simbolo = "US$" if moneda == "USD" else "$"
+            decimales = 2 if moneda == "USD" else 0
+            return f"{simbolo} {float(valor):,.{decimales}f}".replace(",", ".")
         except Exception:
-            return "$ 0"
+            return "US$ 0.00" if moneda == "USD" else "$ 0"
 
     k1, k2, k3 = st.columns(3)
-    k1.metric("Total cargado", formato_pesos(total))
-    k2.metric("Pagado", formato_pesos(pagado))
-    k3.metric("Pendiente / deuda", formato_pesos(deuda))
+    k1.metric("Total cargado", formato_moneda(total, moneda_cliente))
+    k2.metric("Pagado", formato_moneda(pagado, moneda_cliente))
+    k3.metric("Pendiente / deuda", formato_moneda(deuda, moneda_cliente))
 
     st.markdown("### Detalle")
 
@@ -8905,17 +9015,18 @@ def render_cuenta_corriente_cliente(cliente):
         "concepto",
         "servicio",
         "importe",
+        "moneda",
         "estado",
         "fecha_factura",
         "fecha_pago",
         "observacion",
     ]
-    columnas_vista = [c for c in columnas_vista if c in cuenta.columns]
+    columnas_vista = [c for c in columnas_vista if c in cuenta_vista.columns]
 
-    st.dataframe(cuenta[columnas_vista], use_container_width=True, hide_index=True)
+    st.dataframe(cuenta_vista[columnas_vista], use_container_width=True, hide_index=True)
 
-    pendientes = cuenta[
-        ~cuenta["estado"].astype(str).isin(["Pagado", "Bonificado"])
+    pendientes = cuenta_vista[
+        ~cuenta_vista["estado"].astype(str).isin(["Pagado", "Bonificado"])
     ].copy()
 
     if pendientes.empty:
@@ -8929,7 +9040,7 @@ def render_cuenta_corriente_cliente(cliente):
 
     for _, row in pendientes.iterrows():
         servicio_txt = str(row.get("servicio", "") or "General")
-        etiqueta = f"{row.get('id', '')} · {row.get('mes', '')} · {servicio_txt} · {row.get('concepto', '')} · {formato_pesos(row.get('importe', 0))}"
+        etiqueta = f"{row.get('id', '')} · {row.get('mes', '')} · {servicio_txt} · {row.get('concepto', '')} · {formato_moneda(row.get('importe', 0), row.get('moneda', 'ARS'))}"
         opciones.append(etiqueta)
         mapa[etiqueta] = row.get("id", "")
 

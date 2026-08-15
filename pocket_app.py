@@ -289,6 +289,18 @@ def asegurar_columnas():
                 '"responsable_tipo" TEXT'
             )
         )
+        conn.execute(
+            text(
+                'ALTER TABLE "cuenta_corriente" '
+                'ADD COLUMN IF NOT EXISTS "moneda" TEXT'
+            )
+        )
+        conn.execute(
+            text(
+                'UPDATE "cuenta_corriente" SET "moneda" = \'ARS\' '
+                'WHERE TRIM(COALESCE("moneda", \'\')) = \'\''
+            )
+        )
 
 
 @st.cache_data(
@@ -379,7 +391,7 @@ def cargar_cuenta_corriente_pocket():
     # El comprobante se excluye: puede ser pesado y no hace falta para listar.
     consulta = text(
         """
-        SELECT id, cliente, mes, concepto, servicio, importe, estado,
+        SELECT id, cliente, mes, concepto, servicio, importe, moneda, estado,
                fecha_factura, fecha_pago, observacion, fecha_carga,
                cargado_por
         FROM cuenta_corriente
@@ -404,7 +416,7 @@ def cargar_clientes_pocket():
 
 
 def guardar_deuda_pocket(
-    cliente, mes, concepto, servicio, importe, estado,
+    cliente, mes, concepto, servicio, importe, moneda, estado,
     fecha_factura, observacion,
 ):
     usuario = get_secret("POCKET_USERNAME", "alan")
@@ -416,6 +428,7 @@ def guardar_deuda_pocket(
         "concepto": str(concepto).strip() or "Honorarios mensuales",
         "servicio": str(servicio).strip() or "General",
         "importe": float(importe),
+        "moneda": str(moneda).strip().upper() or "ARS",
         "estado": str(estado).strip(),
         "fecha_factura": fecha_factura.strftime("%Y-%m-%d"),
         "fecha_pago": hoy if estado == "Pagado" else "",
@@ -428,13 +441,13 @@ def guardar_deuda_pocket(
             text(
                 """
                 INSERT INTO cuenta_corriente
-                    (id, cliente, mes, concepto, servicio, importe, estado,
+                    (id, cliente, mes, concepto, servicio, importe, moneda, estado,
                      fecha_factura, fecha_pago, observacion, fecha_carga,
                      cargado_por, comprobante_nombre, comprobante_tipo,
                      comprobante_base64)
                 VALUES
                     (:id, :cliente, :mes, :concepto, :servicio, :importe,
-                     :estado, :fecha_factura, :fecha_pago, :observacion,
+                     :moneda, :estado, :fecha_factura, :fecha_pago, :observacion,
                      :fecha_carga, :cargado_por, '', '', '')
                 """
             ),
@@ -2989,8 +3002,30 @@ if pagina_pocket == "💳 Cuenta corriente":
         detalle_cuenta.get("importe", 0), errors="coerce"
     ).fillna(0)
 
-    def pesos_pocket(valor):
-        return f"$ {float(valor):,.0f}".replace(",", ".")
+    detalle_cuenta["moneda"] = (
+        detalle_cuenta.get("moneda", "ARS")
+        .astype(str).str.strip().str.upper().replace("", "ARS")
+    )
+    detalle_cuenta.loc[
+        ~detalle_cuenta["moneda"].isin(["ARS", "USD"]), "moneda"
+    ] = "ARS"
+
+    moneda_cuenta = st.selectbox(
+        "Moneda",
+        ["ARS", "USD"],
+        format_func=lambda valor: (
+            "Pesos (ARS)" if valor == "ARS" else "Dólares (USD)"
+        ),
+        key="pocket_cc_moneda",
+    )
+    detalle_cuenta = detalle_cuenta[
+        detalle_cuenta["moneda"].eq(moneda_cuenta)
+    ].copy()
+
+    def moneda_pocket(valor, moneda="ARS"):
+        simbolo = "US$" if moneda == "USD" else "$"
+        decimales = 2 if moneda == "USD" else 0
+        return f"{simbolo} {float(valor):,.{decimales}f}".replace(",", ".")
 
     estados_sin_deuda = ["Pagado", "Bonificado"]
     total_cuenta = float(detalle_cuenta["importe"].sum())
@@ -3007,9 +3042,9 @@ if pagina_pocket == "💳 Cuenta corriente":
     )
 
     cc1, cc2, cc3 = st.columns(3)
-    cc1.metric("Total", pesos_pocket(total_cuenta))
-    cc2.metric("Cobrado", pesos_pocket(cobrado_cuenta))
-    cc3.metric("Deuda", pesos_pocket(deuda_cuenta))
+    cc1.metric("Total", moneda_pocket(total_cuenta, moneda_cuenta))
+    cc2.metric("Cobrado", moneda_pocket(cobrado_cuenta, moneda_cuenta))
+    cc3.metric("Deuda", moneda_pocket(deuda_cuenta, moneda_cuenta))
 
     with st.expander("➕ Cargar movimiento", expanded=False):
         tab_deuda, tab_pago = st.tabs(["Nueva deuda", "Registrar pago"])
@@ -3037,9 +3072,10 @@ if pagina_pocket == "💳 Cuenta corriente":
                 importe_deuda = st.number_input(
                     "Importe",
                     min_value=0.0,
-                    step=10000.0,
+                    step=10000.0 if moneda_cuenta == "ARS" else 100.0,
                     key="pocket_cc_importe_deuda",
                 )
+                st.caption(f"La deuda se cargará en {moneda_cuenta}.")
                 estado_deuda = st.selectbox(
                     "Estado",
                     [
@@ -3073,6 +3109,7 @@ if pagina_pocket == "💳 Cuenta corriente":
                         concepto=concepto_deuda,
                         servicio=servicio_deuda,
                         importe=importe_deuda,
+                        moneda=moneda_cuenta,
                         estado=estado_deuda,
                         fecha_factura=fecha_factura_deuda,
                         observacion=observacion_deuda,
@@ -3093,7 +3130,7 @@ if pagina_pocket == "💳 Cuenta corriente":
                     etiqueta_pago = (
                         f"{movimiento.get('mes', '')} · "
                         f"{movimiento.get('concepto', '')} · "
-                        f"{pesos_pocket(movimiento.get('importe', 0))}"
+                        f"{moneda_pocket(movimiento.get('importe', 0), movimiento.get('moneda', 'ARS'))}"
                     )
                     # El id evita perder movimientos con etiquetas iguales.
                     opciones_pago[
@@ -3163,7 +3200,9 @@ if pagina_pocket == "💳 Cuenta corriente":
                     f"{movimiento.get('estado', '')} · "
                     f"{movimiento.get('servicio', '') or 'General'}"
                 )
-                st.markdown(f"### {pesos_pocket(movimiento.get('importe', 0))}")
+                st.markdown(
+                    f"### {moneda_pocket(movimiento.get('importe', 0), movimiento.get('moneda', 'ARS'))}"
+                )
                 fecha_pago_mov = str(movimiento.get("fecha_pago", "")).strip()
                 if fecha_pago_mov:
                     st.caption(f"Pagado: {fecha_pago_mov}")
