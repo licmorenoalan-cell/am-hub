@@ -21,6 +21,7 @@ from am_hub_fiscal import (
     calcular_iibb_convenio,
     calcular_iva,
     decimal_ar,
+    periodo_aplicacion_cm05,
     resumir_movimientos,
     seleccionar_fuentes_calculo,
 )
@@ -14404,7 +14405,7 @@ def _plantilla_iibb_convenio_con_arrastre(cliente, periodo, actividad=""):
         "otros_creditos", "valores_suman",
     ]:
         plantilla[columna] = 0
-    cm05 = cargar_coeficientes_cm05(cliente, str(periodo)[:4])
+    cm05 = cargar_coeficientes_cm05(cliente, periodo_aplicacion_cm05(str(periodo)))
     if not cm05.empty:
         mapa_coeficientes = dict(zip(
             cm05["codigo"].astype(str),

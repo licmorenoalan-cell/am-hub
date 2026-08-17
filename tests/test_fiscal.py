@@ -15,6 +15,7 @@ from am_hub_fiscal import (
     decimal_ar,
     extraer_perfil_constancia_pdf,
     extraer_cm05_pdf,
+    periodo_aplicacion_cm05,
     resumir_movimientos,
     seleccionar_fuentes_calculo,
 )
@@ -25,6 +26,8 @@ class FiscalTests(unittest.TestCase):
         self.assertEqual(decimal_ar("$ 2.124.917,39"), Decimal("2124917.39"))
         self.assertEqual(decimal_ar("446232.61"), Decimal("446232.61"))
         self.assertEqual(decimal_ar("1,00"), Decimal("1.00"))
+        self.assertEqual(periodo_aplicacion_cm05("2026-03"), "2025")
+        self.assertEqual(periodo_aplicacion_cm05("2026-04"), "2026")
 
     def test_importa_zip_arca_sin_duplicar_fuentes(self):
         csv = (

@@ -80,6 +80,15 @@ def periodo_desde_fecha(valor: str) -> str:
     return "" if pd.isna(fecha) else fecha.strftime("%Y-%m")
 
 
+def periodo_aplicacion_cm05(periodo: str) -> str:
+    """Año de coeficientes a usar bajo el circuito enero-marzo/ajuste abril."""
+    coincidencia = re.fullmatch(r"(20\d{2})-(0[1-9]|1[0-2])", str(periodo or ""))
+    if not coincidencia:
+        return ""
+    anio, mes = int(coincidencia.group(1)), int(coincidencia.group(2))
+    return str(anio if mes >= 4 else anio - 1)
+
+
 def _texto(contenido: bytes) -> str:
     for encoding in ("utf-8-sig", "latin-1", "cp1252"):
         try:
