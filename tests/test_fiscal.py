@@ -9,6 +9,7 @@ import pandas as pd
 from am_hub_fiscal import (
     analizar_archivo_fiscal,
     calcular_iibb,
+    calcular_iibb_convenio,
     calcular_iva,
     decimal_ar,
     extraer_perfil_constancia_pdf,
@@ -64,6 +65,65 @@ class FiscalTests(unittest.TestCase):
         )
         self.assertEqual(iibb["impuesto_determinado"], Decimal("63747.52"))
         self.assertEqual(iibb["saldo_favor"], Decimal("476231.11"))
+
+    def test_notas_credito_restituyen_iva_en_f2051(self):
+        movimientos = pd.DataFrame([
+            {"impuesto": "IVA", "clase": "emitido", "tipo_comprobante": "1 - Factura A", "neto_gravado": "1000", "iva": "210", "computado": "Sí"},
+            {"impuesto": "IVA", "clase": "emitido", "tipo_comprobante": "3 - Nota de Crédito A", "neto_gravado": "100", "iva": "21", "computado": "Sí"},
+            {"impuesto": "IVA", "clase": "recibido", "tipo_comprobante": "1 - Factura A", "neto_gravado": "500", "iva": "105", "computado": "Sí"},
+            {"impuesto": "IVA", "clase": "recibido", "tipo_comprobante": "3 - Nota de Crédito A", "neto_gravado": "50", "iva": "10.50", "computado": "Sí"},
+        ])
+        resumen = resumir_movimientos(movimientos)
+        self.assertEqual(resumen["ventas_neto"], Decimal("900.00"))
+        self.assertEqual(resumen["compras_neto"], Decimal("450.00"))
+        self.assertEqual(resumen["iva_debito"], Decimal("220.50"))
+        self.assertEqual(resumen["iva_credito"], Decimal("126.00"))
+        self.assertEqual(resumen["iva_restitucion_debito"], Decimal("21.00"))
+        self.assertEqual(resumen["iva_restitucion_credito"], Decimal("10.50"))
+
+    def test_convenio_multilateral_calcula_por_jurisdiccion(self):
+        calculo = calcular_iibb_convenio(18808448.77, [
+            {"codigo": "901", "jurisdiccion": "CABA", "coeficiente": ".1618", "alicuota": "3", "otros_creditos": "2311.97"},
+            {"codigo": "908", "jurisdiccion": "Entre Ríos", "coeficiente": ".0017", "alicuota": "5", "otros_creditos": "57.70"},
+        ])
+        self.assertEqual(calculo["detalle"][0]["impuesto_determinado"], Decimal("91296.21"))
+        self.assertEqual(calculo["detalle"][0]["saldo_pagar"], Decimal("88984.24"))
+        self.assertEqual(calculo["detalle"][1]["impuesto_determinado"], Decimal("1598.72"))
+        self.assertEqual(calculo["detalle"][1]["saldo_pagar"], Decimal("1541.02"))
+
+    def test_fuentes_reales_villalobo_mallo_si_estan_disponibles(self):
+        rutas = [
+            Path("/Users/alanmoreno/Downloads/comprobantes_consulta_csv_emitidos_204547631_27408847112_20260817-1917.zip"),
+            Path("/Users/alanmoreno/Downloads/comprobantes_consulta_csv_recibidos_204547662_27408847112_20260817-1917.zip"),
+        ]
+        if not all(ruta.exists() for ruta in rutas):
+            self.skipTest("Los archivos locales de Villalobo Mallo no están disponibles.")
+        analisis = [analizar_archivo_fiscal(ruta.name, ruta.read_bytes()) for ruta in rutas]
+        movimientos = pd.concat([item["movimientos"] for item in analisis], ignore_index=True)
+        resumen = resumir_movimientos(movimientos)
+        self.assertEqual(resumen["ventas_neto"], Decimal("18808448.77"))
+        self.assertEqual(resumen["compras_neto"], Decimal("8180943.08"))
+        self.assertEqual(resumen["iva_debito"], Decimal("2083907.32"))
+        self.assertEqual(resumen["iva_credito"], Decimal("1384768.90"))
+
+        coeficientes = Path("/Users/alanmoreno/Downloads/SrbInclusionesCoeficientesX.xlsx")
+        if coeficientes.exists():
+            clasificacion = analizar_archivo_fiscal(coeficientes.name, coeficientes.read_bytes())
+            self.assertEqual(clasificacion["categoria"], "coeficientes_recaudacion_bancaria")
+            self.assertTrue(clasificacion["movimientos"].empty)
+
+        emitidos_xlsx = Path("/Users/alanmoreno/Downloads/Mis Comprobantes Emitidos - CUIT 27408847112.xlsx")
+        if emitidos_xlsx.exists():
+            clasificacion = analizar_archivo_fiscal(emitidos_xlsx.name, emitidos_xlsx.read_bytes())
+            self.assertEqual(clasificacion["categoria"], "comprobantes_emitidos")
+            self.assertEqual(len(clasificacion["movimientos"]), 53)
+
+        constancia_cm = Path("/Users/alanmoreno/Downloads/CInsc_0 (1).pdf")
+        if constancia_cm.exists():
+            perfil = extraer_perfil_constancia_pdf(constancia_cm.read_bytes())
+            self.assertEqual(perfil["iibb_regimen"], "Convenio Multilateral")
+            self.assertEqual(perfil["iibb_jurisdiccion"], "902 - BUENOS AIRES")
+            self.assertEqual(perfil["actividad_principal"], "952100")
 
     def test_fuentes_reales_casa_deser_si_estan_disponibles(self):
         rutas = [
