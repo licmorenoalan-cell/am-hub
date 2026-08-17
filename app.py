@@ -13995,10 +13995,15 @@ def cargar_periodo_fiscal(cliente, periodo):
     encontrados = df[df["periodo"].astype(str).eq(str(periodo))]
     if encontrados.empty:
         registro = {col: "" for col in FISCAL_PERIODO_COLUMNAS}
+        anteriores = df[df["periodo"].astype(str).lt(str(periodo))].copy()
+        anterior = anteriores.sort_values("periodo").iloc[-1].to_dict() if not anteriores.empty else {}
         registro.update(
             id=f"FPER-{uuid.uuid4().hex}", cliente=str(cliente), periodo=str(periodo),
             estado="Borrador", fecha_actualizacion=_fiscal_timestamp(),
             actualizado_por=st.session_state.get("username", ""),
+            iva_saldo_tecnico_anterior=anterior.get("iva_saldo_tecnico_favor", ""),
+            iva_saldo_libre_anterior=anterior.get("iva_saldo_libre_favor", ""),
+            iibb_saldo_favor_anterior=anterior.get("iibb_saldo_favor", ""),
         )
         return registro
     return encontrados.iloc[-1].to_dict()
