@@ -18,6 +18,7 @@ from am_hub_fiscal import (
     MOVIMIENTO_COLUMNAS,
     analizar_archivo_fiscal,
     calcular_iibb,
+    calcular_iibb_convenio,
     calcular_iva,
     decimal_ar,
     resumir_movimientos,
@@ -76,6 +77,7 @@ FISCAL_PERIODOS_PATH = DATA_DIR / "fiscal_periodos.csv"
 FISCAL_MOVIMIENTOS_PATH = DATA_DIR / "fiscal_movimientos.csv"
 FISCAL_ARCHIVOS_PATH = DATA_DIR / "fiscal_archivos.csv"
 FISCAL_AJUSTES_PATH = DATA_DIR / "fiscal_ajustes.csv"
+FISCAL_IIBB_JURISDICCIONES_PATH = DATA_DIR / "fiscal_iibb_jurisdicciones.csv"
 
 ACTIVIDAD_COLUMNS = [
     "id",
@@ -113,6 +115,7 @@ POSTGRES_TABLE_MAP = {
     "fiscal_movimientos.csv": "fiscal_movimientos",
     "fiscal_archivos.csv": "fiscal_archivos",
     "fiscal_ajustes.csv": "fiscal_ajustes",
+    "fiscal_iibb_jurisdicciones.csv": "fiscal_iibb_jurisdicciones",
 }
 
 POSTGRES_KEY_MAP = {
@@ -134,6 +137,7 @@ POSTGRES_KEY_MAP = {
     "fiscal_movimientos": "id",
     "fiscal_archivos": "id",
     "fiscal_ajustes": "id",
+    "fiscal_iibb_jurisdicciones": "id",
 }
 
 POSTGRES_CORE_TABLES = [
@@ -480,6 +484,14 @@ FISCAL_AJUSTE_COLUMNAS = [
     "id", "periodo_id", "cliente", "periodo", "impuesto", "concepto",
     "importe", "observacion", "fecha_carga", "cargado_por",
 ]
+FISCAL_IIBB_JURISDICCION_COLUMNAS = [
+    "id", "periodo_id", "cliente", "periodo", "codigo", "jurisdiccion",
+    "actividad", "base_actividad", "coeficiente", "alicuota",
+    "base_atribuida", "impuesto_determinado", "retenciones", "percepciones",
+    "recaudaciones_bancarias", "saldo_favor_anterior", "otros_creditos",
+    "valores_suman", "creditos", "saldo_pagar", "saldo_favor",
+    "fecha_actualizacion", "actualizado_por",
+]
 FISCAL_ARCHIVO_MAX_BYTES = 15 * 1024 * 1024
 FISCAL_ARCHIVOS_MAX_POR_CARGA = 12
 
@@ -496,6 +508,7 @@ def asegurar_tablas_fiscales():
         "fiscal_movimientos": MOVIMIENTO_COLUMNAS,
         "fiscal_archivos": FISCAL_ARCHIVO_COLUMNAS,
         "fiscal_ajustes": FISCAL_AJUSTE_COLUMNAS,
+        "fiscal_iibb_jurisdicciones": FISCAL_IIBB_JURISDICCION_COLUMNAS,
     }
     with get_postgres_engine().begin() as conn:
         for tabla, columnas in definiciones.items():
@@ -518,6 +531,10 @@ def asegurar_tablas_fiscales():
         conn.execute(sql_text(
             'CREATE INDEX IF NOT EXISTS "idx_fiscal_archivos_periodo" '
             'ON "fiscal_archivos" ("periodo_id")'
+        ))
+        conn.execute(sql_text(
+            'CREATE INDEX IF NOT EXISTS "idx_fiscal_iibb_jur_periodo" '
+            'ON "fiscal_iibb_jurisdicciones" ("periodo_id")'
         ))
     return True
 
@@ -14208,6 +14225,126 @@ def _registrar_ajuste_fiscal(periodo_id, cliente, periodo, impuesto, concepto, a
         save_csv(pd.concat([ajustes, pd.DataFrame([registro])], ignore_index=True), FISCAL_AJUSTES_PATH)
 
 
+JURISDICCIONES_CONVENIO = [
+    ("901", "CABA"), ("902", "Buenos Aires"), ("903", "Catamarca"),
+    ("904", "Córdoba"), ("905", "Corrientes"), ("906", "Chaco"),
+    ("907", "Chubut"), ("908", "Entre Ríos"), ("909", "Formosa"),
+    ("910", "Jujuy"), ("911", "La Pampa"), ("912", "La Rioja"),
+    ("913", "Mendoza"), ("914", "Misiones"), ("915", "Neuquén"),
+    ("916", "Río Negro"), ("917", "Salta"), ("918", "San Juan"),
+    ("919", "San Luis"), ("920", "Santa Cruz"), ("921", "Santa Fe"),
+    ("922", "Santiago del Estero"), ("923", "Tierra del Fuego"),
+    ("924", "Tucumán"),
+]
+
+
+def cargar_iibb_jurisdicciones(periodo_id, cliente=""):
+    return _cargar_tabla_fiscal(
+        FISCAL_IIBB_JURISDICCIONES_PATH,
+        FISCAL_IIBB_JURISDICCION_COLUMNAS,
+        cliente,
+        periodo_id,
+    )
+
+
+def _plantilla_iibb_convenio(actividad=""):
+    return pd.DataFrame([
+        {
+            "codigo": codigo,
+            "jurisdiccion": nombre,
+            "actividad": str(actividad or ""),
+            "base_actividad": "",
+            "coeficiente": 0.0,
+            "alicuota": 0.0,
+            "retenciones": 0.0,
+            "percepciones": 0.0,
+            "recaudaciones_bancarias": 0.0,
+            "saldo_favor_anterior": 0.0,
+            "otros_creditos": 0.0,
+            "valores_suman": 0.0,
+        }
+        for codigo, nombre in JURISDICCIONES_CONVENIO
+    ])
+
+
+def _plantilla_iibb_convenio_con_arrastre(cliente, periodo, actividad=""):
+    historico = _cargar_tabla_fiscal(
+        FISCAL_IIBB_JURISDICCIONES_PATH,
+        FISCAL_IIBB_JURISDICCION_COLUMNAS,
+        cliente,
+    )
+    anteriores = historico[historico["periodo"].astype(str).lt(str(periodo))].copy() if not historico.empty else historico
+    if anteriores.empty:
+        return _plantilla_iibb_convenio(actividad)
+    periodo_anterior = anteriores["periodo"].astype(str).max()
+    plantilla = anteriores[anteriores["periodo"].astype(str).eq(periodo_anterior)].copy()
+    columnas = [
+        "codigo", "jurisdiccion", "actividad", "base_actividad", "coeficiente",
+        "alicuota", "retenciones", "percepciones", "recaudaciones_bancarias",
+        "saldo_favor_anterior", "otros_creditos", "valores_suman",
+    ]
+    plantilla["base_actividad"] = ""
+    plantilla["saldo_favor_anterior"] = plantilla["saldo_favor"]
+    for columna in [
+        "retenciones", "percepciones", "recaudaciones_bancarias",
+        "otros_creditos", "valores_suman",
+    ]:
+        plantilla[columna] = 0
+    return plantilla.reindex(columns=columnas)
+
+
+def guardar_iibb_jurisdicciones(periodo_id, cliente, periodo, calculo):
+    filas = []
+    ahora = _fiscal_timestamp()
+    usuario = st.session_state.get("username", "")
+    for indice, item in enumerate(calculo.get("detalle", [])):
+        codigo = str(item.get("codigo", "")).strip()
+        identidad = hashlib.sha256(
+            f"{periodo_id}|{indice}|{codigo}|{item.get('actividad', '')}".encode("utf-8")
+        ).hexdigest()[:20]
+        filas.append({
+            columna: str(item.get(columna, ""))
+            for columna in FISCAL_IIBB_JURISDICCION_COLUMNAS
+        })
+        filas[-1].update({
+            "id": f"FIIBB-{identidad}",
+            "periodo_id": str(periodo_id), "cliente": str(cliente),
+            "periodo": str(periodo), "fecha_actualizacion": ahora,
+            "actualizado_por": usuario,
+        })
+
+    asegurar_tablas_fiscales()
+    if usar_postgres():
+        with get_postgres_engine().begin() as conn:
+            conn.execute(
+                sql_text(
+                    'DELETE FROM "fiscal_iibb_jurisdicciones" '
+                    'WHERE "periodo_id" = :periodo_id'
+                ),
+                {"periodo_id": str(periodo_id)},
+            )
+            if filas:
+                columnas = list(filas[0].keys())
+                conn.execute(
+                    sql_text(
+                        f'INSERT INTO "fiscal_iibb_jurisdicciones" ({_sql_cols(columnas)}) '
+                        f'VALUES ({", ".join(f":{columna}" for columna in columnas)})'
+                    ),
+                    [
+                        {columna: _normalizar_valor_postgres(fila.get(columna, "")) for columna in columnas}
+                        for fila in filas
+                    ],
+                )
+        _limpiar_cache_postgres()
+        return
+    actuales = read_csv(
+        FISCAL_IIBB_JURISDICCIONES_PATH,
+        FISCAL_IIBB_JURISDICCION_COLUMNAS,
+    )
+    actuales = actuales[~actuales["periodo_id"].astype(str).eq(str(periodo_id))]
+    save_csv(pd.concat([actuales, pd.DataFrame(filas)], ignore_index=True), FISCAL_IIBB_JURISDICCIONES_PATH)
+
+
 def render_liquidaciones_fiscales(cliente_fijo="", modo="admin"):
     header("Liquidaciones", "Papeles de trabajo de IVA e Ingresos Brutos")
     if st.session_state.get("role") not in ["admin_general", "admin", "equipo"]:
@@ -14328,6 +14465,14 @@ def render_liquidaciones_fiscales(cliente_fijo="", modo="admin"):
         c2.metric("Débito IVA", _fiscal_moneda(resumen["iva_debito"]))
         c3.metric("Compras netas", _fiscal_moneda(resumen["compras_neto"]))
         c4.metric("Crédito IVA", _fiscal_moneda(resumen["iva_credito"]))
+        if resumen["ventas_notas_credito_neto"] or resumen["compras_notas_credito_neto"]:
+            with st.expander("Detalle de notas de crédito y restituciones IVA"):
+                n1, n2, n3, n4 = st.columns(4)
+                n1.metric("NC de ventas", _fiscal_moneda(resumen["ventas_notas_credito_neto"]))
+                n2.metric("Restitución débito", _fiscal_moneda(resumen["iva_restitucion_debito"]))
+                n3.metric("NC de compras", _fiscal_moneda(resumen["compras_notas_credito_neto"]))
+                n4.metric("Restitución crédito", _fiscal_moneda(resumen["iva_restitucion_credito"]))
+                st.caption("Las restituciones se exponen cruzadas en el F.2051; no se netean ocultándolas.")
 
         percepciones_iva = movimientos[
             movimientos["impuesto"].astype(str).eq("IVA")
@@ -14355,6 +14500,18 @@ def render_liquidaciones_fiscales(cliente_fijo="", modo="admin"):
                     st.rerun()
 
         perfil = cargar_perfil_fiscal(cliente)
+        es_convenio = str(perfil.get("iibb_regimen", "")) == "Convenio Multilateral"
+        detalle_convenio_guardado = cargar_iibb_jurisdicciones(periodo_id, cliente) if es_convenio else pd.DataFrame()
+        if es_convenio and not detalle_convenio_guardado.empty:
+            coef_total_guardado = sum(
+                (decimal_ar(valor) for valor in detalle_convenio_guardado["coeficiente"]),
+                decimal_ar(0),
+            )
+            if abs(coef_total_guardado - decimal_ar(1)) > decimal_ar("0.0001"):
+                st.warning(
+                    f"Los coeficientes CM03 guardados suman {coef_total_guardado:.4f}; "
+                    "revisalos antes de confirmar la liquidación."
+                )
         with st.form(f"papel_fiscal_{periodo_id}"):
             st.markdown("#### IVA")
             i1, i2, i3 = st.columns(3)
@@ -14366,14 +14523,60 @@ def render_liquidaciones_fiscales(cliente_fijo="", modo="admin"):
             venc_iva = i5.date_input("Vencimiento IVA", value=_fecha_fiscal(registro.get("fecha_vencimiento_iva", "")))
 
             st.markdown("#### Ingresos Brutos")
-            b1, b2, b3 = st.columns(3)
-            base_iibb = b1.number_input("Base imponible IIBB", value=float(decimal_ar(registro.get("iibb_base", resumen["ventas_neto"]) or resumen["ventas_neto"])), step=100.0)
-            tasa_iibb = b2.number_input("Alícuota IIBB (%)", value=float(decimal_ar(registro.get("iibb_alicuota", perfil.get("alicuota_iibb", 0)) or perfil.get("alicuota_iibb", 0))), min_value=0.0, max_value=20.0, step=0.01)
-            saldo_iibb_anterior = b3.number_input("Saldo a favor anterior IIBB", value=float(decimal_ar(registro.get("iibb_saldo_favor_anterior", 0))), step=100.0)
-            b4, b5, b6 = st.columns(3)
-            otros_iibb = b4.number_input("Otros créditos IIBB", value=float(decimal_ar(registro.get("iibb_otros_creditos", 0))), step=100.0)
-            ajustes_iibb = b5.number_input("Ajuste conciliatorio IIBB", value=float(decimal_ar(registro.get("iibb_ajustes", 0))), step=100.0, help="Por ejemplo, retenciones de la DDJJ no incluidas en el archivo fuente.")
-            venc_iibb = b6.date_input("Vencimiento IIBB", value=_fecha_fiscal(registro.get("fecha_vencimiento_iibb", "")))
+            base_iibb = st.number_input("Base imponible IIBB", value=float(decimal_ar(registro.get("iibb_base", resumen["ventas_neto"]) or resumen["ventas_neto"])), step=100.0)
+            detalle_convenio_editado = pd.DataFrame()
+            if es_convenio:
+                st.caption(
+                    "Coeficiente CM05 y alícuota por jurisdicción. Las recaudaciones "
+                    "SIRCREB/SIRCUPA se cargan aparte y no modifican el coeficiente CM03."
+                )
+                columnas_editor = [
+                    "codigo", "jurisdiccion", "actividad", "base_actividad",
+                    "coeficiente", "alicuota", "retenciones", "percepciones",
+                    "recaudaciones_bancarias", "saldo_favor_anterior",
+                    "otros_creditos", "valores_suman",
+                ]
+                if detalle_convenio_guardado.empty:
+                    base_editor = _plantilla_iibb_convenio_con_arrastre(
+                        cliente, periodo, perfil.get("actividad_principal", ""),
+                    )
+                else:
+                    base_editor = detalle_convenio_guardado.reindex(columns=columnas_editor).copy()
+                for columna in columnas_editor[3:]:
+                    base_editor[columna] = base_editor[columna].apply(
+                        lambda valor: None if str(valor).strip() in {"", "nan"} else float(decimal_ar(valor))
+                    )
+                detalle_convenio_editado = st.data_editor(
+                    base_editor,
+                    hide_index=True,
+                    use_container_width=True,
+                    num_rows="dynamic",
+                    column_config={
+                        "codigo": "Código",
+                        "jurisdiccion": "Jurisdicción",
+                        "actividad": "Actividad",
+                        "base_actividad": st.column_config.NumberColumn(
+                            "Base propia", help="Dejar vacío para usar la base general.", format="%.2f"
+                        ),
+                        "coeficiente": st.column_config.NumberColumn("Coef. CM05", min_value=0.0, max_value=1.0, format="%.4f"),
+                        "alicuota": st.column_config.NumberColumn("Alícuota %", min_value=0.0, max_value=20.0, format="%.4f"),
+                        "recaudaciones_bancarias": st.column_config.NumberColumn("SIRCREB/SIRCUPA", format="%.2f"),
+                        "saldo_favor_anterior": st.column_config.NumberColumn("Saldo anterior", format="%.2f"),
+                        "otros_creditos": st.column_config.NumberColumn("Otros créditos", format="%.2f"),
+                        "valores_suman": st.column_config.NumberColumn("Valores suman", format="%.2f"),
+                    },
+                    key=f"fiscal_convenio_{periodo_id}",
+                )
+                tasa_iibb = saldo_iibb_anterior = otros_iibb = ajustes_iibb = 0.0
+                venc_iibb = st.date_input("Vencimiento CM03", value=_fecha_fiscal(registro.get("fecha_vencimiento_iibb", "")))
+            else:
+                b2, b3 = st.columns(2)
+                tasa_iibb = b2.number_input("Alícuota IIBB (%)", value=float(decimal_ar(registro.get("iibb_alicuota", perfil.get("alicuota_iibb", 0)) or perfil.get("alicuota_iibb", 0))), min_value=0.0, max_value=20.0, step=0.01)
+                saldo_iibb_anterior = b3.number_input("Saldo a favor anterior IIBB", value=float(decimal_ar(registro.get("iibb_saldo_favor_anterior", 0))), step=100.0)
+                b4, b5, b6 = st.columns(3)
+                otros_iibb = b4.number_input("Otros créditos IIBB", value=float(decimal_ar(registro.get("iibb_otros_creditos", 0))), step=100.0)
+                ajustes_iibb = b5.number_input("Ajuste conciliatorio IIBB", value=float(decimal_ar(registro.get("iibb_ajustes", 0))), step=100.0, help="Por ejemplo, retenciones de la DDJJ no incluidas en el archivo fuente.")
+                venc_iibb = b6.date_input("Vencimiento IIBB", value=_fecha_fiscal(registro.get("fecha_vencimiento_iibb", "")))
             responsable = st.text_input("Responsable interno", value=str(registro.get("responsable", "")))
             observaciones = st.text_area("Observaciones del papel de trabajo", value=str(registro.get("observaciones", "")), height=90)
             guardar_papel = st.form_submit_button("Calcular y guardar papel de trabajo", type="primary")
@@ -14385,19 +14588,24 @@ def render_liquidaciones_fiscales(cliente_fijo="", modo="admin"):
                 tecnico_anterior, libre_anterior, resumen_actual["iva_percepciones"],
                 iva_ajustes, uso_libre,
             )
-            iibb_calc = calcular_iibb(
-                base_iibb, tasa_iibb, resumen_actual["iibb_retenciones"],
-                resumen_actual["iibb_percepciones"], saldo_iibb_anterior,
-                otros_iibb, ajustes_iibb,
-            )
+            if es_convenio:
+                iibb_calc = calcular_iibb_convenio(base_iibb, detalle_convenio_editado)
+                guardar_iibb_jurisdicciones(periodo_id, cliente, periodo, iibb_calc)
+            else:
+                iibb_calc = calcular_iibb(
+                    base_iibb, tasa_iibb, resumen_actual["iibb_retenciones"],
+                    resumen_actual["iibb_percepciones"], saldo_iibb_anterior,
+                    otros_iibb, ajustes_iibb,
+                )
             _registrar_ajuste_fiscal(
                 periodo_id, cliente, periodo, "IVA", "Otros créditos/ajustes IVA",
                 registro.get("iva_ajustes", 0), iva_ajustes, observaciones,
             )
-            _registrar_ajuste_fiscal(
-                periodo_id, cliente, periodo, "IIBB", "Ajuste conciliatorio IIBB",
-                registro.get("iibb_ajustes", 0), ajustes_iibb, observaciones,
-            )
+            if not es_convenio:
+                _registrar_ajuste_fiscal(
+                    periodo_id, cliente, periodo, "IIBB", "Ajuste conciliatorio IIBB",
+                    registro.get("iibb_ajustes", 0), ajustes_iibb, observaciones,
+                )
             registro.update({
                 "ventas_neto": resumen_actual["ventas_neto"], "iva_debito": resumen_actual["iva_debito"],
                 "compras_neto": resumen_actual["compras_neto"], "iva_credito": resumen_actual["iva_credito"],
@@ -14407,7 +14615,7 @@ def render_liquidaciones_fiscales(cliente_fijo="", modo="admin"):
                 "iva_saldo_libre_favor": iva_calc["saldo_libre_favor"], "iva_saldo_pagar": iva_calc["saldo_pagar"],
                 "iibb_base": base_iibb, "iibb_alicuota": tasa_iibb,
                 "iibb_determinado": iibb_calc["impuesto_determinado"],
-                "iibb_retenciones": resumen_actual["iibb_retenciones"], "iibb_percepciones": resumen_actual["iibb_percepciones"],
+                "iibb_retenciones": iibb_calc["creditos"] if es_convenio else resumen_actual["iibb_retenciones"], "iibb_percepciones": "" if es_convenio else resumen_actual["iibb_percepciones"],
                 "iibb_saldo_favor_anterior": saldo_iibb_anterior, "iibb_otros_creditos": otros_iibb,
                 "iibb_ajustes": ajustes_iibb, "iibb_saldo_favor": iibb_calc["saldo_favor"],
                 "iibb_saldo_pagar": iibb_calc["saldo_pagar"], "fecha_vencimiento_iva": venc_iva.isoformat(),
@@ -14437,6 +14645,18 @@ def render_liquidaciones_fiscales(cliente_fijo="", modo="admin"):
             r2.metric("Saldo técnico IVA", _fiscal_moneda(registro.get("iva_saldo_tecnico_favor", 0)))
             r3.metric("IIBB a pagar", _fiscal_moneda(registro.get("iibb_saldo_pagar", 0)))
             r4.metric("Saldo a favor IIBB", _fiscal_moneda(registro.get("iibb_saldo_favor", 0)))
+            if es_convenio and not detalle_convenio_guardado.empty:
+                with st.expander("Resultado CM03 por jurisdicción", expanded=False):
+                    columnas_resultado = [
+                        "codigo", "jurisdiccion", "actividad", "coeficiente",
+                        "alicuota", "base_atribuida", "impuesto_determinado",
+                        "creditos", "saldo_pagar", "saldo_favor",
+                    ]
+                    st.dataframe(
+                        detalle_convenio_guardado.reindex(columns=columnas_resultado),
+                        hide_index=True,
+                        use_container_width=True,
+                    )
 
     with tab_cierre:
         st.markdown("#### Control y publicación")
@@ -14445,7 +14665,27 @@ def render_liquidaciones_fiscales(cliente_fijo="", modo="admin"):
             st.warning("Primero guardá el papel de trabajo.")
         else:
             estados = ["Borrador", "En revisión"]
-            if st.session_state.get("role") in ["admin_general", "admin"]:
+            convenio_listo = True
+            if str(perfil.get("iibb_regimen", "")) == "Convenio Multilateral":
+                detalle_cierre = cargar_iibb_jurisdicciones(periodo_id, cliente)
+                coef_cierre = sum(
+                    (decimal_ar(valor) for valor in detalle_cierre.get("coeficiente", [])),
+                    decimal_ar(0),
+                )
+                filas_con_base = detalle_cierre[
+                    detalle_cierre.get("coeficiente", pd.Series(dtype=str)).apply(decimal_ar).gt(0)
+                ] if not detalle_cierre.empty else detalle_cierre
+                sin_alicuota = (
+                    not filas_con_base.empty
+                    and filas_con_base.get("alicuota", pd.Series(dtype=str)).apply(decimal_ar).le(0).any()
+                )
+                convenio_listo = abs(coef_cierre - decimal_ar(1)) <= decimal_ar("0.0001") and not sin_alicuota
+                if not convenio_listo:
+                    st.warning(
+                        "Para confirmar el CM03, los coeficientes deben sumar 1,0000 "
+                        "y cada jurisdicción con coeficiente debe tener alícuota."
+                    )
+            if st.session_state.get("role") in ["admin_general", "admin"] and convenio_listo:
                 estados += ["Confirmada", "Presentada", "Pendiente de pago", "Pagada"]
             estado_actual = registro.get("estado", "Borrador")
             if estado_actual not in estados:

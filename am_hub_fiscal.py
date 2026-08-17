@@ -28,6 +28,16 @@ MOVIMIENTO_COLUMNAS = [
 CENTAVOS = Decimal("0.01")
 
 
+def es_nota_credito(tipo_comprobante) -> bool:
+    """Reconoce notas de crédito ARCA por código o descripción."""
+    texto = str(tipo_comprobante or "").strip().casefold()
+    codigo = re.match(r"\d+", texto)
+    return bool(
+        (codigo and int(codigo.group()) in {3, 8, 13, 21, 53, 203, 208, 213})
+        or "nota de cr" in texto
+    )
+
+
 def decimal_ar(valor) -> Decimal:
     """Convierte números argentinos, anglosajones y valores de pandas."""
     if valor is None or (not isinstance(valor, str) and pd.isna(valor)):
@@ -150,10 +160,15 @@ def parsear_comprobantes_arca_xlsx(contenido: bytes, clase: str) -> pd.DataFrame
     vista = pd.read_excel(io.BytesIO(contenido), header=None, nrows=5)
     header_row = 0
     for indice, fila in vista.iterrows():
-        if any(str(valor).strip() == "Fecha de Emisión" for valor in fila.tolist()):
+        if any(str(valor).strip() in {"Fecha", "Fecha de Emisión"} for valor in fila.tolist()):
             header_row = int(indice)
             break
     df = pd.read_excel(io.BytesIO(contenido), header=header_row, dtype=str).fillna("")
+    df = df.rename(columns={
+        "Fecha": "Fecha de Emisión",
+        "Tipo": "Tipo de Comprobante",
+        "Neto Gravado Total": "Imp. Neto Gravado Total",
+    })
     salida = io.StringIO()
     df.to_csv(salida, index=False, sep=";")
     return parsear_comprobantes_arca(salida.getvalue().encode("utf-8"), clase)
@@ -245,13 +260,17 @@ def extraer_perfil_constancia_pdf(contenido: bytes) -> dict[str, str]:
         perfil["cuit"] = cuit.group(1)
     razon_arca = re.search(r"CONSTANCIA DE INSCRIPCION\s+(.+?)\s+CUIT:", texto, re.I)
     razon_agip = re.search(r"Apellido y Nombre / Razón Social\s*\n([^\n]+)", texto, re.I)
-    if razon_arca or razon_agip:
-        perfil["razon_social"] = (razon_arca or razon_agip).group(1).strip()
+    razon_cm = re.search(r"Apellido y Nombres o Razón Social\s*\n\s*([^\n]+)", texto, re.I)
+    if razon_arca or razon_agip or razon_cm:
+        perfil["razon_social"] = (razon_arca or razon_agip or razon_cm).group(1).strip()
     actividad = re.search(r"Actividad principal:\s*(\d{6})", texto, re.I)
     if not actividad:
         actividad = re.search(r"\b(\d{6})\s+.+?PrincipalActividad", texto, re.I)
     if actividad:
         perfil["actividad_principal"] = actividad.group(1)
+    actividad_cm = re.search(r"(?m)^(\d{6})\s+.+?\d{2}/\d{2}/\d{4}P\s*$", texto)
+    if actividad_cm:
+        perfil["actividad_principal"] = actividad_cm.group(1)
     actividades = re.findall(r"\b(\d{6})\b", texto)
     if actividades:
         perfil["actividades"] = ", ".join(dict.fromkeys(actividades))
@@ -261,6 +280,13 @@ def extraer_perfil_constancia_pdf(contenido: bytes) -> dict[str, str]:
             iibb_regimen="Local",
             iibb_jurisdiccion="AGIP - CABA",
             iibb_inscripcion=re.sub(r"\s+", "", inscripcion.group(1)),
+        )
+    sede_cm = re.search(r"Jurisdicción Sede\s*\n\s*(\d{3})\s*-\s*([^\n]+)", texto, re.I)
+    if sede_cm:
+        perfil.update(
+            iibb_regimen="Convenio Multilateral",
+            iibb_jurisdiccion=f"{sede_cm.group(1)} - {sede_cm.group(2).strip()}",
+            iibb_inscripcion=perfil.get("cuit", ""),
         )
     if re.search(r"IVA\s+\d{2}-\d{4}\b", texto):
         perfil["condicion_iva"] = "Responsable inscripto"
@@ -279,7 +305,9 @@ def analizar_archivo_fiscal(nombre: str, contenido: bytes) -> dict:
         "perfil": {},
     }
 
-    if zipfile.is_zipfile(io.BytesIO(contenido)):
+    # XLSX también es internamente un ZIP; sólo abrir como lote cuando la
+    # extensión subida sea realmente .zip.
+    if nombre_bajo.endswith(".zip") and zipfile.is_zipfile(io.BytesIO(contenido)):
         with zipfile.ZipFile(io.BytesIO(contenido)) as archivo_zip:
             miembros = [n for n in archivo_zip.namelist() if n.casefold().endswith(".csv")]
             if not miembros:
@@ -325,6 +353,29 @@ def analizar_archivo_fiscal(nombre: str, contenido: bytes) -> dict:
         return resultado
 
     if nombre_bajo.endswith(".xlsx"):
+        if any(marca in nombre_bajo for marca in ("sircreb", "sircupa", "srbinclusiones")):
+            resultado.update(
+                categoria="coeficientes_recaudacion_bancaria",
+                familia="coeficientes_recaudacion_bancaria",
+            )
+            resultado["advertencias"].append(
+                "Coeficientes SIRCREB/SIRCUPA: se guardan separados y no se usan como coeficientes CM03."
+            )
+            return resultado
+        if not (es_emitido or es_recibido):
+            try:
+                vista = pd.read_excel(io.BytesIO(contenido), header=None, nrows=6)
+                es_mis_comprobantes = any(
+                    str(valor).strip() in {"Fecha", "Fecha de Emisión"}
+                    for valor in vista.to_numpy().flatten()
+                )
+            except Exception:
+                es_mis_comprobantes = False
+            if not es_mis_comprobantes:
+                resultado["advertencias"].append(
+                    "El Excel se guardó como respaldo; no coincide con Mis Comprobantes de ARCA."
+                )
+                return resultado
         clase = "emitido" if es_emitido else "recibido"
         resultado.update(
             categoria=f"comprobantes_{clase}s",
@@ -398,11 +449,38 @@ def resumir_movimientos(movimientos: pd.DataFrame) -> dict[str, Decimal]:
     computado = movimientos.get("computado", pd.Series("Sí", index=movimientos.index)).astype(str).str.casefold().isin(["sí", "si", "true", "1"])
     iva = impuesto.eq("IVA")
     iibb = impuesto.eq("IIBB")
+    tipo = movimientos.get(
+        "tipo_comprobante", pd.Series("", index=movimientos.index),
+    ).astype(str)
+    notas_credito = tipo.apply(es_nota_credito)
+    ventas = iva & clase.eq("emitido")
+    compras = iva & clase.eq("recibido")
+
+    ventas_operaciones_neto = total("neto_gravado", ventas & ~notas_credito)
+    ventas_notas_credito_neto = total("neto_gravado", ventas & notas_credito)
+    compras_operaciones_neto = total("neto_gravado", compras & ~notas_credito)
+    compras_notas_credito_neto = total("neto_gravado", compras & notas_credito)
+    debito_operaciones = total("iva", ventas & ~notas_credito)
+    restitucion_debito = total("iva", ventas & notas_credito)
+    credito_operaciones = total("iva", compras & ~notas_credito)
+    restitucion_credito = total("iva", compras & notas_credito)
+
     return {
-        "ventas_neto": total("neto_gravado", iva & clase.eq("emitido")),
-        "iva_debito": total("iva", iva & clase.eq("emitido")),
-        "compras_neto": total("neto_gravado", iva & clase.eq("recibido")),
-        "iva_credito": total("iva", iva & clase.eq("recibido")),
+        "ventas_operaciones_neto": ventas_operaciones_neto,
+        "ventas_notas_credito_neto": ventas_notas_credito_neto,
+        "ventas_neto": dinero(ventas_operaciones_neto - ventas_notas_credito_neto),
+        "compras_operaciones_neto": compras_operaciones_neto,
+        "compras_notas_credito_neto": compras_notas_credito_neto,
+        "compras_neto": dinero(compras_operaciones_neto - compras_notas_credito_neto),
+        "iva_debito_operaciones": debito_operaciones,
+        "iva_restitucion_debito": restitucion_debito,
+        "iva_credito_operaciones": credito_operaciones,
+        "iva_restitucion_credito": restitucion_credito,
+        # El F.2051 muestra las restituciones cruzadas: las NC recibidas
+        # restituyen crédito y se suman al débito; las NC emitidas restituyen
+        # débito y se suman al crédito.
+        "iva_debito": dinero(debito_operaciones + restitucion_credito),
+        "iva_credito": dinero(credito_operaciones + restitucion_debito),
         "iva_percepciones": total("importe", iva & clase.eq("percepcion") & computado),
         "iibb_retenciones": total("importe", iibb & clase.eq("retencion") & computado),
         "iibb_percepciones": total("importe", iibb & clase.eq("percepcion") & computado),
@@ -451,4 +529,82 @@ def calcular_iibb(
         "creditos": creditos,
         "saldo_pagar": dinero(max(diferencia, Decimal("0"))),
         "saldo_favor": dinero(max(-diferencia, Decimal("0"))),
+    }
+
+
+def calcular_iibb_convenio(base_general, jurisdicciones) -> dict:
+    """Calcula CM03 por jurisdicción sin mezclar coeficientes SIRCREB.
+
+    ``coeficiente`` se expresa como coeficiente unificado (por ejemplo 0.1618)
+    y ``alicuota`` como porcentaje (por ejemplo 3 para 3%). Cada fila puede
+    informar una ``base_actividad`` propia; si está vacía se usa la base general.
+    """
+    base_general = dinero(base_general)
+    if isinstance(jurisdicciones, pd.DataFrame):
+        filas = jurisdicciones.to_dict("records")
+    else:
+        filas = list(jurisdicciones or [])
+
+    detalle = []
+    for fila in filas:
+        codigo = str(fila.get("codigo", "")).strip()
+        nombre = str(fila.get("jurisdiccion", "")).strip()
+        if not codigo and not nombre:
+            continue
+        base_actividad_raw = fila.get("base_actividad", "")
+        base_vacia = (
+            base_actividad_raw is None
+            or (not isinstance(base_actividad_raw, str) and pd.isna(base_actividad_raw))
+            or str(base_actividad_raw).strip().casefold() in {"", "nan", "none"}
+        )
+        base_actividad = base_general if base_vacia else dinero(base_actividad_raw)
+        coeficiente = decimal_ar(fila.get("coeficiente", 0))
+        alicuota = decimal_ar(fila.get("alicuota", 0))
+        base_atribuida = dinero(base_actividad * coeficiente)
+        determinado = dinero(base_atribuida * alicuota / Decimal("100"))
+        valores_suman = dinero(fila.get("valores_suman", 0))
+        retenciones = dinero(fila.get("retenciones", 0))
+        percepciones = dinero(fila.get("percepciones", 0))
+        recaudaciones = dinero(fila.get("recaudaciones_bancarias", 0))
+        saldo_anterior = dinero(fila.get("saldo_favor_anterior", 0))
+        otros_creditos = dinero(fila.get("otros_creditos", 0))
+        creditos = dinero(
+            retenciones + percepciones + recaudaciones
+            + saldo_anterior + otros_creditos
+        )
+        diferencia = dinero(determinado + valores_suman - creditos)
+        detalle.append({
+            **fila,
+            "codigo": codigo,
+            "jurisdiccion": nombre,
+            "base_actividad": base_actividad,
+            "coeficiente": coeficiente,
+            "alicuota": alicuota,
+            "base_atribuida": base_atribuida,
+            "impuesto_determinado": determinado,
+            "valores_suman": valores_suman,
+            "retenciones": retenciones,
+            "percepciones": percepciones,
+            "recaudaciones_bancarias": recaudaciones,
+            "saldo_favor_anterior": saldo_anterior,
+            "otros_creditos": otros_creditos,
+            "creditos": creditos,
+            "saldo_pagar": dinero(max(diferencia, Decimal("0"))),
+            "saldo_favor": dinero(max(-diferencia, Decimal("0"))),
+        })
+
+    def sumar(campo):
+        return dinero(sum((decimal_ar(fila[campo]) for fila in detalle), Decimal("0")))
+
+    return {
+        "base_general": base_general,
+        "coeficiente_total": sum(
+            (decimal_ar(fila["coeficiente"]) for fila in detalle), Decimal("0")
+        ),
+        "impuesto_determinado": sumar("impuesto_determinado"),
+        "creditos": sumar("creditos"),
+        "valores_suman": sumar("valores_suman"),
+        "saldo_pagar": sumar("saldo_pagar"),
+        "saldo_favor": sumar("saldo_favor"),
+        "detalle": detalle,
     }
