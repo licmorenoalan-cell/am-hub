@@ -78,6 +78,7 @@ FISCAL_MOVIMIENTOS_PATH = DATA_DIR / "fiscal_movimientos.csv"
 FISCAL_ARCHIVOS_PATH = DATA_DIR / "fiscal_archivos.csv"
 FISCAL_AJUSTES_PATH = DATA_DIR / "fiscal_ajustes.csv"
 FISCAL_IIBB_JURISDICCIONES_PATH = DATA_DIR / "fiscal_iibb_jurisdicciones.csv"
+FISCAL_CM05_COEFICIENTES_PATH = DATA_DIR / "fiscal_cm05_coeficientes.csv"
 
 ACTIVIDAD_COLUMNS = [
     "id",
@@ -116,6 +117,7 @@ POSTGRES_TABLE_MAP = {
     "fiscal_archivos.csv": "fiscal_archivos",
     "fiscal_ajustes.csv": "fiscal_ajustes",
     "fiscal_iibb_jurisdicciones.csv": "fiscal_iibb_jurisdicciones",
+    "fiscal_cm05_coeficientes.csv": "fiscal_cm05_coeficientes",
 }
 
 POSTGRES_KEY_MAP = {
@@ -138,6 +140,7 @@ POSTGRES_KEY_MAP = {
     "fiscal_archivos": "id",
     "fiscal_ajustes": "id",
     "fiscal_iibb_jurisdicciones": "id",
+    "fiscal_cm05_coeficientes": "id",
 }
 
 POSTGRES_CORE_TABLES = [
@@ -492,6 +495,11 @@ FISCAL_IIBB_JURISDICCION_COLUMNAS = [
     "valores_suman", "creditos", "saldo_pagar", "saldo_favor",
     "fecha_actualizacion", "actualizado_por",
 ]
+FISCAL_CM05_COEFICIENTE_COLUMNAS = [
+    "id", "cliente", "cuit", "ejercicio", "periodo_aplicacion", "codigo",
+    "jurisdiccion", "coeficiente_ingresos", "coeficiente_gastos",
+    "coeficiente_unificado", "archivo_id", "fecha_carga", "cargado_por",
+]
 FISCAL_ARCHIVO_MAX_BYTES = 15 * 1024 * 1024
 FISCAL_ARCHIVOS_MAX_POR_CARGA = 12
 
@@ -509,6 +517,7 @@ def asegurar_tablas_fiscales():
         "fiscal_archivos": FISCAL_ARCHIVO_COLUMNAS,
         "fiscal_ajustes": FISCAL_AJUSTE_COLUMNAS,
         "fiscal_iibb_jurisdicciones": FISCAL_IIBB_JURISDICCION_COLUMNAS,
+        "fiscal_cm05_coeficientes": FISCAL_CM05_COEFICIENTE_COLUMNAS,
     }
     with get_postgres_engine().begin() as conn:
         for tabla, columnas in definiciones.items():
@@ -535,6 +544,10 @@ def asegurar_tablas_fiscales():
         conn.execute(sql_text(
             'CREATE INDEX IF NOT EXISTS "idx_fiscal_iibb_jur_periodo" '
             'ON "fiscal_iibb_jurisdicciones" ("periodo_id")'
+        ))
+        conn.execute(sql_text(
+            'CREATE INDEX IF NOT EXISTS "idx_fiscal_cm05_cliente_ejercicio" '
+            'ON "fiscal_cm05_coeficientes" ("cliente", "ejercicio")'
         ))
     return True
 
@@ -14069,6 +14082,82 @@ def cargar_archivo_fiscal(archivo_id, periodo_id):
     return encontrados.iloc[0].to_dict() if not encontrados.empty else {}
 
 
+def guardar_coeficientes_cm05(cliente, archivo_id, cm05):
+    ejercicio = str(cm05.get("ejercicio", "")).strip()
+    coeficientes = list(cm05.get("coeficientes", []))
+    total = sum(
+        (decimal_ar(fila.get("coeficiente_unificado", 0)) for fila in coeficientes),
+        decimal_ar(0),
+    )
+    if not ejercicio or not coeficientes:
+        return 0
+    if abs(total - decimal_ar(1)) > decimal_ar("0.0001"):
+        raise ValueError(
+            f"El CM05 {ejercicio} no es consistente: los coeficientes suman {total:.4f}."
+        )
+    ahora = _fiscal_timestamp()
+    usuario = st.session_state.get("username", "")
+    filas = []
+    for fila in coeficientes:
+        codigo = str(fila.get("codigo", "")).strip()
+        identidad = hashlib.sha256(
+            f"{cliente}|{ejercicio}|{codigo}".encode("utf-8")
+        ).hexdigest()[:24]
+        filas.append({
+            "id": f"FCM05-{identidad}", "cliente": str(cliente),
+            "cuit": str(cm05.get("cuit", "")), "ejercicio": ejercicio,
+            "periodo_aplicacion": str(cm05.get("periodo_aplicacion", "")),
+            "codigo": codigo, "jurisdiccion": str(fila.get("jurisdiccion", "")),
+            "coeficiente_ingresos": str(fila.get("coeficiente_ingresos", "")),
+            "coeficiente_gastos": str(fila.get("coeficiente_gastos", "")),
+            "coeficiente_unificado": str(fila.get("coeficiente_unificado", "")),
+            "archivo_id": str(archivo_id), "fecha_carga": ahora,
+            "cargado_por": usuario,
+        })
+
+    asegurar_tablas_fiscales()
+    if usar_postgres():
+        columnas = list(filas[0].keys())
+        with get_postgres_engine().begin() as conn:
+            conn.execute(
+                sql_text(
+                    'DELETE FROM "fiscal_cm05_coeficientes" '
+                    'WHERE "cliente" = :cliente AND "ejercicio" = :ejercicio'
+                ),
+                {"cliente": str(cliente), "ejercicio": ejercicio},
+            )
+            conn.execute(
+                sql_text(
+                    f'INSERT INTO "fiscal_cm05_coeficientes" ({_sql_cols(columnas)}) '
+                    f'VALUES ({", ".join(f":{columna}" for columna in columnas)})'
+                ),
+                filas,
+            )
+        _limpiar_cache_postgres()
+        return len(filas)
+    actuales = read_csv(FISCAL_CM05_COEFICIENTES_PATH, FISCAL_CM05_COEFICIENTE_COLUMNAS)
+    mascara = (
+        actuales["cliente"].astype(str).eq(str(cliente))
+        & actuales["ejercicio"].astype(str).eq(ejercicio)
+    ) if not actuales.empty else pd.Series(False, index=actuales.index)
+    save_csv(
+        pd.concat([actuales[~mascara], pd.DataFrame(filas)], ignore_index=True),
+        FISCAL_CM05_COEFICIENTES_PATH,
+    )
+    return len(filas)
+
+
+def cargar_coeficientes_cm05(cliente, periodo_aplicacion=""):
+    df = _cargar_tabla_fiscal(
+        FISCAL_CM05_COEFICIENTES_PATH,
+        FISCAL_CM05_COEFICIENTE_COLUMNAS,
+        cliente,
+    )
+    if periodo_aplicacion and not df.empty:
+        df = df[df["periodo_aplicacion"].astype(str).eq(str(periodo_aplicacion))].copy()
+    return df
+
+
 def guardar_lote_fiscal(cliente, periodo, periodo_id, archivos):
     archivos = list(archivos or [])
     if not archivos:
@@ -14120,6 +14209,14 @@ def guardar_lote_fiscal(cliente, periodo, periodo_id, archivos):
     else:
         actuales = read_csv(FISCAL_ARCHIVOS_PATH, FISCAL_ARCHIVO_COLUMNAS)
         save_csv(pd.concat([actuales, pd.DataFrame(preparados)], ignore_index=True), FISCAL_ARCHIVOS_PATH)
+
+    for resultado in analisis:
+        if resultado.get("cm05"):
+            guardar_coeficientes_cm05(
+                cliente,
+                resultado.get("archivo_id", ""),
+                resultado["cm05"],
+            )
 
     elegidos = seleccionar_fuentes_calculo(analisis)
     nuevos_movimientos = []
@@ -14247,6 +14344,21 @@ def cargar_iibb_jurisdicciones(periodo_id, cliente=""):
     )
 
 
+def _total_coeficientes_convenio(detalle):
+    if detalle is None or detalle.empty:
+        return decimal_ar(0)
+    unicos = detalle.copy()
+    unicos["_clave_coef"] = unicos.apply(
+        lambda fila: str(fila.get("codigo", "") or fila.get("jurisdiccion", "")),
+        axis=1,
+    )
+    unicos = unicos.drop_duplicates("_clave_coef", keep="first")
+    return sum(
+        (decimal_ar(valor) for valor in unicos["coeficiente"]),
+        decimal_ar(0),
+    )
+
+
 def _plantilla_iibb_convenio(actividad=""):
     return pd.DataFrame([
         {
@@ -14275,21 +14387,33 @@ def _plantilla_iibb_convenio_con_arrastre(cliente, periodo, actividad=""):
     )
     anteriores = historico[historico["periodo"].astype(str).lt(str(periodo))].copy() if not historico.empty else historico
     if anteriores.empty:
-        return _plantilla_iibb_convenio(actividad)
-    periodo_anterior = anteriores["periodo"].astype(str).max()
-    plantilla = anteriores[anteriores["periodo"].astype(str).eq(periodo_anterior)].copy()
+        plantilla = _plantilla_iibb_convenio(actividad)
+    else:
+        periodo_anterior = anteriores["periodo"].astype(str).max()
+        plantilla = anteriores[anteriores["periodo"].astype(str).eq(periodo_anterior)].copy()
     columnas = [
         "codigo", "jurisdiccion", "actividad", "base_actividad", "coeficiente",
         "alicuota", "retenciones", "percepciones", "recaudaciones_bancarias",
         "saldo_favor_anterior", "otros_creditos", "valores_suman",
     ]
     plantilla["base_actividad"] = ""
-    plantilla["saldo_favor_anterior"] = plantilla["saldo_favor"]
+    if "saldo_favor" in plantilla.columns:
+        plantilla["saldo_favor_anterior"] = plantilla["saldo_favor"]
     for columna in [
         "retenciones", "percepciones", "recaudaciones_bancarias",
         "otros_creditos", "valores_suman",
     ]:
         plantilla[columna] = 0
+    cm05 = cargar_coeficientes_cm05(cliente, str(periodo)[:4])
+    if not cm05.empty:
+        mapa_coeficientes = dict(zip(
+            cm05["codigo"].astype(str),
+            cm05["coeficiente_unificado"].astype(str),
+        ))
+        plantilla["coeficiente"] = plantilla.apply(
+            lambda fila: mapa_coeficientes.get(str(fila.get("codigo", "")), fila.get("coeficiente", 0)),
+            axis=1,
+        )
     return plantilla.reindex(columns=columnas)
 
 
@@ -14406,10 +14530,23 @@ def render_liquidaciones_fiscales(cliente_fijo="", modo="admin"):
                 _upsert_tabla_fiscal(FISCAL_CLIENTES_PATH, FISCAL_CLIENTE_COLUMNAS, nuevo)
                 st.success("Ficha fiscal guardada.")
                 st.rerun()
+        cm05_cargados = cargar_coeficientes_cm05(cliente)
+        if not cm05_cargados.empty:
+            resumen_cm05 = (
+                cm05_cargados.groupby(["ejercicio", "periodo_aplicacion"], as_index=False)
+                .agg(
+                    jurisdicciones=("codigo", "nunique"),
+                    coeficiente_total=("coeficiente_unificado", lambda serie: float(sum(decimal_ar(valor) for valor in serie))),
+                )
+                .sort_values("ejercicio", ascending=False)
+            )
+            st.markdown("#### CM05 cargados")
+            st.dataframe(resumen_cm05, hide_index=True, use_container_width=True)
+            st.caption("Cada CM05 se carga una sola vez y alimenta automáticamente los CM03 del año de aplicación.")
 
     with tab_documentos:
         st.markdown("#### Cargar documentación del período")
-        st.caption("Podés subir todo junto. AM Hub identifica cada archivo y usa una sola fuente por concepto para evitar duplicados.")
+        st.caption("Podés subir todo junto. El CM05 queda guardado en la ficha del cliente y se reutiliza; los demás archivos pertenecen al período seleccionado.")
         archivos = st.file_uploader(
             "ARCA, AGIP, SIFERE, declaraciones, VEP y comprobantes",
             accept_multiple_files=True,
@@ -14503,10 +14640,7 @@ def render_liquidaciones_fiscales(cliente_fijo="", modo="admin"):
         es_convenio = str(perfil.get("iibb_regimen", "")) == "Convenio Multilateral"
         detalle_convenio_guardado = cargar_iibb_jurisdicciones(periodo_id, cliente) if es_convenio else pd.DataFrame()
         if es_convenio and not detalle_convenio_guardado.empty:
-            coef_total_guardado = sum(
-                (decimal_ar(valor) for valor in detalle_convenio_guardado["coeficiente"]),
-                decimal_ar(0),
-            )
+            coef_total_guardado = _total_coeficientes_convenio(detalle_convenio_guardado)
             if abs(coef_total_guardado - decimal_ar(1)) > decimal_ar("0.0001"):
                 st.warning(
                     f"Los coeficientes CM03 guardados suman {coef_total_guardado:.4f}; "
@@ -14668,10 +14802,7 @@ def render_liquidaciones_fiscales(cliente_fijo="", modo="admin"):
             convenio_listo = True
             if str(perfil.get("iibb_regimen", "")) == "Convenio Multilateral":
                 detalle_cierre = cargar_iibb_jurisdicciones(periodo_id, cliente)
-                coef_cierre = sum(
-                    (decimal_ar(valor) for valor in detalle_cierre.get("coeficiente", [])),
-                    decimal_ar(0),
-                )
+                coef_cierre = _total_coeficientes_convenio(detalle_cierre)
                 filas_con_base = detalle_cierre[
                     detalle_cierre.get("coeficiente", pd.Series(dtype=str)).apply(decimal_ar).gt(0)
                 ] if not detalle_cierre.empty else detalle_cierre

@@ -26,6 +26,7 @@ MOVIMIENTO_COLUMNAS = [
 ]
 
 CENTAVOS = Decimal("0.01")
+CUATRO_DECIMALES = Decimal("0.0001")
 
 
 def es_nota_credito(tipo_comprobante) -> bool:
@@ -293,6 +294,48 @@ def extraer_perfil_constancia_pdf(contenido: bytes) -> dict[str, str]:
     return perfil
 
 
+def extraer_cm05_pdf(contenido: bytes) -> dict:
+    """Extrae ejercicio y coeficientes unificados de una DDJJ anual CM05."""
+    try:
+        from pypdf import PdfReader
+
+        texto = "\n".join(
+            pagina.extract_text() or "" for pagina in PdfReader(io.BytesIO(contenido)).pages
+        )
+    except Exception:
+        return {}
+    if not re.search(r"\bCM\s*05\b", texto, re.I):
+        return {}
+
+    ejercicio_match = re.search(r"\b(20\d{2})00\s+(?:Original|Rectificativa)", texto, re.I)
+    cuit_match = re.search(r"\b(\d{2}-\d{8}-\d)\b", texto)
+    filas = []
+    patron = re.compile(
+        r"(?m)^(9\d{2})\s+(.+?)\s+([01],[0-9]{4})\s+([01],[0-9]{4})\s+([01],[0-9]{4})"
+    )
+    for codigo, jurisdiccion, coef_ingresos, coef_gastos, coef_unificado in patron.findall(texto):
+        filas.append({
+            "codigo": codigo,
+            "jurisdiccion": re.sub(r"\s+", " ", jurisdiccion).strip(),
+            "coeficiente_ingresos": str(decimal_ar(coef_ingresos)),
+            "coeficiente_gastos": str(decimal_ar(coef_gastos)),
+            "coeficiente_unificado": str(decimal_ar(coef_unificado)),
+        })
+    if not filas:
+        return {}
+    ejercicio = ejercicio_match.group(1) if ejercicio_match else ""
+    return {
+        "ejercicio": ejercicio,
+        "periodo_aplicacion": str(int(ejercicio) + 1) if ejercicio else "",
+        "cuit": cuit_match.group(1) if cuit_match else "",
+        "coeficientes": filas,
+        "coeficiente_total": str(dinero(sum(
+            (decimal_ar(fila["coeficiente_unificado"]) for fila in filas),
+            Decimal("0"),
+        ))),
+    }
+
+
 def analizar_archivo_fiscal(nombre: str, contenido: bytes) -> dict:
     """Clasifica un archivo fiscal y extrae movimientos cuando corresponde."""
     nombre_bajo = Path(nombre).name.casefold()
@@ -320,7 +363,13 @@ def analizar_archivo_fiscal(nombre: str, contenido: bytes) -> dict:
 
     if nombre_bajo.endswith(".pdf"):
         resultado["perfil"] = extraer_perfil_constancia_pdf(contenido)
-        if "2051" in nombre_bajo or "iva" in nombre_bajo:
+        cm05 = extraer_cm05_pdf(contenido)
+        if cm05:
+            resultado.update(
+                categoria="cm05_anual", familia="cm05_anual",
+                prioridad=100, cm05=cm05,
+            )
+        elif "2051" in nombre_bajo or "iva" in nombre_bajo:
             resultado.update(categoria="ddjj_iva", familia="ddjj_iva")
         elif "iibb" in nombre_bajo or "ddjjpresentacion" in nombre_bajo:
             resultado.update(categoria="ddjj_iibb", familia="ddjj_iibb")
@@ -596,15 +645,67 @@ def calcular_iibb_convenio(base_general, jurisdicciones) -> dict:
     def sumar(campo):
         return dinero(sum((decimal_ar(fila[campo]) for fila in detalle), Decimal("0")))
 
+    coeficientes_por_jurisdiccion = {}
+    for fila in detalle:
+        clave = fila["codigo"] or fila["jurisdiccion"]
+        coeficientes_por_jurisdiccion.setdefault(clave, decimal_ar(fila["coeficiente"]))
     return {
         "base_general": base_general,
-        "coeficiente_total": sum(
-            (decimal_ar(fila["coeficiente"]) for fila in detalle), Decimal("0")
-        ),
+        "coeficiente_total": sum(coeficientes_por_jurisdiccion.values(), Decimal("0")),
         "impuesto_determinado": sumar("impuesto_determinado"),
         "creditos": sumar("creditos"),
         "valores_suman": sumar("valores_suman"),
         "saldo_pagar": sumar("saldo_pagar"),
         "saldo_favor": sumar("saldo_favor"),
+        "detalle": detalle,
+    }
+
+
+def calcular_coeficientes_cm05(jurisdicciones) -> dict:
+    """Genera coeficientes CM05 desde ingresos y gastos computables anuales."""
+    filas = (
+        jurisdicciones.to_dict("records")
+        if isinstance(jurisdicciones, pd.DataFrame)
+        else list(jurisdicciones or [])
+    )
+    total_ingresos = sum(
+        (decimal_ar(fila.get("ingresos_computables", 0)) for fila in filas),
+        Decimal("0"),
+    )
+    total_gastos = sum(
+        (decimal_ar(fila.get("gastos_computables", 0)) for fila in filas),
+        Decimal("0"),
+    )
+    if total_ingresos <= 0 or total_gastos <= 0:
+        raise ValueError(
+            "El CM05 requiere ingresos y gastos computables anuales mayores que cero."
+        )
+    detalle = []
+    for fila in filas:
+        ingresos = decimal_ar(fila.get("ingresos_computables", 0))
+        gastos = decimal_ar(fila.get("gastos_computables", 0))
+        coef_ingresos = (ingresos / total_ingresos).quantize(
+            CUATRO_DECIMALES, rounding=ROUND_HALF_UP,
+        )
+        coef_gastos = (gastos / total_gastos).quantize(
+            CUATRO_DECIMALES, rounding=ROUND_HALF_UP,
+        )
+        coef_unificado = ((coef_ingresos + coef_gastos) / Decimal("2")).quantize(
+            CUATRO_DECIMALES, rounding=ROUND_HALF_UP,
+        )
+        detalle.append({
+            **fila,
+            "ingresos_computables": dinero(ingresos),
+            "gastos_computables": dinero(gastos),
+            "coeficiente_ingresos": coef_ingresos,
+            "coeficiente_gastos": coef_gastos,
+            "coeficiente_unificado": coef_unificado,
+        })
+    return {
+        "total_ingresos": dinero(total_ingresos),
+        "total_gastos": dinero(total_gastos),
+        "coeficiente_total": sum(
+            (fila["coeficiente_unificado"] for fila in detalle), Decimal("0")
+        ),
         "detalle": detalle,
     }
