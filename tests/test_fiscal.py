@@ -10,9 +10,11 @@ from am_hub_fiscal import (
     analizar_archivo_fiscal,
     calcular_iibb,
     calcular_iibb_convenio,
+    calcular_coeficientes_cm05,
     calcular_iva,
     decimal_ar,
     extraer_perfil_constancia_pdf,
+    extraer_cm05_pdf,
     resumir_movimientos,
     seleccionar_fuentes_calculo,
 )
@@ -91,6 +93,20 @@ class FiscalTests(unittest.TestCase):
         self.assertEqual(calculo["detalle"][1]["impuesto_determinado"], Decimal("1598.72"))
         self.assertEqual(calculo["detalle"][1]["saldo_pagar"], Decimal("1541.02"))
 
+    def test_cm05_calcula_coeficiente_ingresos_gastos_y_unificado(self):
+        calculo = calcular_coeficientes_cm05([
+            {"codigo": "901", "ingresos_computables": "3236", "gastos_computables": "0"},
+            {"codigo": "902", "ingresos_computables": "6303", "gastos_computables": "10000"},
+            {"codigo": "903", "ingresos_computables": "21", "gastos_computables": "0"},
+            {"codigo": "904", "ingresos_computables": "61", "gastos_computables": "0"},
+            {"codigo": "924", "ingresos_computables": "36", "gastos_computables": "0"},
+        ])
+        caba = calculo["detalle"][0]
+        buenos_aires = calculo["detalle"][1]
+        self.assertEqual(caba["coeficiente_unificado"], Decimal("0.1676"))
+        self.assertEqual(buenos_aires["coeficiente_gastos"], Decimal("1.0000"))
+        self.assertEqual(buenos_aires["coeficiente_unificado"], Decimal("0.8264"))
+
     def test_fuentes_reales_villalobo_mallo_si_estan_disponibles(self):
         rutas = [
             Path("/Users/alanmoreno/Downloads/comprobantes_consulta_csv_emitidos_204547631_27408847112_20260817-1917.zip"),
@@ -124,6 +140,16 @@ class FiscalTests(unittest.TestCase):
             self.assertEqual(perfil["iibb_regimen"], "Convenio Multilateral")
             self.assertEqual(perfil["iibb_jurisdiccion"], "902 - BUENOS AIRES")
             self.assertEqual(perfil["actividad_principal"], "952100")
+
+        cm05 = Path("/Users/alanmoreno/Downloads/DDJJ_ANUAL_422071950.pdf")
+        if cm05.exists():
+            anual = extraer_cm05_pdf(cm05.read_bytes())
+            self.assertEqual(anual["ejercicio"], "2025")
+            self.assertEqual(anual["periodo_aplicacion"], "2026")
+            self.assertEqual(len(anual["coeficientes"]), 24)
+            self.assertEqual(anual["coeficiente_total"], "1.00")
+            buenos_aires = next(fila for fila in anual["coeficientes"] if fila["codigo"] == "902")
+            self.assertEqual(buenos_aires["coeficiente_unificado"], "0.8152")
 
     def test_fuentes_reales_casa_deser_si_estan_disponibles(self):
         rutas = [
