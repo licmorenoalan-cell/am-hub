@@ -1432,6 +1432,62 @@ st.markdown(
             color: white;
         }}
 
+        .module-hero {{
+            position: relative;
+            overflow: hidden;
+            margin: 0 0 28px 0;
+            padding: 28px 32px;
+            border-radius: 24px;
+            color: #FFFFFF;
+            background:
+                radial-gradient(circle at 92% 18%, rgba(255,255,255,.18), transparent 24%),
+                linear-gradient(135deg, #244777 0%, #087f9c 72%, #09a2a7 100%);
+            box-shadow: 0 18px 45px rgba(36, 71, 119, 0.18);
+        }}
+
+        .module-hero-eyebrow {{
+            margin-bottom: 7px;
+            color: rgba(255,255,255,.76);
+            font-size: .76rem;
+            font-weight: 800;
+            letter-spacing: .11em;
+            text-transform: uppercase;
+        }}
+
+        .module-hero-title {{
+            max-width: 780px;
+            font-size: 1.9rem;
+            line-height: 1.08;
+            font-weight: 900;
+            letter-spacing: -.035em;
+        }}
+
+        .module-hero-description {{
+            max-width: 760px;
+            margin-top: 9px;
+            color: rgba(255,255,255,.86);
+            font-size: .98rem;
+            line-height: 1.5;
+        }}
+
+        .module-hero-chips {{
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            margin-top: 20px;
+        }}
+
+        .module-hero-chip {{
+            padding: 7px 11px;
+            border: 1px solid rgba(255,255,255,.26);
+            border-radius: 999px;
+            background: rgba(255,255,255,.12);
+            color: #FFFFFF;
+            font-size: .78rem;
+            font-weight: 750;
+            backdrop-filter: blur(6px);
+        }}
+
         /* Checklist interno: filas compactas sin afectar otros botones. */
         div[class*="st-key-abrir_edicion_check_"] {{
             margin-bottom: -0.65rem;
@@ -1476,6 +1532,15 @@ st.markdown(
             .am-card, .metric-card {{
                 padding: 14px 15px;
                 border-radius: 14px;
+            }}
+
+            .module-hero {{
+                padding: 22px 20px;
+                border-radius: 18px;
+            }}
+
+            .module-hero-title {{
+                font-size: 1.55rem;
             }}
 
             div.stButton > button {{
@@ -3040,6 +3105,28 @@ def kpi_card(label, value, foot=""):
             <div class="metric-value">{value}</div>
             <div class="metric-foot">{foot}</div>
         </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def module_hero(eyebrow, title, description, highlights=None):
+    """Cabecera visual compartida para los módulos operativos de AM Hub."""
+    eyebrow_safe = html.escape(str(eyebrow))
+    title_safe = html.escape(str(title))
+    description_safe = html.escape(str(description))
+    chips = "".join(
+        f'<span class="module-hero-chip">{html.escape(str(item))}</span>'
+        for item in (highlights or [])
+    )
+    st.markdown(
+        f"""
+        <section class="module-hero">
+            <div class="module-hero-eyebrow">{eyebrow_safe}</div>
+            <div class="module-hero-title">{title_safe}</div>
+            <div class="module-hero-description">{description_safe}</div>
+            <div class="module-hero-chips">{chips}</div>
+        </section>
         """,
         unsafe_allow_html=True,
     )
@@ -8047,6 +8134,13 @@ def render_indicadores(cliente="", modo="cliente"):
         header("Cash Flow", "Carga mensual y tablero de gestión por cliente")
         cliente_fijo = ""
 
+    module_hero(
+        "Gestión financiera",
+        "Ingresos, gastos y resultados en perspectiva",
+        "Registrá movimientos y entendé la evolución financiera con indicadores y gráficos en una misma vista.",
+        ["Ingresos", "Gastos", "Resultado", "Evolución mensual"],
+    )
+
     clientes_lista = clientes_visibles_para_usuario()
 
     # --------------------------------------------------------
@@ -8620,6 +8714,12 @@ def render_cuenta_corriente_admin():
         return
 
     header("Cuenta corriente", "Honorarios, facturación, pagos y deuda por cliente")
+    module_hero(
+        "Control comercial",
+        "Cobros y compromisos bajo control",
+        "Visualizá honorarios, comprobantes, pagos y saldos pendientes sin perder el detalle de cada cliente.",
+        ["Honorarios", "Facturación", "Pagos", "Deuda"],
+    )
 
     columnas = [
         "id",
@@ -10849,6 +10949,12 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
     header(
         "Centro de tareas",
         "Gestión operativa por unidad, cliente, responsable y estado.",
+    )
+    module_hero(
+        "Organización diaria",
+        "Prioridades claras para todo el equipo",
+        "Centralizá vencimientos, responsables y avances para saber qué requiere atención y qué sigue después.",
+        ["Vencimientos", "Responsables", "Prioridades", "Seguimiento"],
     )
 
     estados_kanban = [
@@ -14616,6 +14722,13 @@ def render_liquidaciones_fiscales(cliente_fijo="", modo="admin"):
     with col_responsable:
         st.caption("Estado")
         st.markdown(f"**{registro.get('estado') or 'Borrador'}** · {periodo}")
+
+    module_hero(
+        "Gestión impositiva",
+        "Impuestos y vencimientos, en una sola vista",
+        f"Organizá el expediente fiscal de {cliente}, controlá documentación y seguí el período {periodo} de punta a punta.",
+        ["IVA", "Ingresos Brutos", "Documentación", "Vencimientos"],
+    )
 
     if usar_postgres():
         contexto_fiscal = cargar_contexto_fiscal_postgres_cacheado(
