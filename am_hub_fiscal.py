@@ -721,3 +721,69 @@ def calcular_coeficientes_cm05(jurisdicciones) -> dict:
         ),
         "detalle": detalle,
     }
+
+
+def evaluar_expediente_fiscal(
+    perfil: dict,
+    registro: dict,
+    documentos: pd.DataFrame,
+    movimientos: pd.DataFrame,
+    cm05_disponible: bool = False,
+) -> dict:
+    """Resume avance y faltantes sin leer el contenido pesado de los archivos."""
+    documentos = documentos if documentos is not None else pd.DataFrame()
+    movimientos = movimientos if movimientos is not None else pd.DataFrame()
+
+    def afirmativo(valor) -> bool:
+        return str(valor or "").strip().casefold() in {"sí", "si", "true", "1"}
+
+    clases = movimientos.get("clase", pd.Series(dtype=str)).astype(str)
+    impuestos = movimientos.get("impuesto", pd.Series(dtype=str)).astype(str)
+    ventas = int(clases.eq("emitido").sum())
+    compras = int(clases.eq("recibido").sum())
+    deducciones_iva = int((impuestos.eq("IVA") & clases.isin(["retencion", "percepcion"])).sum())
+    deducciones_iibb = int((impuestos.eq("IIBB") & clases.isin(["retencion", "percepcion"])).sum())
+    regimen = str(perfil.get("iibb_regimen", "")).strip()
+    perfil_ok = all(str(perfil.get(campo, "")).strip() for campo in ["cuit", "condicion_iva", "iibb_regimen"])
+    ventas_ok = ventas > 0 or afirmativo(registro.get("sin_ventas"))
+    compras_ok = compras > 0 or afirmativo(registro.get("sin_compras"))
+    iva_ded_ok = deducciones_iva > 0 or afirmativo(registro.get("sin_deducciones_iva"))
+    iibb_ded_ok = (
+        regimen == "Exento"
+        or deducciones_iibb > 0
+        or afirmativo(registro.get("sin_deducciones_iibb"))
+    )
+    cm05_requerido = regimen == "Convenio Multilateral"
+    cm05_ok = bool(cm05_disponible) if cm05_requerido else True
+    papel_ok = bool(
+        str(registro.get("iva_debito", "")).strip()
+        and str(registro.get("iibb_determinado", "")).strip()
+    )
+
+    items = [
+        {"etapa": "Ficha fiscal", "completo": perfil_ok, "detalle": "CUIT, IVA e IIBB", "requerido": True},
+        {"etapa": "Ventas", "completo": ventas_ok, "detalle": f"{ventas} comprobante(s)" if ventas else "Sin archivo o declaración", "requerido": True},
+        {"etapa": "Compras", "completo": compras_ok, "detalle": f"{compras} comprobante(s)" if compras else "Sin archivo o declaración", "requerido": True},
+        {"etapa": "Deducciones IVA", "completo": iva_ded_ok, "detalle": f"{deducciones_iva} movimiento(s)" if deducciones_iva else "Pendiente o sin movimientos", "requerido": False},
+        {"etapa": "Deducciones IIBB", "completo": iibb_ded_ok, "detalle": f"{deducciones_iibb} movimiento(s)" if deducciones_iibb else "Pendiente o sin movimientos", "requerido": False},
+        {"etapa": "CM05 aplicable", "completo": cm05_ok, "detalle": "Cargado" if cm05_ok else "Falta cargar", "requerido": cm05_requerido},
+        {"etapa": "Papel de trabajo", "completo": papel_ok, "detalle": "Calculado" if papel_ok else "Pendiente", "requerido": True},
+    ]
+    completos = sum(1 for item in items if item["completo"])
+    requeridos_ok = all(item["completo"] for item in items if item["requerido"])
+    categorias = documentos.get("categoria", pd.Series(dtype=str)).astype(str)
+    respaldos_sin_clasificar = int(categorias.eq("respaldo").sum())
+    advertencias = int(
+        documentos.get("advertencias", pd.Series(dtype=str)).astype(str).str.strip().ne("").sum()
+    )
+    return {
+        "items": items,
+        "progreso": completos / len(items) if items else 0,
+        "completos": completos,
+        "total": len(items),
+        "listo_para_revision": requeridos_ok,
+        "documentos": len(documentos),
+        "movimientos": len(movimientos),
+        "respaldos_sin_clasificar": respaldos_sin_clasificar,
+        "advertencias": advertencias,
+    }

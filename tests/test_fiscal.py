@@ -15,6 +15,7 @@ from am_hub_fiscal import (
     decimal_ar,
     extraer_perfil_constancia_pdf,
     extraer_cm05_pdf,
+    evaluar_expediente_fiscal,
     periodo_aplicacion_cm05,
     resumir_movimientos,
     seleccionar_fuentes_calculo,
@@ -109,6 +110,16 @@ class FiscalTests(unittest.TestCase):
         self.assertEqual(caba["coeficiente_unificado"], Decimal("0.1676"))
         self.assertEqual(buenos_aires["coeficiente_gastos"], Decimal("1.0000"))
         self.assertEqual(buenos_aires["coeficiente_unificado"], Decimal("0.8264"))
+
+    def test_expediente_detecta_faltantes_y_declaraciones_sin_movimientos(self):
+        perfil = {"cuit": "30-12345678-9", "condicion_iva": "Responsable inscripto", "iibb_regimen": "Local"}
+        registro = {"sin_compras": "Sí", "sin_deducciones_iva": "Sí", "sin_deducciones_iibb": "Sí"}
+        movimientos = pd.DataFrame([{"clase": "emitido", "impuesto": "IVA"}])
+        control = evaluar_expediente_fiscal(perfil, registro, pd.DataFrame(), movimientos)
+        self.assertFalse(control["listo_para_revision"])
+        registro.update(iva_debito="210.00", iibb_determinado="30.00")
+        control = evaluar_expediente_fiscal(perfil, registro, pd.DataFrame(), movimientos)
+        self.assertTrue(control["listo_para_revision"])
 
     def test_fuentes_reales_villalobo_mallo_si_estan_disponibles(self):
         rutas = [

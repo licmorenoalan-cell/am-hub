@@ -21,6 +21,7 @@ from am_hub_fiscal import (
     calcular_iibb_convenio,
     calcular_iva,
     decimal_ar,
+    evaluar_expediente_fiscal,
     periodo_aplicacion_cm05,
     resumir_movimientos,
     seleccionar_fuentes_calculo,
@@ -422,6 +423,8 @@ def _limpiar_cache_postgres():
         "leer_postgres_core_tabla_cacheada",
         "leer_postgres_cacheada",
         "leer_postgres_cliente_cacheada",
+        "leer_postgres_fiscal_filtrado_cacheada",
+        "cargar_contexto_fiscal_postgres_cacheado",
         "leer_postgres_preview_cacheada",
         "contar_postgres_cacheada",
         "cargar_archivo_reporte",
@@ -478,6 +481,8 @@ FISCAL_PERIODO_COLUMNAS = [
     "iibb_saldo_favor_anterior", "iibb_otros_creditos", "iibb_ajustes",
     "iibb_saldo_favor", "iibb_saldo_pagar", "observaciones", "fecha_actualizacion",
     "actualizado_por", "fecha_confirmacion", "confirmado_por",
+    "sin_ventas", "sin_compras", "sin_deducciones_iva",
+    "sin_deducciones_iibb",
 ]
 FISCAL_ARCHIVO_COLUMNAS = [
     "id", "periodo_id", "cliente", "periodo", "categoria", "familia", "nombre",
@@ -503,6 +508,7 @@ FISCAL_CM05_COEFICIENTE_COLUMNAS = [
 ]
 FISCAL_ARCHIVO_MAX_BYTES = 15 * 1024 * 1024
 FISCAL_ARCHIVOS_MAX_POR_CARGA = 24
+FISCAL_ARCHIVOS_MAX_TOTAL_BYTES = 80 * 1024 * 1024
 
 
 @st.cache_resource(show_spinner=False)
@@ -529,6 +535,14 @@ def asegurar_tablas_fiscales():
                 partes.append(f'"{columna}" {tipo}{restriccion}')
             conn.execute(sql_text(
                 f'CREATE TABLE IF NOT EXISTS "{tabla}" ({", ".join(partes)})'
+            ))
+        for columna in [
+            "sin_ventas", "sin_compras", "sin_deducciones_iva",
+            "sin_deducciones_iibb",
+        ]:
+            conn.execute(sql_text(
+                f'ALTER TABLE "fiscal_periodos" '
+                f'ADD COLUMN IF NOT EXISTS "{columna}" TEXT'
             ))
         conn.execute(sql_text(
             'CREATE INDEX IF NOT EXISTS "idx_fiscal_periodos_cliente" '
@@ -13979,8 +13993,108 @@ def _fiscal_moneda(valor):
     return f"$ {numero:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
 
 
+FISCAL_CATEGORIA_ETIQUETAS = {
+    "comprobantes_emitidos": "Ventas",
+    "comprobantes_recibidos": "Compras",
+    "percepciones_iva": "Deducciones IVA",
+    "retenciones_iibb": "Retenciones IIBB",
+    "percepciones_iibb": "Percepciones IIBB",
+    "retenciones_iibb_importacion": "Retenciones IIBB - importación",
+    "percepciones_iibb_importacion": "Percepciones IIBB - importación",
+    "coeficientes_recaudacion_bancaria": "Coeficientes SIRCREB/SIRCUPA",
+    "cm05_anual": "CM05 anual",
+    "constancia_arca": "Constancia ARCA",
+    "constancia_iibb": "Constancia IIBB",
+    "ddjj_iva": "DDJJ IVA",
+    "ddjj_iibb": "DDJJ IIBB",
+    "vep": "VEP",
+    "respaldo": "Otro respaldo",
+}
+
+
+def _fiscal_categoria_visible(valor):
+    texto = str(valor or "")
+    return FISCAL_CATEGORIA_ETIQUETAS.get(texto, texto.replace("_", " ").title())
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def leer_postgres_fiscal_filtrado_cacheada(
+    tabla, columnas_tuple, cliente="", periodo_id="",
+):
+    columnas = list(columnas_tuple)
+    condiciones = []
+    parametros = {}
+    if cliente:
+        condiciones.append('"cliente" = :cliente')
+        parametros["cliente"] = str(cliente)
+    if periodo_id:
+        condiciones.append('"periodo_id" = :periodo_id')
+        parametros["periodo_id"] = str(periodo_id)
+    where = f" WHERE {' AND '.join(condiciones)}" if condiciones else ""
+    with get_postgres_engine().connect() as conn:
+        df = pd.read_sql(
+            sql_text(f'SELECT {_sql_cols(columnas)} FROM "{tabla}"{where}'),
+            conn,
+            params=parametros,
+        ).fillna("")
+    return normalizar_df_para_columnas(df, columnas)
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def cargar_contexto_fiscal_postgres_cacheado(
+    cliente, periodo_id, periodo_aplicacion,
+):
+    """Trae el expediente visible en un solo viaje, sin blobs de archivos."""
+    columnas_archivos = [col for col in FISCAL_ARCHIVO_COLUMNAS if col != "contenido_base64"]
+
+    def agregado(tabla, columnas, condicion):
+        return (
+            "COALESCE((SELECT jsonb_agg(to_jsonb(fila)) FROM ("
+            f"SELECT {_sql_cols(columnas)} FROM \"{tabla}\" WHERE {condicion}"
+            ") AS fila), '[]'::jsonb)"
+        )
+
+    consulta = sql_text(
+        "SELECT "
+        + agregado("fiscal_clientes", FISCAL_CLIENTE_COLUMNAS, '"cliente" = :cliente') + " AS perfil, "
+        + agregado("fiscal_archivos", columnas_archivos, '"periodo_id" = :periodo_id') + " AS documentos, "
+        + agregado("fiscal_movimientos", MOVIMIENTO_COLUMNAS, '"periodo_id" = :periodo_id') + " AS movimientos, "
+        + agregado(
+            "fiscal_cm05_coeficientes", FISCAL_CM05_COEFICIENTE_COLUMNAS,
+            '"cliente" = :cliente AND "periodo_aplicacion" = :periodo_aplicacion',
+        ) + " AS cm05"
+    )
+    with get_postgres_engine().connect() as conn:
+        fila = conn.execute(
+            consulta,
+            {
+                "cliente": str(cliente), "periodo_id": str(periodo_id),
+                "periodo_aplicacion": str(periodo_aplicacion),
+            },
+        ).mappings().one()
+
+    def dataframe(clave, columnas):
+        valor = fila.get(clave) or []
+        return normalizar_df_para_columnas(pd.DataFrame(valor), columnas)
+
+    return {
+        "perfil": dataframe("perfil", FISCAL_CLIENTE_COLUMNAS),
+        "documentos": dataframe("documentos", columnas_archivos),
+        "movimientos": dataframe("movimientos", MOVIMIENTO_COLUMNAS),
+        "cm05": dataframe("cm05", FISCAL_CM05_COEFICIENTE_COLUMNAS),
+    }
+
+
 def _cargar_tabla_fiscal(path, columnas, cliente="", periodo_id=""):
     asegurar_tablas_fiscales()
+    tabla = tabla_postgres_para_path(path)
+    if usar_postgres() and tabla and periodo_id:
+        try:
+            return leer_postgres_fiscal_filtrado_cacheada(
+                tabla, tuple(columnas), str(cliente or ""), str(periodo_id),
+            ).copy()
+        except Exception:
+            LOGGER.exception("No se pudo filtrar la tabla fiscal %s", tabla)
     df = read_csv_cliente(path, columnas, cliente) if cliente else read_csv(path, columnas)
     if periodo_id and "periodo_id" in df.columns:
         df = df[df["periodo_id"].astype(str).eq(str(periodo_id))].copy()
@@ -14172,12 +14286,16 @@ def guardar_lote_fiscal(cliente, periodo, periodo_id, archivos):
     analisis = []
     omitidos = []
     hashes_lote = set(hashes_existentes)
+    bytes_lote = 0
     for entrada in archivos:
         if isinstance(entrada, tuple):
             archivo, categoria_hint = entrada
         else:
             archivo, categoria_hint = entrada, ""
         contenido = archivo.getvalue()
+        bytes_lote += len(contenido)
+        if bytes_lote > FISCAL_ARCHIVOS_MAX_TOTAL_BYTES:
+            raise ValueError("El lote supera 80 MB. Dividilo en dos procesamientos.")
         if len(contenido) > FISCAL_ARCHIVO_MAX_BYTES:
             raise ValueError(f'"{archivo.name}" supera el límite de 15 MB.')
         huella = hashlib.sha256(contenido).hexdigest()
@@ -14499,12 +14617,107 @@ def render_liquidaciones_fiscales(cliente_fijo="", modo="admin"):
         st.caption("Estado")
         st.markdown(f"**{registro.get('estado') or 'Borrador'}** · {periodo}")
 
-    tab_ficha, tab_documentos, tab_papel, tab_cierre = st.tabs([
-        "Ficha fiscal", "Documentación", "Papel de trabajo", "Cierre y cliente",
-    ])
-
-    with tab_ficha:
+    if usar_postgres():
+        contexto_fiscal = cargar_contexto_fiscal_postgres_cacheado(
+            cliente, periodo_id, periodo_aplicacion_cm05(periodo),
+        )
+        perfil_df = contexto_fiscal["perfil"]
+        perfil = (
+            {col: "" for col in FISCAL_CLIENTE_COLUMNAS}
+            if perfil_df.empty else perfil_df.iloc[-1].to_dict()
+        )
+        documentos = contexto_fiscal["documentos"]
+        if not documentos.empty and "fecha_carga" in documentos.columns:
+            documentos = documentos.sort_values("fecha_carga", ascending=False).reset_index(drop=True)
+        movimientos = contexto_fiscal["movimientos"]
+        cm05_aplicable = contexto_fiscal["cm05"]
+    else:
         perfil = cargar_perfil_fiscal(cliente)
+        documentos = cargar_archivos_fiscales(periodo_id, cliente)
+        movimientos = _cargar_tabla_fiscal(
+            FISCAL_MOVIMIENTOS_PATH, MOVIMIENTO_COLUMNAS, cliente, periodo_id,
+        )
+        cm05_aplicable = cargar_coeficientes_cm05(
+            cliente, periodo_aplicacion_cm05(periodo),
+        )
+    resumen = resumir_movimientos(movimientos)
+    expediente = evaluar_expediente_fiscal(
+        perfil, registro, documentos, movimientos,
+        cm05_disponible=not cm05_aplicable.empty,
+    )
+
+    seccion_fiscal = st.radio(
+        "Sección",
+        ["Expediente", "Ficha fiscal", "Documentación", "Papel de trabajo", "Cierre"],
+        horizontal=True,
+        label_visibility="collapsed",
+        key=f"fiscal_seccion_{cliente}_{periodo}",
+    )
+
+    if seccion_fiscal == "Expediente":
+        st.markdown("#### Expediente del período")
+        e1, e2, e3, e4 = st.columns(4)
+        e1.metric("Avance", f"{round(expediente['progreso'] * 100)}%")
+        e2.metric("Documentos", expediente["documentos"])
+        e3.metric("Movimientos", expediente["movimientos"])
+        e4.metric("Estado", str(registro.get("estado") or "Borrador"))
+        st.progress(float(expediente["progreso"]))
+
+        checklist = pd.DataFrame([
+            {
+                "Estado": "Listo" if item["completo"] else "Pendiente",
+                "Etapa": item["etapa"],
+                "Detalle": item["detalle"],
+                "Control": "Requerido" if item["requerido"] else "Revisar",
+            }
+            for item in expediente["items"]
+        ])
+        st.dataframe(checklist, hide_index=True, use_container_width=True)
+
+        pendientes = [
+            item["etapa"] for item in expediente["items"]
+            if item["requerido"] and not item["completo"]
+        ]
+        if pendientes:
+            st.info(f"Siguiente paso: completar {', '.join(pendientes)}.")
+        else:
+            st.success("El expediente tiene los controles mínimos completos y puede pasar a revisión.")
+        if expediente["advertencias"]:
+            st.warning(f"Hay {expediente['advertencias']} archivo(s) con advertencias para revisar.")
+        if expediente["respaldos_sin_clasificar"]:
+            st.caption(
+                f"{expediente['respaldos_sin_clasificar']} respaldo(s) no intervienen automáticamente en el cálculo."
+            )
+
+        if str(registro.get("iva_debito", "")).strip():
+            st.markdown("##### Resultado actual")
+            x1, x2, x3, x4 = st.columns(4)
+            x1.metric("IVA a pagar", _fiscal_moneda(registro.get("iva_saldo_pagar", 0)))
+            x2.metric("Saldo técnico IVA", _fiscal_moneda(registro.get("iva_saldo_tecnico_favor", 0)))
+            x3.metric("IIBB a pagar", _fiscal_moneda(registro.get("iibb_saldo_pagar", 0)))
+            x4.metric("Saldo a favor IIBB", _fiscal_moneda(registro.get("iibb_saldo_favor", 0)))
+
+        if not documentos.empty:
+            with st.expander("Últimos archivos cargados", expanded=False):
+                documentos_vista = documentos[["nombre", "categoria", "fecha_carga"]].head(8).copy()
+                documentos_vista["categoria"] = documentos_vista["categoria"].apply(_fiscal_categoria_visible)
+                st.dataframe(
+                    documentos_vista,
+                    hide_index=True, use_container_width=True,
+                )
+            indice_expediente = documentos[
+                ["nombre", "categoria", "tamano", "fecha_carga", "cargado_por", "advertencias"]
+            ].copy()
+            indice_expediente["categoria"] = indice_expediente["categoria"].apply(_fiscal_categoria_visible)
+            st.download_button(
+                "Descargar índice del expediente",
+                data=indice_expediente.to_csv(index=False).encode("utf-8-sig"),
+                file_name=f"expediente_{cliente}_{periodo}.csv".replace(" ", "_"),
+                mime="text/csv",
+                key=f"fiscal_indice_{periodo_id}",
+            )
+
+    if seccion_fiscal == "Ficha fiscal":
         st.caption("Las constancias ARCA/AGIP completan automáticamente los datos reconocibles. Podés revisarlos aquí.")
         with st.form(f"ficha_fiscal_{cliente}"):
             c1, c2 = st.columns(2)
@@ -14553,11 +14766,48 @@ def render_liquidaciones_fiscales(cliente_fijo="", modo="admin"):
             st.dataframe(resumen_cm05, hide_index=True, use_container_width=True)
             st.caption("Cada CM05 se carga una sola vez y alimenta automáticamente los CM03 del año de aplicación.")
 
-    with tab_documentos:
+    if seccion_fiscal == "Documentación":
         st.markdown("#### Cargar documentación del período")
         st.caption("Cada fuente tiene su lugar. Podés completar sólo los bloques que correspondan al cliente y procesar todo en una sola operación.")
 
-        with st.expander("1. Datos permanentes del cliente", expanded=True):
+        with st.expander("Declarar conceptos sin movimientos", expanded=False):
+            st.caption("Usalo sólo cuando el período realmente no tenga información para ese concepto.")
+            with st.form(f"fiscal_sin_movimientos_{periodo_id}"):
+                z1, z2 = st.columns(2)
+                sin_ventas = z1.checkbox(
+                    "Sin ventas", value=str(registro.get("sin_ventas", "")).casefold() in ["sí", "si", "true", "1"],
+                )
+                sin_compras = z2.checkbox(
+                    "Sin compras", value=str(registro.get("sin_compras", "")).casefold() in ["sí", "si", "true", "1"],
+                )
+                z3, z4 = st.columns(2)
+                sin_deducciones_iva = z3.checkbox(
+                    "Sin retenciones/percepciones de IVA",
+                    value=str(registro.get("sin_deducciones_iva", "")).casefold() in ["sí", "si", "true", "1"],
+                )
+                sin_deducciones_iibb = z4.checkbox(
+                    "Sin deducciones de IIBB",
+                    value=str(registro.get("sin_deducciones_iibb", "")).casefold() in ["sí", "si", "true", "1"],
+                )
+                guardar_sin_movimientos = st.form_submit_button("Guardar declaraciones")
+            if guardar_sin_movimientos:
+                registro.update({
+                    "sin_ventas": "Sí" if sin_ventas else "No",
+                    "sin_compras": "Sí" if sin_compras else "No",
+                    "sin_deducciones_iva": "Sí" if sin_deducciones_iva else "No",
+                    "sin_deducciones_iibb": "Sí" if sin_deducciones_iibb else "No",
+                    "fecha_actualizacion": _fiscal_timestamp(),
+                    "actualizado_por": st.session_state.get("username", ""),
+                })
+                _upsert_tabla_fiscal(FISCAL_PERIODOS_PATH, FISCAL_PERIODO_COLUMNAS, registro)
+                st.success("Declaraciones del período guardadas.")
+                st.rerun()
+
+        permanentes_pendientes = not str(perfil.get("cuit", "")).strip() or (
+            str(perfil.get("iibb_regimen", "")) == "Convenio Multilateral"
+            and cm05_aplicable.empty
+        )
+        with st.expander("1. Datos permanentes del cliente", expanded=permanentes_pendientes):
             st.caption("Constancia de CUIT, inscripción en IIBB y último CM05. Se cargan una vez y se reutilizan.")
             archivos_permanentes = st.file_uploader(
                 "Constancias y CM05",
@@ -14623,11 +14873,15 @@ def render_liquidaciones_fiscales(cliente_fijo="", modo="admin"):
             + [(archivo, "iibb") for archivo in archivos_iibb]
             + [(archivo, "") for archivo in archivos_finales]
         )
-        st.caption(f"{len(archivos)} archivo(s) seleccionados · máximo {FISCAL_ARCHIVOS_MAX_POR_CARGA} por procesamiento.")
+        st.caption(
+            f"{len(archivos)} archivo(s) seleccionados · máximo "
+            f"{FISCAL_ARCHIVOS_MAX_POR_CARGA} archivos y 80 MB por procesamiento."
+        )
         if st.button("Procesar documentación", type="primary", disabled=not archivos, key=f"fiscal_procesar_{periodo_id}"):
             try:
-                cantidad, movimientos, omitidos = guardar_lote_fiscal(cliente, periodo, periodo_id, archivos)
-                st.success(f"Se guardaron {cantidad} archivos y {movimientos} movimientos.")
+                with st.spinner("Clasificando y guardando documentación..."):
+                    cantidad, movimientos_guardados, omitidos = guardar_lote_fiscal(cliente, periodo, periodo_id, archivos)
+                st.success(f"Se guardaron {cantidad} archivos y {movimientos_guardados} movimientos.")
                 if omitidos:
                     st.info(f"Ya estaban cargados: {', '.join(omitidos)}")
                 st.rerun()
@@ -14635,14 +14889,23 @@ def render_liquidaciones_fiscales(cliente_fijo="", modo="admin"):
                 LOGGER.exception("No se pudo procesar el lote fiscal")
                 st.error(f"No se pudo procesar el lote: {exc}")
 
-        documentos = cargar_archivos_fiscales(periodo_id, cliente)
         if documentos.empty:
             st.info("Todavía no hay documentación cargada para este período.")
         else:
-            st.dataframe(
-                documentos[["nombre", "categoria", "fecha_carga", "cargado_por", "advertencias"]],
-                hide_index=True, use_container_width=True,
-            )
+            documentos_mostrables = documentos.copy()
+            documentos_mostrables["categoria_visible"] = documentos_mostrables["categoria"].apply(_fiscal_categoria_visible)
+            resumen_documentos = (
+                documentos_mostrables.groupby("categoria_visible", as_index=False)
+                .agg(archivos=("id", "count"))
+                .sort_values("archivos", ascending=False)
+            ).rename(columns={"categoria_visible": "tipo"})
+            st.markdown("##### Documentación guardada")
+            st.dataframe(resumen_documentos, hide_index=True, use_container_width=True)
+            with st.expander("Ver detalle de archivos", expanded=False):
+                st.dataframe(
+                    documentos_mostrables[["nombre", "categoria_visible", "fecha_carga", "cargado_por", "advertencias"]].rename(columns={"categoria_visible": "tipo"}),
+                    hide_index=True, use_container_width=True,
+                )
             opciones_archivos = documentos["id"].astype(str).tolist()
             nombres_archivos = dict(zip(documentos["id"].astype(str), documentos["nombre"].astype(str)))
             archivo_elegido = st.selectbox(
@@ -14665,9 +14928,7 @@ def render_liquidaciones_fiscales(cliente_fijo="", modo="admin"):
                     key=f"fiscal_desc_{archivo_elegido}",
                 )
 
-    movimientos = _cargar_tabla_fiscal(FISCAL_MOVIMIENTOS_PATH, MOVIMIENTO_COLUMNAS, cliente, periodo_id)
-    resumen = resumir_movimientos(movimientos)
-    with tab_papel:
+    if seccion_fiscal == "Papel de trabajo":
         c1, c2, c3, c4 = st.columns(4)
         c1.metric("Ventas netas", _fiscal_moneda(resumen["ventas_neto"]))
         c2.metric("Débito IVA", _fiscal_moneda(resumen["iva_debito"]))
@@ -14707,7 +14968,6 @@ def render_liquidaciones_fiscales(cliente_fijo="", modo="admin"):
                     st.success("Selección actualizada.")
                     st.rerun()
 
-        perfil = cargar_perfil_fiscal(cliente)
         es_convenio = str(perfil.get("iibb_regimen", "")) == "Convenio Multilateral"
         detalle_convenio_guardado = cargar_iibb_jurisdicciones(periodo_id, cliente) if es_convenio else pd.DataFrame()
         if es_convenio and not detalle_convenio_guardado.empty:
@@ -14751,27 +15011,46 @@ def render_liquidaciones_fiscales(cliente_fijo="", modo="admin"):
                     base_editor[columna] = base_editor[columna].apply(
                         lambda valor: None if str(valor).strip() in {"", "nan"} else float(decimal_ar(valor))
                     )
-                detalle_convenio_editado = st.data_editor(
-                    base_editor,
-                    hide_index=True,
-                    use_container_width=True,
-                    num_rows="dynamic",
-                    column_config={
-                        "codigo": "Código",
-                        "jurisdiccion": "Jurisdicción",
-                        "actividad": "Actividad",
-                        "base_actividad": st.column_config.NumberColumn(
-                            "Base propia", help="Dejar vacío para usar la base general.", format="%.2f"
-                        ),
-                        "coeficiente": st.column_config.NumberColumn("Coef. CM05", min_value=0.0, max_value=1.0, format="%.4f"),
-                        "alicuota": st.column_config.NumberColumn("Alícuota %", min_value=0.0, max_value=20.0, format="%.4f"),
-                        "recaudaciones_bancarias": st.column_config.NumberColumn("SIRCREB/SIRCUPA", format="%.2f"),
-                        "saldo_favor_anterior": st.column_config.NumberColumn("Saldo anterior", format="%.2f"),
-                        "otros_creditos": st.column_config.NumberColumn("Otros créditos", format="%.2f"),
-                        "valores_suman": st.column_config.NumberColumn("Valores suman", format="%.2f"),
-                    },
-                    key=f"fiscal_convenio_{periodo_id}",
+                editar_matriz = st.checkbox(
+                    "Editar matriz por jurisdicción",
+                    value=False,
+                    help="Se mantiene cerrada para que la pantalla cargue más rápido.",
                 )
+                detalle_convenio_editado = base_editor
+                if editar_matriz:
+                    detalle_convenio_editado = st.data_editor(
+                        base_editor,
+                        hide_index=True,
+                        use_container_width=True,
+                        num_rows="dynamic",
+                        column_config={
+                            "codigo": "Código",
+                            "jurisdiccion": "Jurisdicción",
+                            "actividad": "Actividad",
+                            "base_actividad": st.column_config.NumberColumn(
+                                "Base propia", help="Dejar vacío para usar la base general.", format="%.2f"
+                            ),
+                            "coeficiente": st.column_config.NumberColumn("Coef. CM05", min_value=0.0, max_value=1.0, format="%.4f"),
+                            "alicuota": st.column_config.NumberColumn("Alícuota %", min_value=0.0, max_value=20.0, format="%.4f"),
+                            "recaudaciones_bancarias": st.column_config.NumberColumn("SIRCREB/SIRCUPA", format="%.2f"),
+                            "saldo_favor_anterior": st.column_config.NumberColumn("Saldo anterior", format="%.2f"),
+                            "otros_creditos": st.column_config.NumberColumn("Otros créditos", format="%.2f"),
+                            "valores_suman": st.column_config.NumberColumn("Valores suman", format="%.2f"),
+                        },
+                        key=f"fiscal_convenio_{periodo_id}",
+                    )
+                else:
+                    coef_vista = _total_coeficientes_convenio(base_editor)
+                    alicuotas_pendientes = int(
+                        base_editor[
+                            base_editor["coeficiente"].apply(decimal_ar).gt(0)
+                            & base_editor["alicuota"].apply(decimal_ar).le(0)
+                        ].shape[0]
+                    )
+                    st.caption(
+                        f"{len(base_editor)} fila(s) · coeficientes {coef_vista:.4f} · "
+                        f"{alicuotas_pendientes} alícuota(s) pendientes."
+                    )
                 tasa_iibb = saldo_iibb_anterior = otros_iibb = ajustes_iibb = 0.0
                 venc_iibb = st.date_input("Vencimiento CM03", value=_fecha_fiscal(registro.get("fecha_vencimiento_iibb", "")))
             else:
@@ -14795,6 +15074,19 @@ def render_liquidaciones_fiscales(cliente_fijo="", modo="admin"):
             )
             if es_convenio:
                 iibb_calc = calcular_iibb_convenio(base_iibb, detalle_convenio_editado)
+                filas_activas = [
+                    fila for fila in iibb_calc["detalle"]
+                    if decimal_ar(fila.get("coeficiente", 0)) > 0
+                ]
+                sin_alicuota = any(
+                    decimal_ar(fila.get("alicuota", 0)) <= 0 for fila in filas_activas
+                )
+                if abs(iibb_calc["coeficiente_total"] - decimal_ar(1)) > decimal_ar("0.0001") or sin_alicuota:
+                    st.error(
+                        "No se guardó: revisá que los coeficientes sumen 1,0000 "
+                        "y que cada jurisdicción activa tenga alícuota."
+                    )
+                    st.stop()
                 guardar_iibb_jurisdicciones(periodo_id, cliente, periodo, iibb_calc)
             else:
                 iibb_calc = calcular_iibb(
@@ -14863,7 +15155,7 @@ def render_liquidaciones_fiscales(cliente_fijo="", modo="admin"):
                         use_container_width=True,
                     )
 
-    with tab_cierre:
+    if seccion_fiscal == "Cierre":
         st.markdown("#### Control y publicación")
         st.caption("El cliente no ve comprobantes, bases, ajustes ni papeles internos. Sólo ve el resultado confirmado y los archivos marcados para cliente.")
         if not str(registro.get("ventas_neto", "")).strip():
@@ -14871,6 +15163,15 @@ def render_liquidaciones_fiscales(cliente_fijo="", modo="admin"):
         else:
             estados = ["Borrador", "En revisión"]
             convenio_listo = True
+            expediente_listo = expediente["listo_para_revision"]
+            if not expediente_listo:
+                faltantes_cierre = [
+                    item["etapa"] for item in expediente["items"]
+                    if item["requerido"] and not item["completo"]
+                ]
+                st.warning(
+                    f"Antes de confirmar, completá: {', '.join(faltantes_cierre)}."
+                )
             if str(perfil.get("iibb_regimen", "")) == "Convenio Multilateral":
                 detalle_cierre = cargar_iibb_jurisdicciones(periodo_id, cliente)
                 coef_cierre = _total_coeficientes_convenio(detalle_cierre)
@@ -14887,7 +15188,10 @@ def render_liquidaciones_fiscales(cliente_fijo="", modo="admin"):
                         "Para confirmar el CM03, los coeficientes deben sumar 1,0000 "
                         "y cada jurisdicción con coeficiente debe tener alícuota."
                     )
-            if st.session_state.get("role") in ["admin_general", "admin"] and convenio_listo:
+            if (
+                st.session_state.get("role") in ["admin_general", "admin"]
+                and convenio_listo and expediente_listo
+            ):
                 estados += ["Confirmada", "Presentada", "Pendiente de pago", "Pagada"]
             estado_actual = registro.get("estado", "Borrador")
             if estado_actual not in estados:
