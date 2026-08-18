@@ -502,7 +502,7 @@ FISCAL_CM05_COEFICIENTE_COLUMNAS = [
     "coeficiente_unificado", "archivo_id", "fecha_carga", "cargado_por",
 ]
 FISCAL_ARCHIVO_MAX_BYTES = 15 * 1024 * 1024
-FISCAL_ARCHIVOS_MAX_POR_CARGA = 12
+FISCAL_ARCHIVOS_MAX_POR_CARGA = 24
 
 
 @st.cache_resource(show_spinner=False)
@@ -14171,15 +14171,23 @@ def guardar_lote_fiscal(cliente, periodo, periodo_id, archivos):
     preparados = []
     analisis = []
     omitidos = []
-    for archivo in archivos:
+    hashes_lote = set(hashes_existentes)
+    for entrada in archivos:
+        if isinstance(entrada, tuple):
+            archivo, categoria_hint = entrada
+        else:
+            archivo, categoria_hint = entrada, ""
         contenido = archivo.getvalue()
         if len(contenido) > FISCAL_ARCHIVO_MAX_BYTES:
             raise ValueError(f'"{archivo.name}" supera el límite de 15 MB.')
         huella = hashlib.sha256(contenido).hexdigest()
-        if huella in hashes_existentes:
+        if huella in hashes_lote:
             omitidos.append(str(archivo.name))
             continue
-        resultado = analizar_archivo_fiscal(str(archivo.name), contenido)
+        hashes_lote.add(huella)
+        resultado = analizar_archivo_fiscal(
+            str(archivo.name), contenido, categoria_hint=categoria_hint,
+        )
         archivo_id = f"FARC-{uuid.uuid4().hex}"
         preparados.append({
             "id": archivo_id,
@@ -14547,14 +14555,76 @@ def render_liquidaciones_fiscales(cliente_fijo="", modo="admin"):
 
     with tab_documentos:
         st.markdown("#### Cargar documentación del período")
-        st.caption("Podés subir todo junto. El CM05 queda guardado en la ficha del cliente y se reutiliza; los demás archivos pertenecen al período seleccionado.")
-        archivos = st.file_uploader(
-            "ARCA, AGIP, SIFERE, declaraciones, VEP y comprobantes",
-            accept_multiple_files=True,
-            type=["zip", "csv", "xlsx", "xls", "txt", "pdf"],
-            key=f"fiscal_upload_{periodo_id}",
+        st.caption("Cada fuente tiene su lugar. Podés completar sólo los bloques que correspondan al cliente y procesar todo en una sola operación.")
+
+        with st.expander("1. Datos permanentes del cliente", expanded=True):
+            st.caption("Constancia de CUIT, inscripción en IIBB y último CM05. Se cargan una vez y se reutilizan.")
+            archivos_permanentes = st.file_uploader(
+                "Constancias y CM05",
+                accept_multiple_files=True,
+                type=["pdf"],
+                key=f"fiscal_permanentes_{periodo_id}",
+            )
+
+        col_ventas, col_compras = st.columns(2)
+        with col_ventas:
+            st.markdown("##### 2. Ventas")
+            st.caption("Mis Comprobantes emitidos de ARCA, en ZIP, CSV, XLSX o PDF.")
+            archivos_ventas = st.file_uploader(
+                "Comprobantes emitidos",
+                accept_multiple_files=True,
+                type=["zip", "csv", "xlsx", "pdf"],
+                key=f"fiscal_ventas_{periodo_id}",
+            )
+        with col_compras:
+            st.markdown("##### 3. Compras")
+            st.caption("Mis Comprobantes recibidos de ARCA, en ZIP, CSV, XLSX o PDF.")
+            archivos_compras = st.file_uploader(
+                "Comprobantes recibidos",
+                accept_multiple_files=True,
+                type=["zip", "csv", "xlsx", "pdf"],
+                key=f"fiscal_compras_{periodo_id}",
+            )
+
+        col_iva, col_iibb = st.columns(2)
+        with col_iva:
+            st.markdown("##### 4. IVA - deducciones")
+            st.caption("Retenciones, percepciones, pagos a cuenta y otros créditos de IVA.")
+            archivos_iva = st.file_uploader(
+                "Retenciones y percepciones de IVA",
+                accept_multiple_files=True,
+                type=["csv", "txt", "xls", "xlsx", "pdf"],
+                key=f"fiscal_iva_{periodo_id}",
+            )
+        with col_iibb:
+            st.markdown("##### 5. IIBB - deducciones")
+            st.caption("Retenciones, percepciones, SIRCREB/SIRCUPA y archivos AGIP/ARBA/SIFERE.")
+            archivos_iibb = st.file_uploader(
+                "Deducciones de Ingresos Brutos",
+                accept_multiple_files=True,
+                type=["csv", "txt", "xls", "xlsx", "pdf"],
+                key=f"fiscal_iibb_{periodo_id}",
+            )
+
+        with st.expander("6. Presentaciones, pagos y otros respaldos", expanded=False):
+            st.caption("DDJJ presentada, acuses, VEP, comprobantes de pago y documentación adicional.")
+            archivos_finales = st.file_uploader(
+                "Documentación final",
+                accept_multiple_files=True,
+                type=["zip", "csv", "xlsx", "xls", "txt", "pdf"],
+                key=f"fiscal_finales_{periodo_id}",
+            )
+
+        archivos = (
+            [(archivo, "") for archivo in archivos_permanentes]
+            + [(archivo, "ventas") for archivo in archivos_ventas]
+            + [(archivo, "compras") for archivo in archivos_compras]
+            + [(archivo, "iva") for archivo in archivos_iva]
+            + [(archivo, "iibb") for archivo in archivos_iibb]
+            + [(archivo, "") for archivo in archivos_finales]
         )
-        if st.button("Procesar archivos", type="primary", disabled=not archivos, key=f"fiscal_procesar_{periodo_id}"):
+        st.caption(f"{len(archivos)} archivo(s) seleccionados · máximo {FISCAL_ARCHIVOS_MAX_POR_CARGA} por procesamiento.")
+        if st.button("Procesar documentación", type="primary", disabled=not archivos, key=f"fiscal_procesar_{periodo_id}"):
             try:
                 cantidad, movimientos, omitidos = guardar_lote_fiscal(cliente, periodo, periodo_id, archivos)
                 st.success(f"Se guardaron {cantidad} archivos y {movimientos} movimientos.")

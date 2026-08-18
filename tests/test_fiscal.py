@@ -136,6 +136,10 @@ class FiscalTests(unittest.TestCase):
             clasificacion = analizar_archivo_fiscal(emitidos_xlsx.name, emitidos_xlsx.read_bytes())
             self.assertEqual(clasificacion["categoria"], "comprobantes_emitidos")
             self.assertEqual(len(clasificacion["movimientos"]), 53)
+            generico = analizar_archivo_fiscal(
+                "archivo_generico.xlsx", emitidos_xlsx.read_bytes(), categoria_hint="ventas",
+            )
+            self.assertEqual(generico["categoria"], "comprobantes_emitidos")
 
         constancia_cm = Path("/Users/alanmoreno/Downloads/CInsc_0 (1).pdf")
         if constancia_cm.exists():
