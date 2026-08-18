@@ -8136,7 +8136,7 @@ def render_indicadores(cliente="", modo="cliente"):
 
     module_hero(
         "Gestión financiera",
-        "Ingresos, gastos y resultados en perspectiva",
+        "Flujo financiero",
         "Registrá movimientos y entendé la evolución financiera con indicadores y gráficos en una misma vista.",
         ["Ingresos", "Gastos", "Resultado", "Evolución mensual"],
     )
@@ -8716,7 +8716,7 @@ def render_cuenta_corriente_admin():
     header("Cuenta corriente", "Honorarios, facturación, pagos y deuda por cliente")
     module_hero(
         "Control comercial",
-        "Cobros y compromisos bajo control",
+        "Cobros al día",
         "Visualizá honorarios, comprobantes, pagos y saldos pendientes sin perder el detalle de cada cliente.",
         ["Honorarios", "Facturación", "Pagos", "Deuda"],
     )
@@ -10952,7 +10952,7 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
     )
     module_hero(
         "Organización diaria",
-        "Prioridades claras para todo el equipo",
+        "Trabajo en orden",
         "Centralizá vencimientos, responsables y avances para saber qué requiere atención y qué sigue después.",
         ["Vencimientos", "Responsables", "Prioridades", "Seguimiento"],
     )
@@ -14725,7 +14725,7 @@ def render_liquidaciones_fiscales(cliente_fijo="", modo="admin"):
 
     module_hero(
         "Gestión impositiva",
-        "Impuestos y vencimientos, en una sola vista",
+        "Impuestos al día",
         f"Organizá el expediente fiscal de {cliente}, controlá documentación y seguí el período {periodo} de punta a punta.",
         ["IVA", "Ingresos Brutos", "Documentación", "Vencimientos"],
     )
