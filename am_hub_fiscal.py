@@ -345,7 +345,7 @@ def extraer_cm05_pdf(contenido: bytes) -> dict:
     }
 
 
-def analizar_archivo_fiscal(nombre: str, contenido: bytes) -> dict:
+def analizar_archivo_fiscal(nombre: str, contenido: bytes, categoria_hint: str = "") -> dict:
     """Clasifica un archivo fiscal y extrae movimientos cuando corresponde."""
     nombre_bajo = Path(nombre).name.casefold()
     resultado = {
@@ -366,7 +366,9 @@ def analizar_archivo_fiscal(nombre: str, contenido: bytes) -> dict:
                 resultado["advertencias"].append("El ZIP no contiene un CSV compatible.")
                 return resultado
             interno = miembros[0]
-            resultado = analizar_archivo_fiscal(interno, archivo_zip.read(interno))
+            resultado = analizar_archivo_fiscal(
+                interno, archivo_zip.read(interno), categoria_hint=categoria_hint,
+            )
             resultado["prioridad"] = max(100, int(resultado["prioridad"]))
             return resultado
 
@@ -391,8 +393,9 @@ def analizar_archivo_fiscal(nombre: str, contenido: bytes) -> dict:
         return resultado
 
     texto_inicial = _texto(contenido[:10000])
-    es_emitido = "emitid" in nombre_bajo
-    es_recibido = "recibid" in nombre_bajo
+    hint = str(categoria_hint or "").strip().casefold()
+    es_emitido = hint == "ventas" or "emitid" in nombre_bajo
+    es_recibido = hint == "compras" or "recibid" in nombre_bajo
 
     if "Fecha de Emisión" in texto_inicial and ";" in texto_inicial:
         if es_recibido:
