@@ -32,7 +32,6 @@ from am_hub_core import (
     clientes_asignados_activos,
     crear_evento_actividad,
     escribir_csv_atomico,
-    extraer_lineas_unicas,
     filtrar_por_clientes_permitidos,
     normalizar_dataframe,
     validar_identificador_sql,
@@ -8122,7 +8121,15 @@ MINUTA_COLUMNAS = [
 
 
 def _lineas_minuta(valor):
-    return extraer_lineas_unicas(valor)
+    resultado = []
+    vistas = set()
+    for linea in str(valor or "").splitlines():
+        limpia = re.sub(r"^\s*(?:[-*•]|\d+[.)])\s*", "", linea).strip()
+        clave = limpia.casefold()
+        if limpia and clave not in vistas:
+            vistas.add(clave)
+            resultado.append(limpia)
+    return resultado
 
 
 def _guardar_minuta(registro):
