@@ -6,8 +6,10 @@ import pandas as pd
 
 from am_hub_core import (
     buscar_dataframe,
+    clientes_asignados_activos,
     crear_evento_actividad,
     escribir_csv_atomico,
+    filtrar_por_clientes_permitidos,
     filtrar_tareas_por_estado,
     normalizar_dataframe,
     validar_identificador_sql,
@@ -37,6 +39,34 @@ def _siguiente_fecha_tarea(fecha_actual, frecuencia, intervalo=1):
 
 
 class CoreTests(unittest.TestCase):
+    def test_plan_trabajo_respeta_solo_asignaciones_activas(self):
+        asignaciones = pd.DataFrame([
+            {"username": "Lali", "cliente": "Cliente A", "activo": "Sí"},
+            {"username": "lali", "cliente": "Cliente B", "activo": "No"},
+            {"username": "otro", "cliente": "Cliente C", "activo": "Sí"},
+            {"username": " lali ", "cliente": "Cliente A", "activo": "activo"},
+            {"username": "lali", "cliente": "Cliente eliminado", "activo": "Sí"},
+        ])
+        visibles = clientes_asignados_activos(
+            asignaciones,
+            "lali",
+            ["Cliente A", "Cliente B", "Cliente C"],
+        )
+        self.assertEqual(visibles, ["Cliente A"])
+
+        tarjetas = pd.DataFrame([
+            {"id": "1", "cliente": "cliente a"},
+            {"id": "2", "cliente": "Cliente B"},
+            {"id": "3", "cliente": "Cliente C"},
+        ])
+        resultado = filtrar_por_clientes_permitidos(tarjetas, visibles)
+        self.assertEqual(resultado["id"].tolist(), ["1"])
+
+    def test_plan_trabajo_sin_asignaciones_no_expone_tarjetas(self):
+        tarjetas = pd.DataFrame([{"id": "1", "cliente": "Cliente A"}])
+        resultado = filtrar_por_clientes_permitidos(tarjetas, [])
+        self.assertTrue(resultado.empty)
+
     def test_ultimo_dia_habil_del_mes_evade_fin_de_semana(self):
         self.assertEqual(
             _siguiente_fecha_tarea(
