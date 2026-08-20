@@ -9,6 +9,7 @@ from am_hub_core import (
     clientes_asignados_activos,
     crear_evento_actividad,
     escribir_csv_atomico,
+    extraer_lineas_unicas,
     filtrar_por_clientes_permitidos,
     filtrar_tareas_por_estado,
     normalizar_dataframe,
@@ -39,6 +40,14 @@ def _siguiente_fecha_tarea(fecha_actual, frecuencia, intervalo=1):
 
 
 class CoreTests(unittest.TestCase):
+    def test_minuta_normaliza_proximos_pasos_sin_duplicarlos(self):
+        self.assertEqual(
+            extraer_lineas_unicas(
+                "- Enviar propuesta\n2. Confirmar fecha\n• enviar propuesta\n\n* Revisar saldo"
+            ),
+            ["Enviar propuesta", "Confirmar fecha", "Revisar saldo"],
+        )
+
     def test_plan_trabajo_respeta_solo_asignaciones_activas(self):
         asignaciones = pd.DataFrame([
             {"username": "Lali", "cliente": "Cliente A", "activo": "Sí"},
