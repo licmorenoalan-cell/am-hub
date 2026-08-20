@@ -7,7 +7,7 @@ from datetime import date
 import pandas as pd
 import altair as alt
 import streamlit as st
-from sqlalchemy import create_engine, text as sql_text
+from sqlalchemy import bindparam, create_engine, text as sql_text
 import re
 import logging
 import html
@@ -29,8 +29,10 @@ from am_hub_fiscal import (
 
 from am_hub_core import (
     buscar_dataframe,
+    clientes_asignados_activos,
     crear_evento_actividad,
     escribir_csv_atomico,
+    filtrar_por_clientes_permitidos,
     normalizar_dataframe,
     validar_identificador_sql,
 )
@@ -399,6 +401,61 @@ def leer_postgres_cliente(tabla: str, columns: list[str], cliente: str) -> pd.Da
         return pd.DataFrame(columns=columns)
 
 
+@st.cache_data(ttl=600, show_spinner=False)
+def leer_postgres_clientes_cacheada(
+    tabla: str,
+    columns_tuple: tuple,
+    clientes_tuple: tuple,
+) -> pd.DataFrame:
+    columns = list(columns_tuple) if columns_tuple else []
+    seleccion = _sql_cols(columns) if tabla == "reportes" and columns else "*"
+    consulta = sql_text(
+        f'SELECT {seleccion} FROM "{tabla}" '
+        'WHERE TRIM("cliente") IN :clientes'
+    ).bindparams(bindparam("clientes", expanding=True))
+    with get_postgres_engine().connect() as conn:
+        df = pd.read_sql(
+            consulta,
+            conn,
+            params={"clientes": list(clientes_tuple)},
+        )
+    return normalizar_df_para_columnas(df, columns)
+
+
+def read_csv_clientes(
+    path: Path,
+    columns: list[str],
+    clientes: list[str],
+) -> pd.DataFrame:
+    clientes_limpios = tuple(sorted({
+        str(cliente).strip()
+        for cliente in (clientes or [])
+        if str(cliente).strip()
+    }, key=str.casefold))
+    if not clientes_limpios:
+        return pd.DataFrame(columns=columns)
+
+    tabla = tabla_postgres_para_path(path)
+    if usar_postgres() and tabla:
+        try:
+            return leer_postgres_clientes_cacheada(
+                tabla,
+                tuple(columns or []),
+                clientes_limpios,
+            )
+        except Exception:
+            LOGGER.exception(
+                "No se pudo leer PostgreSQL tabla=%s para clientes asignados",
+                tabla,
+            )
+            return pd.DataFrame(columns=columns)
+
+    return filtrar_por_clientes_permitidos(
+        read_csv(path, columns),
+        clientes_limpios,
+    )
+
+
 def _sql_cols(cols):
     return ", ".join([f'"{validar_identificador_sql(c)}"' for c in cols])
 
@@ -423,6 +480,7 @@ def _limpiar_cache_postgres():
         "leer_postgres_core_tabla_cacheada",
         "leer_postgres_cacheada",
         "leer_postgres_cliente_cacheada",
+        "leer_postgres_clientes_cacheada",
         "leer_postgres_fiscal_filtrado_cacheada",
         "cargar_contexto_fiscal_postgres_cacheado",
         "leer_postgres_preview_cacheada",
@@ -2689,16 +2747,11 @@ def clientes_visibles_para_usuario():
     if asignaciones is None or asignaciones.empty:
         return []
 
-    visibles = asignaciones[
-        (asignaciones["username"].astype(str) == str(username))
-        & (asignaciones["activo"].astype(str).str.lower().isin(["sí", "si", "true", "1", "activo"]))
-    ]["cliente"].dropna().astype(str).unique().tolist()
-
-    clientes_existentes = set(clientes_df["cliente"].dropna().astype(str).tolist())
-
-    visibles = [c for c in visibles if c in clientes_existentes]
-
-    return sorted(visibles)
+    return clientes_asignados_activos(
+        asignaciones,
+        username,
+        clientes_df["cliente"].dropna().astype(str).tolist(),
+    )
 
 
 def servicios_habilitados_para_equipo():
@@ -5218,14 +5271,27 @@ def render_usuarios(clientes):
     if clientes_activos is not None and not clientes_activos.empty and "cliente" in clientes_activos.columns:
         clientes_asignables = sorted(clientes_activos["cliente"].dropna().astype(str).unique().tolist())
 
+    usuario_equipo = st.selectbox(
+        "Usuario interno",
+        equipos_lista,
+        key="usuario_asignaciones_equipo",
+    )
+    clientes_actuales_usuario = clientes_asignados_activos(
+        asignaciones_df,
+        usuario_equipo,
+        clientes_asignables,
+    )
+
     with st.form("form_asignar_clientes_equipo"):
-        a1, a2 = st.columns(2)
-
-        with a1:
-            usuario_equipo = st.selectbox("Usuario interno", equipos_lista)
-
-        with a2:
-            clientes_seleccionados = st.multiselect("Clientes asignados", clientes_asignables)
+        clientes_seleccionados = st.multiselect(
+            "Clientes asignados",
+            clientes_asignables,
+            default=clientes_actuales_usuario,
+            help=(
+                "Este listado define exactamente qué clientes y tarjetas del "
+                "Plan de trabajo puede ver el perfil."
+            ),
+        )
 
         guardar_asignacion = st.form_submit_button("Guardar asignaciones", use_container_width=True)
 
@@ -5269,6 +5335,11 @@ def render_usuarios(clientes):
 
                 if nuevas:
                     base = pd.concat([base, pd.DataFrame(nuevas)], ignore_index=True)
+
+                base = base.drop_duplicates(
+                    subset=["username", "cliente"],
+                    keep="last",
+                )
 
                 save_csv(base, ASIGNACIONES_EQUIPO_PATH)
                 st.success("Asignaciones actualizadas.")
@@ -6168,8 +6239,16 @@ def render_objetivos(cliente="", modo="cliente"):
         "actualizado_por",
     ]
 
+    clientes_permitidos_plan = clientes_visibles_para_usuario()
+
     if cliente:
         objetivos = read_csv_cliente(OBJETIVOS_PATH, columnas, cliente)
+    elif role not in ["admin_general", "admin"]:
+        objetivos = read_csv_clientes(
+            OBJETIVOS_PATH,
+            columnas,
+            clientes_permitidos_plan,
+        )
     else:
         objetivos = read_csv(OBJETIVOS_PATH, columnas)
 
@@ -6193,14 +6272,13 @@ def render_objetivos(cliente="", modo="cliente"):
 
     objetivos = objetivos[columnas].copy().fillna("")
 
-    # El equipo ve el consolidado de todos sus clientes, sin ampliar permisos.
-    # La selección de "cliente activo" del sidebar sigue aplicando al resto
-    # de los módulos, pero no limita el Plan de trabajo.
-    if modo == "equipo" and role == "equipo":
-        clientes_permitidos_plan = set(clientes_visibles_para_usuario())
-        objetivos = objetivos[
-            objetivos["cliente"].astype(str).isin(clientes_permitidos_plan)
-        ].copy()
+    # Se restringe antes de búsquedas, filtros, métricas y edición para que
+    # un perfil sin permisos globales nunca reciba tarjetas de clientes ajenos.
+    if role not in ["admin_general", "admin"]:
+        objetivos = filtrar_por_clientes_permitidos(
+            objetivos,
+            clientes_permitidos_plan,
+        )
 
     objetivos["cliente"] = objetivos["cliente"].astype(str).str.strip()
     objetivos["objetivo"] = objetivos["objetivo"].astype(str).str.strip()

@@ -121,6 +121,71 @@ def filtrar_tareas_por_estado(
     return df.loc[mascara].copy()
 
 
+def clientes_asignados_activos(
+    asignaciones: pd.DataFrame,
+    username: str,
+    clientes_existentes: list[str] | None = None,
+) -> list[str]:
+    """Devuelve los clientes activos asignados a un usuario interno."""
+    if asignaciones is None or asignaciones.empty:
+        return []
+    if not {"username", "cliente", "activo"}.issubset(asignaciones.columns):
+        return []
+
+    usuario_normalizado = str(username or "").strip().casefold()
+    activos = {"sí", "si", "true", "1", "activo"}
+    vista = asignaciones[
+        asignaciones["username"]
+        .fillna("")
+        .astype(str)
+        .str.strip()
+        .str.casefold()
+        .eq(usuario_normalizado)
+        & asignaciones["activo"]
+        .fillna("")
+        .astype(str)
+        .str.strip()
+        .str.casefold()
+        .isin(activos)
+    ].copy()
+
+    permitidos = None
+    if clientes_existentes is not None:
+        permitidos = {
+            str(cliente).strip().casefold()
+            for cliente in clientes_existentes
+            if str(cliente).strip()
+        }
+
+    resultado: dict[str, str] = {}
+    for cliente in vista["cliente"].fillna("").astype(str):
+        limpio = cliente.strip()
+        clave = limpio.casefold()
+        if not limpio or (permitidos is not None and clave not in permitidos):
+            continue
+        resultado.setdefault(clave, limpio)
+    return sorted(resultado.values(), key=str.casefold)
+
+
+def filtrar_por_clientes_permitidos(
+    df: pd.DataFrame,
+    clientes_permitidos: list[str] | set[str] | tuple[str, ...],
+    columna: str = "cliente",
+) -> pd.DataFrame:
+    """Restringe registros a clientes permitidos, normalizando el texto."""
+    if df is None or df.empty or columna not in df.columns:
+        return df.copy()
+    permitidos = {
+        str(cliente).strip().casefold()
+        for cliente in (clientes_permitidos or [])
+        if str(cliente).strip()
+    }
+    if not permitidos:
+        return df.iloc[0:0].copy()
+    valores = df[columna].fillna("").astype(str).str.strip().str.casefold()
+    return df.loc[valores.isin(permitidos)].copy()
+
+
 def escribir_csv_atomico(df: pd.DataFrame, path: Path) -> None:
     """Escribe un CSV completo sin dejar archivos parciales ante un fallo."""
     destino = Path(path)
