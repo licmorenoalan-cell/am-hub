@@ -301,6 +301,18 @@ def asegurar_columnas():
                 'WHERE TRIM(COALESCE("moneda", \'\')) = \'\''
             )
         )
+        conn.execute(
+            text(
+                'CREATE TABLE IF NOT EXISTS "minutas" ('
+                '"id" TEXT PRIMARY KEY, "cliente" TEXT NOT NULL, '
+                '"fecha" TEXT, "tipo" TEXT, "titulo" TEXT NOT NULL, '
+                '"participantes" TEXT, "resumen" TEXT, "decisiones" TEXT, '
+                '"proximos_pasos" TEXT, "links" TEXT, '
+                '"visible_cliente" TEXT, "objetivos_generados" TEXT, '
+                '"fecha_carga" TEXT, "creado_por" TEXT, '
+                '"fecha_actualizacion" TEXT, "actualizado_por" TEXT)'
+            )
+        )
 
 
 @st.cache_data(
@@ -384,6 +396,58 @@ def cargar_plan_trabajo():
 
     with get_engine().connect() as conn:
         return pd.read_sql(consulta, conn).fillna("")
+
+
+@st.cache_data(ttl=20, show_spinner=False)
+def cargar_minutas_pocket():
+    consulta = text(
+        """
+        SELECT id, cliente, fecha, tipo, titulo, participantes, resumen,
+               decisiones, proximos_pasos, links, visible_cliente,
+               objetivos_generados, fecha_actualizacion
+        FROM minutas
+        ORDER BY NULLIF(fecha, '') DESC NULLS LAST, fecha_actualizacion DESC
+        """
+    )
+    with get_engine().connect() as conn:
+        return pd.read_sql(consulta, conn).fillna("")
+
+
+def crear_minuta_pocket(
+    cliente, fecha, tipo, titulo, participantes, resumen, decisiones,
+    proximos_pasos, links, visible_cliente,
+):
+    usuario = get_secret("POCKET_USERNAME", "alan")
+    ahora = pd.Timestamp.now(tz="America/Argentina/Buenos_Aires").isoformat()
+    with get_engine().begin() as conn:
+        conn.execute(
+            text(
+                """
+                INSERT INTO minutas (
+                    id, cliente, fecha, tipo, titulo, participantes, resumen,
+                    decisiones, proximos_pasos, links, visible_cliente,
+                    objetivos_generados, fecha_carga, creado_por,
+                    fecha_actualizacion, actualizado_por
+                ) VALUES (
+                    :id, :cliente, :fecha, :tipo, :titulo, :participantes,
+                    :resumen, :decisiones, :proximos_pasos, :links,
+                    :visible_cliente, '', :fecha_carga, :creado_por,
+                    :fecha_actualizacion, :actualizado_por
+                )
+                """
+            ),
+            {
+                "id": f"MIN-{uuid.uuid4().hex}", "cliente": str(cliente).strip(),
+                "fecha": fecha.strftime("%Y-%m-%d"), "tipo": str(tipo),
+                "titulo": str(titulo).strip(), "participantes": str(participantes).strip(),
+                "resumen": str(resumen).strip(), "decisiones": str(decisiones).strip(),
+                "proximos_pasos": str(proximos_pasos).strip(), "links": str(links).strip(),
+                "visible_cliente": "Sí" if visible_cliente else "No",
+                "fecha_carga": ahora, "creado_por": usuario,
+                "fecha_actualizacion": ahora, "actualizado_por": usuario,
+            },
+        )
+    cargar_minutas_pocket.clear()
 
 
 @st.cache_data(ttl=20, show_spinner=False)
@@ -735,6 +799,7 @@ def mapa_responsables_equipo():
 def limpiar_cache():
     cargar_tareas.clear()
     cargar_plan_trabajo.clear()
+    cargar_minutas_pocket.clear()
     cargar_cuenta_corriente_pocket.clear()
     cargar_clientes_pocket.clear()
     cargar_adjuntos_pocket.clear()
@@ -1312,6 +1377,7 @@ pagina_pocket = st.selectbox(
         "📥 Capturar",
         "📋 Mi tablero",
         "🤝 Plan de trabajo",
+        "📝 Minutas",
         "💳 Cuenta corriente",
     ],
     format_func=pocket_ui,
@@ -2971,6 +3037,85 @@ if pagina_pocket == "🤝 Plan de trabajo":
                         st.rerun()
                     else:
                         st.error("No se encontró el frente.")
+
+
+if pagina_pocket == "📝 Minutas":
+    st.markdown("### Minutas")
+    st.caption("Registrá una reunión y consultá sus acuerdos desde el celular.")
+    clientes_minutas = cargar_clientes_pocket()
+    with st.expander("➕ Nueva minuta", expanded=False):
+        if not clientes_minutas:
+            st.info("No hay clientes cargados.")
+        else:
+            with st.form("pocket_nueva_minuta"):
+                cliente_minuta = st.selectbox("Cliente", clientes_minutas)
+                fecha_minuta = st.date_input("Fecha", value=date.today())
+                tipo_minuta = st.selectbox(
+                    "Tipo", ["Reunión", "Llamada", "Seguimiento", "Interna", "Otro"]
+                )
+                titulo_minuta = st.text_input("Título")
+                participantes_minuta = st.text_input("Participantes")
+                resumen_minuta = st.text_area("Resumen", height=100)
+                decisiones_minuta = st.text_area("Decisiones", height=90)
+                pasos_minuta = st.text_area(
+                    "Próximos pasos", placeholder="Uno por línea", height=100
+                )
+                links_minuta = st.text_area("Enlaces", placeholder="Uno por línea", height=70)
+                visible_minuta = st.checkbox("Visible para el cliente", value=False)
+                guardar_minuta = st.form_submit_button(
+                    "Guardar minuta", type="primary", use_container_width=True
+                )
+            if guardar_minuta:
+                if not titulo_minuta.strip():
+                    st.error("El título es obligatorio.")
+                else:
+                    crear_minuta_pocket(
+                        cliente_minuta, fecha_minuta, tipo_minuta, titulo_minuta,
+                        participantes_minuta, resumen_minuta, decisiones_minuta,
+                        pasos_minuta, links_minuta, visible_minuta,
+                    )
+                    st.success("Minuta guardada.")
+                    st.rerun()
+
+    minutas_pocket = cargar_minutas_pocket()
+    buscar_minuta = st.text_input(
+        "Buscar", placeholder="Cliente, reunión, participante…", key="pocket_buscar_minuta"
+    )
+    if buscar_minuta.strip() and not minutas_pocket.empty:
+        palabras = [p.casefold() for p in buscar_minuta.split() if p.strip()]
+        texto_minutas = pd.Series("", index=minutas_pocket.index, dtype="object")
+        for campo in ["cliente", "titulo", "participantes", "resumen", "decisiones", "proximos_pasos"]:
+            texto_minutas = texto_minutas + " " + minutas_pocket[campo].astype(str).str.casefold()
+        mascara = pd.Series(True, index=minutas_pocket.index)
+        for palabra in palabras:
+            mascara &= texto_minutas.str.contains(palabra, regex=False, na=False)
+        minutas_pocket = minutas_pocket[mascara].copy()
+    if minutas_pocket.empty:
+        st.info("No hay minutas para mostrar.")
+    else:
+        for _, minuta in minutas_pocket.iterrows():
+            with st.container(border=True):
+                st.markdown(f"**{html.escape(str(minuta.get('titulo', 'Minuta')))}**")
+                visible = " · Visible cliente" if str(minuta.get("visible_cliente", "")).casefold() in ["sí", "si", "true", "1"] else ""
+                st.caption(
+                    f"{minuta.get('cliente', '')} · {minuta.get('fecha', '')} · "
+                    f"{minuta.get('tipo', '')}{visible}"
+                )
+                with st.expander("Ver detalle", expanded=False):
+                    if str(minuta.get("participantes", "")).strip():
+                        st.caption(f"Participantes: {minuta.get('participantes', '')}")
+                    for etiqueta, campo in [
+                        ("Resumen", "resumen"), ("Decisiones", "decisiones"),
+                        ("Próximos pasos", "proximos_pasos"),
+                    ]:
+                        valor = str(minuta.get(campo, "")).strip()
+                        if valor:
+                            st.markdown(f"**{etiqueta}**")
+                            st.write(valor)
+                    for indice, link in enumerate(str(minuta.get("links", "")).splitlines()):
+                        link = link.strip()
+                        if link.lower().startswith(("https://", "http://")):
+                            st.link_button(f"Abrir enlace {indice + 1}", link, use_container_width=True)
 
 
 if pagina_pocket == "💳 Cuenta corriente":

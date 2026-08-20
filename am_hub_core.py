@@ -186,6 +186,19 @@ def filtrar_por_clientes_permitidos(
     return df.loc[valores.isin(permitidos)].copy()
 
 
+def extraer_lineas_unicas(valor: str) -> list[str]:
+    """Normaliza una lista escrita a mano conservando su orden."""
+    resultado = []
+    vistas = set()
+    for linea in str(valor or "").splitlines():
+        limpia = re.sub(r"^\s*(?:[-*•]|\d+[.)])\s*", "", linea).strip()
+        clave = limpia.casefold()
+        if limpia and clave not in vistas:
+            vistas.add(clave)
+            resultado.append(limpia)
+    return resultado
+
+
 def escribir_csv_atomico(df: pd.DataFrame, path: Path) -> None:
     """Escribe un CSV completo sin dejar archivos parciales ante un fallo."""
     destino = Path(path)

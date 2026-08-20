@@ -32,6 +32,7 @@ from am_hub_core import (
     clientes_asignados_activos,
     crear_evento_actividad,
     escribir_csv_atomico,
+    extraer_lineas_unicas,
     filtrar_por_clientes_permitidos,
     normalizar_dataframe,
     validar_identificador_sql,
@@ -69,6 +70,7 @@ TAREAS_PATH = DATA_DIR / "tareas.csv"
 USUARIOS_PATH = DATA_DIR / "usuarios.csv"
 ASIGNACIONES_EQUIPO_PATH = DATA_DIR / "asignaciones_equipo.csv"
 OBJETIVOS_PATH = DATA_DIR / "objetivos.csv"
+MINUTAS_PATH = DATA_DIR / "minutas.csv"
 DOCUMENTOS_PATH = DATA_DIR / "documentos.csv"
 INDICADORES_PATH = DATA_DIR / "indicadores.csv"
 INDICADORES_MOVIMIENTOS_PATH = DATA_DIR / "indicadores_movimientos.csv"
@@ -111,6 +113,7 @@ POSTGRES_TABLE_MAP = {
     "usuarios.csv": "usuarios",
     "asignaciones_equipo.csv": "asignaciones_equipo",
     "objetivos.csv": "objetivos",
+    "minutas.csv": "minutas",
     "documentos.csv": "documentos",
     "indicadores.csv": "indicadores",
     "indicadores_movimientos.csv": "indicadores_movimientos",
@@ -134,6 +137,7 @@ POSTGRES_KEY_MAP = {
     "reportes": "id",
     "tareas": "id",
     "objetivos": "id",
+    "minutas": "id",
     "documentos": "id",
     "indicadores": "id",
     "indicadores_movimientos": "id",
@@ -157,6 +161,7 @@ POSTGRES_CORE_TABLES = [
     "reportes",
     "tareas",
     "objetivos",
+    "minutas",
     "indicadores_movimientos",
     "cuenta_corriente",
 ]
@@ -240,6 +245,32 @@ def asegurar_columnas_objetivos_postgres():
             )
         )
 
+    return True
+
+
+@st.cache_resource
+def asegurar_tabla_minutas_postgres():
+    if not usar_postgres():
+        return True
+    with get_postgres_engine().begin() as conn:
+        conn.execute(
+            sql_text(
+                'CREATE TABLE IF NOT EXISTS "minutas" ('
+                '"id" TEXT PRIMARY KEY, "cliente" TEXT NOT NULL, '
+                '"fecha" TEXT, "tipo" TEXT, "titulo" TEXT NOT NULL, '
+                '"participantes" TEXT, "resumen" TEXT, "decisiones" TEXT, '
+                '"proximos_pasos" TEXT, "links" TEXT, '
+                '"visible_cliente" TEXT, "objetivos_generados" TEXT, '
+                '"fecha_carga" TEXT, "creado_por" TEXT, '
+                '"fecha_actualizacion" TEXT, "actualizado_por" TEXT)'
+            )
+        )
+        conn.execute(
+            sql_text(
+                'CREATE INDEX IF NOT EXISTS "idx_minutas_cliente_fecha" '
+                'ON "minutas" ("cliente", "fecha")'
+            )
+        )
     return True
 
 
@@ -4880,6 +4911,7 @@ def render_gestion_clientes():
                     CAMPANIAS_PATH,
                     REPORTES_PATH,
                     OBJETIVOS_PATH,
+                    MINUTAS_PATH,
                     DOCUMENTOS_PATH,
                     INDICADORES_PATH,
                 ]
@@ -6164,6 +6196,8 @@ def render_archivos_objetivo(
     objetivo_id,
     cargado_por,
     puede_eliminar=True,
+    puede_cargar=True,
+    tipo_contenedor="tarjeta",
 ):
     """Adjuntos bajo demanda; reutiliza el almacenamiento liviano de tareas."""
     clave_abierto = f"archivos_objetivo_abierto_{objetivo_id}"
@@ -6182,7 +6216,7 @@ def render_archivos_objetivo(
         with cabecera:
             st.markdown("**📎 Archivos adjuntos**")
             st.caption(
-                "Máximo 5 por vez, 8 MB por archivo y 40 MB por tarjeta."
+                f"Máximo 5 por vez, 8 MB por archivo y 40 MB por {tipo_contenedor}."
             )
         with cerrar:
             if st.button(
@@ -6192,31 +6226,32 @@ def render_archivos_objetivo(
                 st.session_state[clave_abierto] = False
                 st.rerun()
 
-        nuevos_archivos = st.file_uploader(
-            "Agregar archivos",
-            type=[
-                "pdf", "doc", "docx", "xls", "xlsx", "csv", "txt",
-                "png", "jpg", "jpeg", "webp", "zip",
-            ],
-            accept_multiple_files=True,
-            key=f"subir_archivos_objetivo_{objetivo_id}",
-        )
-        if st.button(
-            "Subir archivos",
-            key=f"guardar_archivos_objetivo_{objetivo_id}",
-            disabled=not nuevos_archivos,
-            use_container_width=True,
-        ):
-            try:
-                cantidad = guardar_adjuntos_tarea(
-                    objetivo_id,
-                    nuevos_archivos,
-                    cargado_por,
-                )
-                st.success(f"{cantidad} archivo(s) cargado(s).")
-                st.rerun()
-            except Exception as exc:
-                st.error(str(exc))
+        if puede_cargar:
+            nuevos_archivos = st.file_uploader(
+                "Agregar archivos",
+                type=[
+                    "pdf", "doc", "docx", "xls", "xlsx", "csv", "txt",
+                    "png", "jpg", "jpeg", "webp", "zip",
+                ],
+                accept_multiple_files=True,
+                key=f"subir_archivos_objetivo_{objetivo_id}",
+            )
+            if st.button(
+                "Subir archivos",
+                key=f"guardar_archivos_objetivo_{objetivo_id}",
+                disabled=not nuevos_archivos,
+                use_container_width=True,
+            ):
+                try:
+                    cantidad = guardar_adjuntos_tarea(
+                        objetivo_id,
+                        nuevos_archivos,
+                        cargado_por,
+                    )
+                    st.success(f"{cantidad} archivo(s) cargado(s).")
+                    st.rerun()
+                except Exception as exc:
+                    st.error(str(exc))
 
         adjuntos = cargar_adjuntos_tarea(objetivo_id)
         if adjuntos.empty:
@@ -6286,7 +6321,7 @@ def render_archivos_objetivo(
 
 
 
-def render_objetivos(cliente="", modo="cliente"):
+def render_objetivos(cliente="", modo="cliente", mostrar_header=True):
     role = st.session_state.get("role", "")
     username = st.session_state.get("username", "")
     nombre_usuario = st.session_state.get("name", username)
@@ -6294,14 +6329,14 @@ def render_objetivos(cliente="", modo="cliente"):
     if usar_postgres():
         asegurar_columnas_objetivos_postgres()
 
-    if modo in ["admin", "equipo"]:
+    if mostrar_header and modo in ["admin", "equipo"]:
         subtitulo_plan = (
             "Seguimiento de frentes y compromisos por cliente."
             if modo == "admin"
             else "Consolidado de todos tus clientes asignados."
         )
         header("Plan de trabajo", subtitulo_plan)
-    else:
+    elif mostrar_header:
         header("Plan de trabajo", f"Seguimiento | {cliente}")
 
     columnas = [
@@ -8076,6 +8111,321 @@ def render_objetivos(cliente="", modo="cliente"):
                                             st.rerun()
                                         except Exception as exc:
                                             st.error(str(exc))
+
+
+MINUTA_COLUMNAS = [
+    "id", "cliente", "fecha", "tipo", "titulo", "participantes",
+    "resumen", "decisiones", "proximos_pasos", "links",
+    "visible_cliente", "objetivos_generados", "fecha_carga", "creado_por",
+    "fecha_actualizacion", "actualizado_por",
+]
+
+
+def _lineas_minuta(valor):
+    return extraer_lineas_unicas(valor)
+
+
+def _guardar_minuta(registro):
+    limpio = {col: str(registro.get(col, "") or "") for col in MINUTA_COLUMNAS}
+    if usar_postgres():
+        asegurar_tabla_minutas_postgres()
+        insertar_postgres_registros("minutas", [limpio])
+        return
+    actual = read_csv(MINUTAS_PATH, MINUTA_COLUMNAS)
+    save_csv(pd.concat([actual, pd.DataFrame([limpio])], ignore_index=True), MINUTAS_PATH)
+
+
+def _actualizar_minuta(minuta_id, cambios):
+    cambios = {col: str(valor or "") for col, valor in cambios.items() if col in MINUTA_COLUMNAS and col != "id"}
+    if usar_postgres():
+        asegurar_tabla_minutas_postgres()
+        actualizar_postgres_por_id("minutas", str(minuta_id), cambios)
+        return
+    actual = read_csv(MINUTAS_PATH, MINUTA_COLUMNAS)
+    mascara = actual["id"].astype(str).eq(str(minuta_id))
+    if not mascara.any():
+        raise ValueError("No se encontró la minuta.")
+    for col, valor in cambios.items():
+        actual.loc[mascara, col] = valor
+    save_csv(actual, MINUTAS_PATH)
+
+
+def _eliminar_minuta(minuta_id):
+    if usar_postgres():
+        asegurar_tabla_minutas_postgres()
+        eliminar_postgres_por_id("minutas", str(minuta_id))
+    else:
+        actual = read_csv(MINUTAS_PATH, MINUTA_COLUMNAS)
+        mascara = actual["id"].astype(str).eq(str(minuta_id))
+        if not mascara.any():
+            raise ValueError("No se encontró la minuta.")
+        save_csv(actual[~mascara].copy(), MINUTAS_PATH)
+    eliminar_adjuntos_de_tarea(minuta_id)
+
+
+def _crear_tarjetas_desde_minuta(minuta, fecha_limite, prioridad, usuario):
+    pasos = _lineas_minuta(minuta.get("proximos_pasos", ""))
+    if not pasos:
+        raise ValueError("La minuta no tiene próximos pasos para convertir.")
+    ahora = pd.Timestamp.now(tz="America/Argentina/Buenos_Aires")
+    fecha_txt = fecha_limite.strftime("%Y-%m-%d")
+    registros = []
+    for paso in pasos:
+        registros.append({
+            "id": f"OBJ-{uuid.uuid4().hex}",
+            "cliente": str(minuta.get("cliente", "")),
+            "mes": fecha_limite.strftime("%Y-%m"),
+            "objetivo": paso,
+            "descripcion": f"Generada desde la minuta: {minuta.get('titulo', '')}",
+            "responsable": usuario or "AM Consultora",
+            "responsable_am": usuario or "AM Consultora",
+            "responsable_cliente": "",
+            "responsable_tipo": "AM Consultora",
+            "prioridad": prioridad,
+            "estado": "Pendiente",
+            "avance": "0",
+            "checklist": "[]",
+            "fecha_limite": fecha_txt,
+            "comentarios": "",
+            "fecha_carga": ahora.strftime("%Y-%m-%d"),
+            "creado_por": usuario,
+            "fecha_actualizacion": ahora.strftime("%Y-%m-%d"),
+            "actualizado_por": usuario,
+        })
+    if usar_postgres():
+        asegurar_columnas_objetivos_postgres()
+        insertar_postgres_registros("objetivos", registros)
+    else:
+        columnas = list(registros[0])
+        actual = read_csv(OBJETIVOS_PATH, columnas)
+        save_csv(pd.concat([actual, pd.DataFrame(registros)], ignore_index=True), OBJETIVOS_PATH)
+    _actualizar_minuta(
+        minuta.get("id", ""),
+        {
+            "objetivos_generados": ",".join(item["id"] for item in registros),
+            "fecha_actualizacion": ahora.isoformat(),
+            "actualizado_por": usuario,
+        },
+    )
+    return len(registros)
+
+
+def render_minutas(cliente="", modo="cliente"):
+    role = st.session_state.get("role", "")
+    usuario = st.session_state.get("name", "") or st.session_state.get("username", "")
+    puede_editar = role in ["admin_general", "admin", "equipo"]
+    if usar_postgres():
+        asegurar_tabla_minutas_postgres()
+
+    if cliente:
+        clientes_permitidos = [cliente]
+    else:
+        clientes_permitidos = clientes_visibles_para_usuario()
+
+    if role in ["admin_general", "admin"] and not cliente:
+        minutas = read_csv(MINUTAS_PATH, MINUTA_COLUMNAS)
+    else:
+        minutas = read_csv_clientes(MINUTAS_PATH, MINUTA_COLUMNAS, clientes_permitidos)
+    minutas = normalizar_dataframe(minutas.fillna(""), MINUTA_COLUMNAS)
+    if role == "cliente":
+        minutas = minutas[
+            minutas["visible_cliente"].astype(str).str.strip().str.casefold().isin(
+                ["sí", "si", "true", "1"]
+            )
+        ].copy()
+
+    if puede_editar:
+        with st.expander("➕ Nueva minuta", expanded=False):
+            if not clientes_permitidos:
+                st.info("No hay clientes disponibles para cargar una minuta.")
+            else:
+                with st.form(f"nueva_minuta_{modo}_{cliente}"):
+                    c1, c2, c3 = st.columns([1.4, 1, 1])
+                    with c1:
+                        cliente_nuevo = st.selectbox("Cliente", clientes_permitidos)
+                    with c2:
+                        fecha_nueva = st.date_input("Fecha", value=date.today())
+                    with c3:
+                        tipo_nuevo = st.selectbox(
+                            "Tipo", ["Reunión", "Llamada", "Seguimiento", "Interna", "Otro"]
+                        )
+                    titulo_nuevo = st.text_input("Título", placeholder="Ejemplo: Reunión mensual de seguimiento")
+                    participantes_nuevos = st.text_input("Participantes", placeholder="Nombres separados por coma")
+                    resumen_nuevo = st.text_area("Resumen", height=110)
+                    decisiones_nuevas = st.text_area("Decisiones tomadas", height=100)
+                    pasos_nuevos = st.text_area(
+                        "Próximos pasos", placeholder="Un próximo paso por línea", height=110
+                    )
+                    links_nuevos = st.text_area("Enlaces", placeholder="Un enlace por línea", height=75)
+                    visible_nueva = st.checkbox("Visible para el cliente", value=False)
+                    crear = st.form_submit_button("Guardar minuta", type="primary", use_container_width=True)
+                if crear:
+                    if not titulo_nuevo.strip():
+                        st.error("El título de la minuta es obligatorio.")
+                    else:
+                        ahora = pd.Timestamp.now(tz="America/Argentina/Buenos_Aires").isoformat()
+                        _guardar_minuta({
+                            "id": f"MIN-{uuid.uuid4().hex}", "cliente": cliente_nuevo,
+                            "fecha": fecha_nueva.strftime("%Y-%m-%d"), "tipo": tipo_nuevo,
+                            "titulo": titulo_nuevo.strip(), "participantes": participantes_nuevos.strip(),
+                            "resumen": resumen_nuevo.strip(), "decisiones": decisiones_nuevas.strip(),
+                            "proximos_pasos": pasos_nuevos.strip(), "links": links_nuevos.strip(),
+                            "visible_cliente": "Sí" if visible_nueva else "No",
+                            "objetivos_generados": "", "fecha_carga": ahora, "creado_por": usuario,
+                            "fecha_actualizacion": ahora, "actualizado_por": usuario,
+                        })
+                        st.success("Minuta guardada.")
+                        st.rerun()
+
+    f1, f2 = st.columns([2, 1])
+    with f1:
+        busqueda = st.text_input(
+            "Buscar minutas", placeholder="Título, resumen, participante o decisión…",
+            key=f"buscar_minutas_{modo}_{cliente}",
+        )
+    with f2:
+        opciones_clientes = sorted(minutas["cliente"].astype(str).str.strip().replace("", pd.NA).dropna().unique().tolist())
+        filtro_clientes = st.multiselect(
+            "Cliente", opciones_clientes, key=f"filtro_clientes_minutas_{modo}_{cliente}"
+        )
+    vista = buscar_dataframe(
+        minutas, busqueda,
+        ["titulo", "cliente", "participantes", "resumen", "decisiones", "proximos_pasos"],
+    )
+    if filtro_clientes:
+        vista = filtrar_por_clientes_permitidos(vista, filtro_clientes)
+    vista = vista.sort_values(["fecha", "fecha_actualizacion"], ascending=False)
+
+    if vista.empty:
+        st.info("No hay minutas para mostrar.")
+        return
+    st.caption(f"{len(vista)} minuta(s)")
+    for _, fila in vista.iterrows():
+        minuta = fila.to_dict()
+        minuta_id = str(minuta.get("id", ""))
+        titulo = str(minuta.get("titulo", "") or "Minuta sin título")
+        etiqueta_visible = " · Visible para el cliente" if str(minuta.get("visible_cliente", "")).casefold() in ["sí", "si", "true", "1"] else ""
+        with st.container(border=True):
+            st.markdown(f"**{html.escape(titulo)}**")
+            st.caption(
+                f"{minuta.get('cliente', '')} · {minuta.get('fecha', '')} · "
+                f"{minuta.get('tipo', 'Reunión')}{etiqueta_visible}"
+            )
+            if str(minuta.get("participantes", "")).strip():
+                st.caption(f"Participantes: {minuta.get('participantes', '')}")
+            with st.expander("Ver minuta", expanded=False):
+                for subtitulo, campo in [
+                    ("Resumen", "resumen"), ("Decisiones", "decisiones"),
+                    ("Próximos pasos", "proximos_pasos"),
+                ]:
+                    valor = str(minuta.get(campo, "")).strip()
+                    if valor:
+                        st.markdown(f"**{subtitulo}**")
+                        st.write(valor)
+                links = _lineas_minuta(minuta.get("links", ""))
+                if links:
+                    st.markdown("**Enlaces**")
+                    for indice, link in enumerate(links):
+                        if link.lower().startswith(("https://", "http://")):
+                            st.link_button(f"Abrir enlace {indice + 1}", link, use_container_width=True)
+                        else:
+                            st.caption(link)
+
+                if puede_editar:
+                    with st.form(f"editar_minuta_{minuta_id}"):
+                        titulo_editado = st.text_input("Título", value=titulo)
+                        fecha_actual = pd.to_datetime(minuta.get("fecha", ""), errors="coerce")
+                        fecha_editada = st.date_input(
+                            "Fecha", value=date.today() if pd.isna(fecha_actual) else fecha_actual.date()
+                        )
+                        tipo_opciones = ["Reunión", "Llamada", "Seguimiento", "Interna", "Otro"]
+                        tipo_actual = str(minuta.get("tipo", "Reunión"))
+                        if tipo_actual not in tipo_opciones:
+                            tipo_opciones.append(tipo_actual)
+                        tipo_editado = st.selectbox("Tipo", tipo_opciones, index=tipo_opciones.index(tipo_actual))
+                        participantes_editados = st.text_input("Participantes", value=str(minuta.get("participantes", "")))
+                        resumen_editado = st.text_area("Resumen", value=str(minuta.get("resumen", "")), height=110)
+                        decisiones_editadas = st.text_area("Decisiones", value=str(minuta.get("decisiones", "")), height=100)
+                        pasos_editados = st.text_area("Próximos pasos", value=str(minuta.get("proximos_pasos", "")), height=110)
+                        links_editados = st.text_area("Enlaces", value=str(minuta.get("links", "")), height=75)
+                        visible_editada = st.checkbox(
+                            "Visible para el cliente", value=str(minuta.get("visible_cliente", "")).casefold() in ["sí", "si", "true", "1"]
+                        )
+                        guardar = st.form_submit_button("Guardar cambios", use_container_width=True)
+                    if guardar:
+                        if not titulo_editado.strip():
+                            st.error("El título es obligatorio.")
+                        else:
+                            _actualizar_minuta(minuta_id, {
+                                "titulo": titulo_editado.strip(), "fecha": fecha_editada.strftime("%Y-%m-%d"),
+                                "tipo": tipo_editado, "participantes": participantes_editados.strip(),
+                                "resumen": resumen_editado.strip(), "decisiones": decisiones_editadas.strip(),
+                                "proximos_pasos": pasos_editados.strip(), "links": links_editados.strip(),
+                                "visible_cliente": "Sí" if visible_editada else "No",
+                                "fecha_actualizacion": pd.Timestamp.now(tz="America/Argentina/Buenos_Aires").isoformat(),
+                                "actualizado_por": usuario,
+                            })
+                            st.success("Minuta actualizada.")
+                            st.rerun()
+
+                render_archivos_objetivo(
+                    minuta_id, usuario, puede_eliminar=puede_editar,
+                    puede_cargar=puede_editar, tipo_contenedor="minuta",
+                )
+                pasos = _lineas_minuta(minuta.get("proximos_pasos", ""))
+                ya_generados = bool(str(minuta.get("objetivos_generados", "")).strip())
+                if puede_editar and pasos:
+                    st.divider()
+                    if ya_generados:
+                        st.success("Los próximos pasos ya fueron convertidos en tarjetas.")
+                    else:
+                        st.markdown("**Convertir próximos pasos en tarjetas**")
+                        cc1, cc2 = st.columns(2)
+                        with cc1:
+                            vencimiento = st.date_input(
+                                "Vencimiento", value=date.today(), key=f"vencimiento_minuta_{minuta_id}"
+                            )
+                        with cc2:
+                            prioridad = st.selectbox(
+                                "Prioridad", ["Alta", "Media", "Baja"], index=1,
+                                key=f"prioridad_minuta_{minuta_id}",
+                            )
+                        if st.button(
+                            f"Crear {len(pasos)} tarjeta(s)", key=f"crear_tarjetas_minuta_{minuta_id}",
+                            use_container_width=True,
+                        ):
+                            cantidad = _crear_tarjetas_desde_minuta(minuta, vencimiento, prioridad, usuario)
+                            st.success(f"{cantidad} tarjeta(s) creadas en el Plan de trabajo.")
+                            st.rerun()
+                if puede_editar:
+                    st.divider()
+                    confirmar = st.checkbox("Confirmo eliminar esta minuta", key=f"confirmar_minuta_{minuta_id}")
+                    if st.button(
+                        "Eliminar minuta", key=f"eliminar_minuta_{minuta_id}",
+                        disabled=not confirmar, use_container_width=True,
+                    ):
+                        _eliminar_minuta(minuta_id)
+                        st.success("Minuta eliminada.")
+                        st.rerun()
+
+
+def render_plan_trabajo(cliente="", modo="cliente"):
+    if modo in ["admin", "equipo"]:
+        subtitulo = "Seguimiento de frentes, decisiones y reuniones por cliente."
+    else:
+        subtitulo = f"Seguimiento y reuniones | {cliente}"
+    header("Plan de trabajo", subtitulo)
+    vista = st.radio(
+        "Vista del plan",
+        ["Tarjetas", "Minutas"],
+        horizontal=True,
+        key=f"vista_plan_trabajo_{modo}_{cliente}",
+        label_visibility="collapsed",
+    )
+    if vista == "Minutas":
+        render_minutas(cliente, modo)
+    else:
+        render_objetivos(cliente, modo, mostrar_header=False)
 
 
 def render_documentos(cliente="", modo="cliente"):
@@ -15493,7 +15843,7 @@ def main():
         elif menu == "Reportes":
             render_reportes(cliente, load_reportes(cliente))
         elif menu == "Plan de trabajo":
-            render_objetivos(cliente, modo="cliente")
+            render_plan_trabajo(cliente, modo="cliente")
         elif menu == "Cash Flow":
             render_indicadores(cliente, modo="cliente")
         elif menu == "Impuestos":
@@ -15511,7 +15861,7 @@ def main():
             elif menu == "Portal cliente":
                 render_inicio_cliente_ejecutivo(cliente_equipo)
             elif menu == "Plan de trabajo":
-                render_objetivos("", modo="equipo")
+                render_plan_trabajo("", modo="equipo")
             elif menu == "Cash Flow":
                 render_indicadores(cliente_equipo, modo="cliente")
             elif menu == "Liquidaciones":
@@ -15564,7 +15914,7 @@ def main():
             elif menu == "Clientes":
                 render_gestion_clientes()
             elif menu == "Plan de trabajo":
-                render_objetivos("", modo="admin")
+                render_plan_trabajo("", modo="admin")
             elif menu == "Cash Flow":
                 render_indicadores("", modo="admin")
             elif menu == "Cuenta corriente":
