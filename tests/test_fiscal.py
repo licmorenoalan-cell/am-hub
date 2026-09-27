@@ -16,6 +16,7 @@ from am_hub_fiscal import (
     extraer_perfil_constancia_pdf,
     extraer_cm05_pdf,
     evaluar_expediente_fiscal,
+    id_periodo_fiscal,
     periodo_aplicacion_cm05,
     resumir_movimientos,
     seleccionar_fuentes_calculo,
@@ -23,6 +24,13 @@ from am_hub_fiscal import (
 
 
 class FiscalTests(unittest.TestCase):
+    def test_periodo_nuevo_conserva_id_entre_recargas(self):
+        primero = id_periodo_fiscal("CASA DESER SRL", "2026-07")
+        segundo = id_periodo_fiscal(" casa deser srl ", "2026-07")
+        otro = id_periodo_fiscal("CASA DESER SRL", "2026-08")
+        self.assertEqual(primero, segundo)
+        self.assertNotEqual(primero, otro)
+
     def test_decimal_ar_admite_formatos_usuales(self):
         self.assertEqual(decimal_ar("$ 2.124.917,39"), Decimal("2124917.39"))
         self.assertEqual(decimal_ar("446232.61"), Decimal("446232.61"))

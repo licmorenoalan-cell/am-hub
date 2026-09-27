@@ -23,6 +23,7 @@ from am_hub_fiscal import (
     calcular_iva,
     decimal_ar,
     evaluar_expediente_fiscal,
+    id_periodo_fiscal,
     periodo_aplicacion_cm05,
     resumir_movimientos,
     seleccionar_fuentes_calculo,
@@ -14775,7 +14776,7 @@ def cargar_periodo_fiscal(cliente, periodo):
         anteriores = df[df["periodo"].astype(str).lt(str(periodo))].copy()
         anterior = anteriores.sort_values("periodo").iloc[-1].to_dict() if not anteriores.empty else {}
         registro.update(
-            id=f"FPER-{uuid.uuid4().hex}", cliente=str(cliente), periodo=str(periodo),
+            id=id_periodo_fiscal(cliente, periodo), cliente=str(cliente), periodo=str(periodo),
             estado="Borrador", fecha_actualizacion=_fiscal_timestamp(),
             actualizado_por=st.session_state.get("username", ""),
             iva_saldo_tecnico_anterior=anterior.get("iva_saldo_tecnico_favor", ""),

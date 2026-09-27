@@ -110,6 +110,12 @@ def _id_movimiento(*partes) -> str:
     return "FMOV-" + hashlib.sha256(base.encode("utf-8")).hexdigest()[:28]
 
 
+def id_periodo_fiscal(cliente: str, periodo: str) -> str:
+    """ID estable para que los cargadores no se reinicien en períodos nuevos."""
+    base = f"{str(cliente or '').strip().casefold()}|{str(periodo or '').strip()}"
+    return "FPER-" + hashlib.sha256(base.encode("utf-8")).hexdigest()[:28]
+
+
 def _movimiento_base(**cambios) -> dict:
     registro = {col: "" for col in MOVIMIENTO_COLUMNAS}
     registro.update({"computado": "Sí", **cambios})
