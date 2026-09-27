@@ -46,6 +46,7 @@ from am_hub_accounting import (
     ASIENTO_LINEA_COLUMNAS,
     BANCO_MOVIMIENTO_COLUMNAS,
     CUENTA_COLUMNAS,
+    EJERCICIO_CONTABLE_COLUMNAS,
     PERIODO_CONTABLE_COLUMNAS,
     SUELDO_COLUMNAS,
     balance_sumas_saldos,
@@ -113,6 +114,7 @@ CONTABLE_LINEAS_PATH = DATA_DIR / "contable_asiento_lineas.csv"
 CONTABLE_BANCOS_PATH = DATA_DIR / "contable_banco_movimientos.csv"
 CONTABLE_SUELDOS_PATH = DATA_DIR / "contable_sueldos.csv"
 CONTABLE_PERIODOS_PATH = DATA_DIR / "contable_periodos.csv"
+CONTABLE_EJERCICIOS_PATH = DATA_DIR / "contable_ejercicios.csv"
 CONTABLE_ARCHIVOS_PATH = DATA_DIR / "contable_archivos.csv"
 
 ACTIVIDAD_COLUMNS = [
@@ -161,6 +163,7 @@ POSTGRES_TABLE_MAP = {
     "contable_banco_movimientos.csv": "contable_banco_movimientos",
     "contable_sueldos.csv": "contable_sueldos",
     "contable_periodos.csv": "contable_periodos",
+    "contable_ejercicios.csv": "contable_ejercicios",
     "contable_archivos.csv": "contable_archivos",
 }
 
@@ -193,6 +196,7 @@ POSTGRES_KEY_MAP = {
     "contable_banco_movimientos": "id",
     "contable_sueldos": "id",
     "contable_periodos": "id",
+    "contable_ejercicios": "id",
     "contable_archivos": "id",
 }
 
@@ -603,7 +607,7 @@ FISCAL_CLIENTE_COLUMNAS = [
     "id", "cliente", "cuit", "razon_social", "condicion_iva",
     "iibb_regimen", "iibb_jurisdiccion", "iibb_inscripcion",
     "actividad_principal", "actividades", "alicuota_iibb",
-    "email_destinatarios", "observaciones", "fecha_actualizacion",
+    "email_destinatarios", "mes_cierre_ejercicio", "observaciones", "fecha_actualizacion",
     "actualizado_por",
 ]
 FISCAL_PERIODO_COLUMNAS = [
@@ -686,6 +690,10 @@ def asegurar_tablas_fiscales():
                 f'ADD COLUMN IF NOT EXISTS "{columna}" TEXT'
             ))
         conn.execute(sql_text(
+            'ALTER TABLE "fiscal_clientes" '
+            'ADD COLUMN IF NOT EXISTS "mes_cierre_ejercicio" TEXT'
+        ))
+        conn.execute(sql_text(
             'ALTER TABLE "fiscal_archivos" '
             'ADD COLUMN IF NOT EXISTS "resumen_json" TEXT'
         ))
@@ -728,6 +736,7 @@ def asegurar_tablas_contables():
         "contable_banco_movimientos": BANCO_MOVIMIENTO_COLUMNAS,
         "contable_sueldos": SUELDO_COLUMNAS,
         "contable_periodos": PERIODO_CONTABLE_COLUMNAS,
+        "contable_ejercicios": EJERCICIO_CONTABLE_COLUMNAS,
         "contable_archivos": ARCHIVO_CONTABLE_COLUMNAS,
     }
     nombres = list(definiciones)
@@ -755,6 +764,7 @@ def asegurar_tablas_contables():
             "contable_banco_movimientos": '("cliente", "periodo")',
             "contable_sueldos": '("cliente", "periodo")',
             "contable_periodos": '("cliente", "periodo")',
+            "contable_ejercicios": '("cliente", "ejercicio")',
             "contable_archivos": '("cliente", "periodo")',
         }.items():
             conn.execute(sql_text(
@@ -3019,7 +3029,7 @@ def menu_equipo_por_permisos():
         opciones += ["Plan de trabajo"]
 
     if servicios.get("contabilidad"):
-        opciones += ["Cash Flow", "Plan de trabajo", "Liquidaciones", "Contabilidad"]
+        opciones += ["Cash Flow", "Plan de trabajo", "Ficha cliente", "Liquidaciones", "Contabilidad"]
 
     if servicios.get("digital"):
         opciones += ["Contenidos", "Materiales", "Campañas", "Reportes"]
@@ -3049,7 +3059,7 @@ def menu_por_servicios_cliente_para_equipo(cliente_nombre):
         opciones += ["Plan de trabajo"]
 
     if servicios.get("contabilidad"):
-        opciones += ["Cash Flow", "Plan de trabajo", "Liquidaciones", "Contabilidad"]
+        opciones += ["Cash Flow", "Plan de trabajo", "Ficha cliente", "Liquidaciones", "Contabilidad"]
 
     opciones += ["Tareas"]
 
@@ -3167,27 +3177,18 @@ def sidebar():
             key="menu_cliente_v2",
         )
     elif role in ["admin_general", "admin"]:
+        opciones_admin = [
+            "Dashboard AM", "Edición rápida", "Usuarios", "Onboarding", "Clientes",
+            "Ficha cliente", "Plan de trabajo", "Cash Flow", "Cuenta corriente",
+            "Liquidaciones", "Contabilidad", "Contenidos", "Materiales", "Campañas",
+            "Reportes", "Tareas", "Actividad", "Vista cliente",
+        ]
+        destino_admin = st.session_state.pop("menu_admin_destino", None)
+        if destino_admin in opciones_admin:
+            st.session_state["menu_admin"] = destino_admin
         menu = st.sidebar.radio(
             ui("Menú"),
-            [
-                "Dashboard AM",
-                "Edición rápida",
-                "Usuarios",
-                "Onboarding",
-                "Clientes",
-                "Plan de trabajo",
-                "Cash Flow",
-                "Cuenta corriente",
-                "Liquidaciones",
-                "Contabilidad",
-                "Contenidos",
-                "Materiales",
-                "Campañas",
-                "Reportes",
-                "Tareas",
-                "Actividad",
-                "Vista cliente",
-            ],
+            opciones_admin,
             format_func=ui,
             key="menu_admin",
         )
@@ -5074,6 +5075,8 @@ def render_onboarding_cliente():
         st.error("No tenés permisos para acceder al onboarding.")
         return
 
+    st.info("Paso 1: creá el cliente y sus accesos. Luego AM HUB te lleva a la Ficha cliente para completar datos fiscales, constancias y plan de cuentas una sola vez.")
+
     clientes_df = read_csv(
         CLIENTES_PATH,
         [
@@ -5266,7 +5269,20 @@ def render_onboarding_cliente():
                 )
                 save_csv(asignaciones_actualizado, ASIGNACIONES_EQUIPO_PATH)
 
-            st.success("Cliente creado correctamente, acceso vinculado y equipo asignado.")
+            if servicio_contabilidad:
+                perfil_inicial = {columna: "" for columna in FISCAL_CLIENTE_COLUMNAS}
+                perfil_inicial.update({
+                    "id": f"FCLI-{uuid.uuid4().hex}", "cliente": cliente_limpio,
+                    "razon_social": cliente_limpio, "mes_cierre_ejercicio": "12",
+                    "fecha_actualizacion": _fiscal_timestamp(),
+                    "actualizado_por": st.session_state.get("username", ""),
+                })
+                _upsert_tabla_fiscal(
+                    FISCAL_CLIENTES_PATH, FISCAL_CLIENTE_COLUMNAS, perfil_inicial,
+                )
+            st.session_state["ficha_cliente_destino"] = cliente_limpio
+            st.session_state["menu_admin_destino"] = "Ficha cliente"
+            st.success("Cliente creado. Continuá con su ficha maestra.")
             st.rerun()
 
     st.markdown("### Últimos clientes cargados")
@@ -15550,6 +15566,183 @@ def _contable_guardar_archivo(cliente, periodo, categoria, archivo):
     )
 
 
+FISCAL_CATEGORIAS_PERMANENTES = {
+    "constancia_arca", "constancia_iibb", "cm05_anual",
+}
+
+
+def cargar_documentos_permanentes_cliente(cliente):
+    columnas = [col for col in FISCAL_ARCHIVO_COLUMNAS if col != "contenido_base64"]
+    asegurar_tablas_fiscales()
+    if usar_postgres():
+        consulta = sql_text(
+            f'SELECT {_sql_cols(columnas)} FROM "fiscal_archivos" '
+            'WHERE "cliente" = :cliente AND "categoria" IN :categorias '
+            'ORDER BY "fecha_carga" DESC'
+        ).bindparams(bindparam("categorias", expanding=True))
+        with get_postgres_engine().connect() as conn:
+            return pd.read_sql(
+                consulta, conn,
+                params={"cliente": str(cliente), "categorias": sorted(FISCAL_CATEGORIAS_PERMANENTES)},
+            ).fillna("")
+    archivos = read_csv(FISCAL_ARCHIVOS_PATH, FISCAL_ARCHIVO_COLUMNAS)
+    if archivos.empty:
+        return pd.DataFrame(columns=columnas)
+    mascara = (
+        archivos["cliente"].astype(str).eq(str(cliente))
+        & archivos["categoria"].astype(str).isin(FISCAL_CATEGORIAS_PERMANENTES)
+    )
+    return archivos.loc[mascara, columnas].sort_values("fecha_carga", ascending=False)
+
+
+def _render_editor_plan_cuentas(cliente, key_prefix="ficha"):
+    cuentas = _contable_cargar(CONTABLE_CUENTAS_PATH, CUENTA_COLUMNAS, cliente)
+    st.caption(
+        "El plan es maestro para el cliente y se reutiliza en todos los ejercicios. "
+        "Cada ejercicio cerrado conserva una copia histórica."
+    )
+    if cuentas.empty:
+        if st.button("Crear plan de cuentas base", type="primary", key=f"{key_prefix}_crear_plan_{cliente}"):
+            base = plan_cuentas_inicial(cliente, st.session_state.get("username", ""))
+            _contable_upsert_dataframe(CONTABLE_CUENTAS_PATH, CUENTA_COLUMNAS, base)
+            st.success("Plan de cuentas maestro creado.")
+            st.rerun()
+        return
+    editor = cuentas[["id", "codigo", "nombre", "tipo", "naturaleza", "activa"]].copy()
+    editado = st.data_editor(
+        editor, hide_index=True, use_container_width=True, num_rows="dynamic",
+        disabled=["id"], key=f"{key_prefix}_editor_cuentas_{cliente}",
+        column_config={
+            "tipo": st.column_config.SelectboxColumn("Tipo", options=["Activo", "Pasivo", "Patrimonio neto", "Ingresos", "Egresos"]),
+            "naturaleza": st.column_config.SelectboxColumn("Naturaleza", options=["Deudora", "Acreedora"]),
+            "activa": st.column_config.SelectboxColumn("Activa", options=["Sí", "No"]),
+        },
+    )
+    if st.button("Guardar plan de cuentas", type="primary", key=f"{key_prefix}_guardar_plan_{cliente}"):
+        filas = []
+        for _, fila in editado.iterrows():
+            if not str(fila.get("codigo", "")).strip() or not str(fila.get("nombre", "")).strip():
+                continue
+            valor_id = fila.get("id", "")
+            cuenta_id = (
+                "" if pd.isna(valor_id) or str(valor_id).strip().casefold() in {"", "none", "nan"}
+                else str(valor_id).strip()
+            ) or f"CTA-{uuid.uuid4().hex}"
+            filas.append({
+                **{col: "" for col in CUENTA_COLUMNAS}, **fila.to_dict(),
+                "id": cuenta_id, "cliente": cliente, "origen": "Edición manual",
+                "fecha_actualizacion": _fiscal_timestamp(),
+                "actualizado_por": st.session_state.get("username", ""),
+            })
+        _contable_upsert_dataframe(
+            CONTABLE_CUENTAS_PATH, CUENTA_COLUMNAS, pd.DataFrame(filas),
+        )
+        st.success("Plan maestro actualizado.")
+        st.rerun()
+
+
+def render_ficha_maestra_cliente(cliente_fijo="", modo="admin"):
+    header("Ficha del cliente", "Datos permanentes, documentación inicial y configuración contable")
+    if st.session_state.get("role") not in ["admin_general", "admin", "equipo"]:
+        st.error("Acceso restringido al equipo de AM Consultora.")
+        return
+    clientes = [cliente_fijo] if cliente_fijo else clientes_visibles_para_usuario()
+    if not clientes:
+        st.info("No hay clientes disponibles.")
+        return
+    destino = st.session_state.pop("ficha_cliente_destino", "")
+    indice_destino = clientes.index(destino) if destino in clientes else 0
+    if destino in clientes:
+        st.session_state["ficha_maestra_cliente"] = destino
+    cliente = cliente_fijo or st.selectbox(
+        "Cliente", clientes, index=indice_destino, key="ficha_maestra_cliente",
+    )
+    perfil = cargar_perfil_fiscal(cliente)
+    tabs = st.tabs(["Datos fiscales", "Documentación permanente", "Plan de cuentas"])
+
+    with tabs[0]:
+        st.info("Esta información se carga una vez y se reutiliza automáticamente en todas las liquidaciones y ejercicios.")
+        with st.form(f"ficha_maestra_{cliente}"):
+            c1, c2 = st.columns(2)
+            cuit = c1.text_input("CUIT", value=str(perfil.get("cuit", "")))
+            razon = c2.text_input("Razón social", value=str(perfil.get("razon_social", "")))
+            c3, c4 = st.columns(2)
+            condiciones = ["", "Responsable inscripto", "Monotributo", "Exento", "No responsable"]
+            condicion_actual = perfil.get("condicion_iva", "")
+            condicion = c3.selectbox("Condición IVA", condiciones, index=condiciones.index(condicion_actual) if condicion_actual in condiciones else 0)
+            regimenes = ["", "Local", "Convenio Multilateral", "Exento"]
+            regimen_actual = perfil.get("iibb_regimen", "")
+            regimen = c4.selectbox("Régimen IIBB", regimenes, index=regimenes.index(regimen_actual) if regimen_actual in regimenes else 0)
+            c5, c6, c7 = st.columns(3)
+            jurisdiccion = c5.text_input("Jurisdicción", value=str(perfil.get("iibb_jurisdiccion", "")))
+            inscripcion = c6.text_input("Inscripción IIBB", value=str(perfil.get("iibb_inscripcion", "")))
+            alicuota = c7.number_input("Alícuota IIBB (%)", min_value=0.0, max_value=20.0, value=float(decimal_ar(perfil.get("alicuota_iibb", 0))), step=0.01)
+            actividad = st.text_input("Actividad principal", value=str(perfil.get("actividad_principal", "")))
+            actividades = st.text_input("Otras actividades", value=str(perfil.get("actividades", "")))
+            c8, c9 = st.columns([2, 1])
+            emails = c8.text_input("Emails para avisos", value=str(perfil.get("email_destinatarios", "")))
+            mes_actual = int(decimal_ar(perfil.get("mes_cierre_ejercicio", 12) or 12))
+            mes_actual = mes_actual if 1 <= mes_actual <= 12 else 12
+            nombres_meses = ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"]
+            mes_cierre = c9.selectbox("Mes de cierre", list(range(1, 13)), index=mes_actual - 1, format_func=lambda valor: nombres_meses[valor - 1])
+            observaciones = st.text_area("Observaciones permanentes", value=str(perfil.get("observaciones", "")), height=80)
+            guardar = st.form_submit_button("Guardar ficha maestra", type="primary")
+        if guardar:
+            nuevo = {
+                "id": perfil.get("id") or f"FCLI-{uuid.uuid4().hex}", "cliente": cliente,
+                "cuit": cuit, "razon_social": razon, "condicion_iva": condicion,
+                "iibb_regimen": regimen, "iibb_jurisdiccion": jurisdiccion,
+                "iibb_inscripcion": inscripcion, "actividad_principal": actividad,
+                "actividades": actividades, "alicuota_iibb": alicuota,
+                "email_destinatarios": emails, "mes_cierre_ejercicio": str(mes_cierre),
+                "observaciones": observaciones, "fecha_actualizacion": _fiscal_timestamp(),
+                "actualizado_por": st.session_state.get("username", ""),
+            }
+            _upsert_tabla_fiscal(FISCAL_CLIENTES_PATH, FISCAL_CLIENTE_COLUMNAS, nuevo)
+            st.success("Ficha maestra guardada. Se aplicará a los próximos períodos.")
+            st.rerun()
+
+    with tabs[1]:
+        st.caption("Constancia de CUIT, inscripción en IIBB y CM05. No vuelvas a cargarlos en cada liquidación.")
+        archivos = st.file_uploader(
+            "Documentación inicial o actualizada", type=["pdf"], accept_multiple_files=True,
+            key=f"documentacion_permanente_{cliente}",
+        )
+        if st.button("Guardar documentación permanente", type="primary", disabled=not archivos, key=f"guardar_permanentes_{cliente}"):
+            master_id = "FMASTER-" + hashlib.sha256(str(cliente).encode()).hexdigest()[:24]
+            cantidad, _, omitidos, avisos = guardar_lote_fiscal(
+                cliente, "Permanente", master_id, [(archivo, "") for archivo in archivos],
+            )
+            st.success(f"Se guardaron {cantidad} documento(s) nuevo(s).")
+            if omitidos:
+                st.info("Ya estaban cargados: " + ", ".join(omitidos))
+            for aviso in avisos:
+                st.warning(aviso)
+            st.rerun()
+        permanentes = cargar_documentos_permanentes_cliente(cliente)
+        if permanentes.empty:
+            st.info("Todavía no hay documentación permanente cargada.")
+        else:
+            vista = permanentes[["nombre", "categoria", "fecha_carga", "cargado_por"]].copy()
+            vista["categoria"] = vista["categoria"].apply(_fiscal_categoria_visible)
+            st.dataframe(vista, hide_index=True, use_container_width=True)
+            ids = permanentes["id"].astype(str).tolist()
+            nombres = dict(zip(permanentes["id"].astype(str), permanentes["nombre"].astype(str)))
+            elegido = st.selectbox("Documento para descargar", ids, format_func=lambda valor: nombres.get(valor, valor), key=f"permanente_descarga_{cliente}")
+            fila = permanentes[permanentes["id"].astype(str).eq(elegido)].iloc[0]
+            if st.checkbox("Preparar descarga", key=f"preparar_permanente_{elegido}"):
+                dato = cargar_archivo_fiscal(elegido, str(fila.get("periodo_id", "")))
+                if dato:
+                    st.download_button(
+                        "Descargar original", data=base64.b64decode(dato.get("contenido_base64", "")),
+                        file_name=str(dato.get("nombre", nombres.get(elegido, "archivo"))),
+                        mime=str(dato.get("tipo", "application/octet-stream")),
+                    )
+
+    with tabs[2]:
+        _render_editor_plan_cuentas(cliente, "ficha")
+
+
 def _contable_periodo(cliente, periodo):
     df = _contable_cargar(CONTABLE_PERIODOS_PATH, PERIODO_CONTABLE_COLUMNAS, cliente, periodo)
     if df.empty:
@@ -15569,6 +15762,49 @@ def _contable_periodo_vacio(cliente, periodo):
         "fecha_autorizacion": "", "autorizado_por": "", "observaciones": "",
         "fecha_actualizacion": "",
     }
+
+
+def _rango_ejercicio(ejercicio, mes_cierre=12):
+    ejercicio = int(ejercicio)
+    mes_cierre = max(1, min(12, int(mes_cierre or 12)))
+    cierre = pd.Timestamp(ejercicio, mes_cierre, 1) + pd.offsets.MonthEnd(0)
+    inicio = (cierre - pd.DateOffset(years=1)) + pd.Timedelta(days=1)
+    periodos = pd.period_range(inicio, cierre, freq="M").astype(str).tolist()
+    return inicio.date(), cierre.date(), periodos
+
+
+def _contable_ejercicio(cliente, ejercicio, mes_cierre=12):
+    ejercicios = _contable_cargar(
+        CONTABLE_EJERCICIOS_PATH, EJERCICIO_CONTABLE_COLUMNAS, cliente,
+    )
+    encontrados = ejercicios[
+        ejercicios["ejercicio"].astype(str).eq(str(ejercicio))
+    ] if not ejercicios.empty else ejercicios
+    if not encontrados.empty:
+        return encontrados.iloc[-1].to_dict(), False
+    inicio, cierre, _ = _rango_ejercicio(ejercicio, mes_cierre)
+    registro = {
+        "id": f"CEJE-{hashlib.sha256(f'{cliente}|{ejercicio}'.encode()).hexdigest()[:24]}",
+        "cliente": cliente, "ejercicio": str(ejercicio),
+        "fecha_inicio": inicio.isoformat(), "fecha_cierre": cierre.isoformat(),
+        "estado": "Abierto", "plan_cuentas_json": "", "fecha_apertura": _fiscal_timestamp(),
+        "abierto_por": st.session_state.get("username", ""), "fecha_cierre_real": "",
+        "cerrado_por": "", "observaciones": "", "fecha_actualizacion": _fiscal_timestamp(),
+    }
+    return registro, True
+
+
+def _contable_datos_ejercicio(cliente, periodos):
+    periodos = set(str(valor) for valor in periodos)
+    asientos = _contable_cargar(CONTABLE_ASIENTOS_PATH, ASIENTO_COLUMNAS, cliente)
+    lineas = _contable_cargar(CONTABLE_LINEAS_PATH, ASIENTO_LINEA_COLUMNAS, cliente)
+    asientos = asientos[asientos["periodo"].astype(str).isin(periodos)].copy()
+    ids = set(asientos["id"].astype(str))
+    lineas = lineas[
+        lineas["periodo"].astype(str).isin(periodos)
+        & lineas["asiento_id"].astype(str).isin(ids)
+    ].copy()
+    return asientos, lineas
 
 
 @st.cache_data(ttl=60, show_spinner=False)
@@ -15611,11 +15847,38 @@ def render_contabilidad(cliente_fijo="", modo="admin"):
         st.info("No hay clientes disponibles.")
         return
     cliente = cliente_fijo or st.selectbox("Cliente", clientes, key="contable_cliente")
-    p1, p2 = st.columns([1, 2])
-    fecha_periodo = p1.date_input(
-        "Período", value=date.today().replace(day=1), key=f"contable_periodo_{cliente}",
+    perfil_fiscal = cargar_perfil_fiscal(cliente)
+    mes_cierre = int(decimal_ar(perfil_fiscal.get("mes_cierre_ejercicio", 12) or 12))
+    mes_cierre = mes_cierre if 1 <= mes_cierre <= 12 else 12
+    ejercicios_guardados = _contable_cargar(
+        CONTABLE_EJERCICIOS_PATH, EJERCICIO_CONTABLE_COLUMNAS, cliente,
     )
-    periodo = fecha_periodo.strftime("%Y-%m")
+    anio_actual = date.today().year
+    opciones_ejercicio = {anio_actual - 1, anio_actual, anio_actual + 1}
+    if not ejercicios_guardados.empty:
+        opciones_ejercicio.update(
+            pd.to_numeric(ejercicios_guardados["ejercicio"], errors="coerce").dropna().astype(int).tolist()
+        )
+    p1, p2, p3 = st.columns([1, 1, 1.3])
+    ejercicio_num = p1.selectbox(
+        "Ejercicio", sorted(opciones_ejercicio, reverse=True),
+        index=sorted(opciones_ejercicio, reverse=True).index(anio_actual),
+        key=f"contable_ejercicio_{cliente}",
+    )
+    ejercicio_contable, ejercicio_nuevo = _contable_ejercicio(cliente, ejercicio_num, mes_cierre)
+    if ejercicio_nuevo:
+        _contable_upsert_dataframe(
+            CONTABLE_EJERCICIOS_PATH, EJERCICIO_CONTABLE_COLUMNAS,
+            pd.DataFrame([ejercicio_contable]),
+        )
+    inicio_ejercicio, cierre_ejercicio, periodos_ejercicio = _rango_ejercicio(ejercicio_num, mes_cierre)
+    periodo_actual = date.today().strftime("%Y-%m")
+    periodo_default = periodo_actual if periodo_actual in periodos_ejercicio else periodos_ejercicio[-1]
+    periodo = p2.selectbox(
+        "Período", periodos_ejercicio,
+        index=periodos_ejercicio.index(periodo_default), key=f"contable_periodo_{cliente}_{ejercicio_num}",
+    )
+    fecha_periodo = pd.Timestamp(f"{periodo}-01").date()
     if usar_postgres():
         contexto_contable = cargar_contexto_contable_postgres_cacheado(cliente, periodo)
         periodos_contables = contexto_contable["periodos"]
@@ -15623,8 +15886,12 @@ def render_contabilidad(cliente_fijo="", modo="admin"):
     else:
         contexto_contable = None
         periodo_contable = _contable_periodo(cliente, periodo)
-    p2.caption("Estado contable")
-    p2.markdown(f"**{periodo_contable.get('estado', 'Abierto')}** · {periodo}")
+    p3.caption("Estado")
+    p3.markdown(
+        f"**Ejercicio {ejercicio_contable.get('estado', 'Abierto')}** · "
+        f"período {periodo_contable.get('estado', 'Abierto')}"
+    )
+    p3.caption(f"{inicio_ejercicio.strftime('%d/%m/%Y')} al {cierre_ejercicio.strftime('%d/%m/%Y')}")
 
     if contexto_contable is not None:
         cuentas = contexto_contable["cuentas"]
@@ -15641,9 +15908,13 @@ def render_contabilidad(cliente_fijo="", modo="admin"):
 
     seccion = st.radio(
         "Sección contable",
-        ["Resumen", "Plan de cuentas", "Generar", "Bancos", "Sueldos y F.931", "Revisión", "Reportes"],
+        ["Resumen", "Ejercicio", "Generar", "Bancos", "Sueldos y F.931", "Revisión", "Reportes"],
         horizontal=True, label_visibility="collapsed", key=f"contable_seccion_{cliente}_{periodo}",
     )
+    ejercicio_cerrado = str(ejercicio_contable.get("estado", "")) == "Cerrado"
+    if ejercicio_cerrado and seccion in ["Generar", "Bancos", "Sueldos y F.931", "Revisión"]:
+        st.warning("El ejercicio está cerrado y no admite modificaciones. Podés consultar Resumen o Reportes.")
+        return
 
     if seccion == "Resumen":
         m1, m2, m3, m4 = st.columns(4)
@@ -15667,7 +15938,80 @@ def render_contabilidad(cliente_fijo="", modo="admin"):
         ])
         st.dataframe(pasos, hide_index=True, use_container_width=True)
 
-    if seccion == "Plan de cuentas":
+    if seccion == "Ejercicio":
+        st.markdown(f"#### Ejercicio {ejercicio_num}")
+        st.caption(
+            f"Comprende del {inicio_ejercicio.strftime('%d/%m/%Y')} al "
+            f"{cierre_ejercicio.strftime('%d/%m/%Y')}. El plan maestro se congela al cerrarlo."
+        )
+        periodos_registrados = _contable_cargar(
+            CONTABLE_PERIODOS_PATH, PERIODO_CONTABLE_COLUMNAS, cliente,
+        )
+        estados_periodos = dict(zip(
+            periodos_registrados.get("periodo", pd.Series(dtype=str)).astype(str),
+            periodos_registrados.get("estado", pd.Series(dtype=str)).astype(str),
+        ))
+        asientos_ejercicio, _ = _contable_datos_ejercicio(cliente, periodos_ejercicio)
+        conteo_asientos = (
+            asientos_ejercicio.groupby("periodo").size().to_dict()
+            if not asientos_ejercicio.empty else {}
+        )
+        vista_periodos = pd.DataFrame([
+            {
+                "Período": valor,
+                "Estado": estados_periodos.get(valor, "Sin movimientos"),
+                "Asientos": int(conteo_asientos.get(valor, 0)),
+            }
+            for valor in periodos_ejercicio
+        ])
+        st.dataframe(vista_periodos, hide_index=True, use_container_width=True)
+        borradores_ejercicio = (
+            asientos_ejercicio[asientos_ejercicio["estado"].astype(str).eq("Borrador")]
+            if not asientos_ejercicio.empty else asientos_ejercicio
+        )
+        e1, e2, e3 = st.columns(3)
+        e1.metric("Estado", ejercicio_contable.get("estado", "Abierto"))
+        e2.metric("Asientos", len(asientos_ejercicio))
+        e3.metric("Borradores pendientes", len(borradores_ejercicio))
+        if ejercicio_cerrado:
+            st.success(
+                f"Ejercicio cerrado por {ejercicio_contable.get('cerrado_por') or '—'} el "
+                f"{ejercicio_contable.get('fecha_cierre_real') or '—'}."
+            )
+            if st.session_state.get("role") in ["admin_general", "admin"] and st.button(
+                "Reabrir ejercicio", key=f"reabrir_ejercicio_{cliente}_{ejercicio_num}",
+            ):
+                ejercicio_contable.update({
+                    "estado": "Abierto", "fecha_cierre_real": "", "cerrado_por": "",
+                    "fecha_actualizacion": _fiscal_timestamp(),
+                })
+                _contable_upsert_dataframe(
+                    CONTABLE_EJERCICIOS_PATH, EJERCICIO_CONTABLE_COLUMNAS,
+                    pd.DataFrame([ejercicio_contable]),
+                )
+                st.success("Ejercicio reabierto.")
+                st.rerun()
+        else:
+            st.caption("Para cerrar, todos los asientos cargados deben estar autorizados. Los meses sin actividad pueden quedar sin movimientos.")
+            if st.button(
+                "Cerrar ejercicio y congelar plan de cuentas", type="primary",
+                disabled=not borradores_ejercicio.empty or cuentas.empty,
+                key=f"cerrar_ejercicio_{cliente}_{ejercicio_num}",
+            ):
+                ahora = _fiscal_timestamp()
+                ejercicio_contable.update({
+                    "estado": "Cerrado", "plan_cuentas_json": _json_fiscal(cuentas.to_dict("records")),
+                    "fecha_cierre_real": ahora, "cerrado_por": st.session_state.get("username", ""),
+                    "fecha_actualizacion": ahora,
+                })
+                _contable_upsert_dataframe(
+                    CONTABLE_EJERCICIOS_PATH, EJERCICIO_CONTABLE_COLUMNAS,
+                    pd.DataFrame([ejercicio_contable]),
+                )
+                st.success("Ejercicio cerrado. El plan de cuentas quedó congelado para auditoría.")
+                st.rerun()
+
+    if False and seccion == "Plan de cuentas":
         st.markdown("#### Plan de cuentas del cliente")
         if cuentas.empty:
             st.caption("Se crea un plan base editable. Luego AM HUB reutiliza las mismas cuentas todos los meses.")
@@ -15934,10 +16278,20 @@ def render_contabilidad(cliente_fijo="", modo="admin"):
 
     if seccion == "Reportes":
         st.markdown("#### Libros y balance")
+        alcance_reporte = st.radio(
+            "Alcance", ["Mes seleccionado", "Ejercicio completo"], horizontal=True,
+            key=f"alcance_reporte_{cliente}_{ejercicio_num}_{periodo}",
+        )
         incluir_borradores = st.checkbox("Incluir borradores", value=True)
-        asientos_reporte = asientos if incluir_borradores else asientos[asientos["estado"].astype(str).eq("Autorizado")]
+        if alcance_reporte == "Ejercicio completo":
+            asientos_base, lineas_base = _contable_datos_ejercicio(cliente, periodos_ejercicio)
+            etiqueta_reporte = f"ejercicio_{ejercicio_num}"
+        else:
+            asientos_base, lineas_base = asientos, lineas
+            etiqueta_reporte = periodo
+        asientos_reporte = asientos_base if incluir_borradores else asientos_base[asientos_base["estado"].astype(str).eq("Autorizado")]
         ids_reporte = set(asientos_reporte["id"].astype(str))
-        lineas_reporte = lineas[lineas["asiento_id"].astype(str).isin(ids_reporte)].copy()
+        lineas_reporte = lineas_base[lineas_base["asiento_id"].astype(str).isin(ids_reporte)].copy()
         reporte = balance_sumas_saldos(lineas_reporte, cuentas)
         if reporte.empty:
             st.info("No hay movimientos para el reporte seleccionado.")
@@ -15951,7 +16305,7 @@ def render_contabilidad(cliente_fijo="", modo="admin"):
             st.dataframe(reporte, hide_index=True, use_container_width=True)
             st.download_button(
                 "Descargar sumas y saldos", reporte.to_csv(index=False).encode("utf-8-sig"),
-                file_name=f"sumas_y_saldos_{cliente}_{periodo}.csv".replace(" ", "_"), mime="text/csv",
+                file_name=f"sumas_y_saldos_{cliente}_{etiqueta_reporte}.csv".replace(" ", "_"), mime="text/csv",
             )
             with st.expander("Libro Diario"):
                 diario = lineas_reporte.merge(
@@ -16379,11 +16733,13 @@ def render_liquidaciones_fiscales(cliente_fijo="", modo="admin"):
 
     seccion_fiscal = st.radio(
         "Sección",
-        ["Expediente", "Ficha fiscal", "Documentación", "Papel de trabajo", "Cierre"],
+        ["Expediente", "Documentación", "Papel de trabajo", "Cierre"],
         horizontal=True,
         label_visibility="collapsed",
         key=f"fiscal_seccion_{cliente}_{periodo}",
     )
+    if not str(perfil.get("cuit", "")).strip():
+        st.info("La ficha fiscal permanente está incompleta. Completala una sola vez desde el menú Ficha cliente.")
 
     if seccion_fiscal == "Expediente":
         st.markdown("#### Expediente del período")
@@ -16448,7 +16804,7 @@ def render_liquidaciones_fiscales(cliente_fijo="", modo="admin"):
                 key=f"fiscal_indice_{periodo_id}",
             )
 
-    if seccion_fiscal == "Ficha fiscal":
+    if False and seccion_fiscal == "Ficha fiscal":
         st.caption("Las constancias ARCA/AGIP completan automáticamente los datos reconocibles. Podés revisarlos aquí.")
         with st.form(f"ficha_fiscal_{cliente}"):
             c1, c2 = st.columns(2)
@@ -16499,10 +16855,10 @@ def render_liquidaciones_fiscales(cliente_fijo="", modo="admin"):
 
     if seccion_fiscal == "Documentación":
         st.markdown("#### Cargar documentación del período")
-        st.caption("Cada fuente tiene su lugar. Podés completar sólo los bloques que correspondan al cliente y procesar todo en una sola operación.")
+        st.caption("Acá se carga únicamente documentación mensual. La ficha y las constancias permanentes están en Ficha cliente.")
         st.info(
             "Para calcular automáticamente, usá ZIP/CSV/XLSX/TXT exportados por el organismo. "
-            "Los PDF se guardan como respaldo, pero normalmente no alimentan los importes del papel de trabajo."
+            "El F.2083 en PDF se usa para contrastar el Libro IVA; los demás PDF quedan como respaldo."
         )
         flash = st.session_state.pop(f"fiscal_flash_{periodo_id}", None)
         if flash:
@@ -16548,22 +16904,9 @@ def render_liquidaciones_fiscales(cliente_fijo="", modo="admin"):
                 st.success("Declaraciones del período guardadas.")
                 st.rerun()
 
-        permanentes_pendientes = not str(perfil.get("cuit", "")).strip() or (
-            str(perfil.get("iibb_regimen", "")) == "Convenio Multilateral"
-            and cm05_aplicable.empty
-        )
-        with st.expander("1. Datos permanentes del cliente", expanded=permanentes_pendientes):
-            st.caption("Constancia de CUIT, inscripción en IIBB y último CM05. Se cargan una vez y se reutilizan.")
-            archivos_permanentes = st.file_uploader(
-                "Constancias y CM05",
-                accept_multiple_files=True,
-                type=["pdf"],
-                key=f"fiscal_permanentes_{periodo_id}",
-            )
-
         col_ventas, col_compras = st.columns(2)
         with col_ventas:
-            st.markdown("##### 2. Ventas")
+            st.markdown("##### 1. Ventas")
             st.caption("Exportación de ventas de Portal IVA o Mis Comprobantes emitidos: ZIP/CSV recomendado; también XLSX. PDF sólo como respaldo.")
             archivos_ventas = st.file_uploader(
                 "Comprobantes emitidos",
@@ -16572,7 +16915,7 @@ def render_liquidaciones_fiscales(cliente_fijo="", modo="admin"):
                 key=f"fiscal_ventas_{periodo_id}",
             )
         with col_compras:
-            st.markdown("##### 3. Compras")
+            st.markdown("##### 2. Compras")
             st.caption("Exportación de compras de Portal IVA o Mis Comprobantes recibidos: ZIP/CSV recomendado; también XLSX. PDF sólo como respaldo.")
             archivos_compras = st.file_uploader(
                 "Comprobantes recibidos",
@@ -16583,7 +16926,7 @@ def render_liquidaciones_fiscales(cliente_fijo="", modo="admin"):
 
         col_iva, col_iibb = st.columns(2)
         with col_iva:
-            st.markdown("##### 4. IVA - deducciones")
+            st.markdown("##### 3. IVA - deducciones")
             st.caption("Retenciones y percepciones: CSV/TXT/XLS/XLSX exportado por ARCA. PDF sólo como respaldo.")
             archivos_iva = st.file_uploader(
                 "Retenciones y percepciones de IVA",
@@ -16592,7 +16935,7 @@ def render_liquidaciones_fiscales(cliente_fijo="", modo="admin"):
                 key=f"fiscal_iva_{periodo_id}",
             )
         with col_iibb:
-            st.markdown("##### 5. IIBB - deducciones")
+            st.markdown("##### 4. IIBB - deducciones")
             st.caption("Detalle XLS/CSV de AGIP/ARBA/SIFERE recomendado. TXT de importación y PDF quedan como respaldo.")
             archivos_iibb = st.file_uploader(
                 "Deducciones de Ingresos Brutos",
@@ -16601,7 +16944,7 @@ def render_liquidaciones_fiscales(cliente_fijo="", modo="admin"):
                 key=f"fiscal_iibb_{periodo_id}",
             )
 
-        with st.expander("6. Presentaciones, pagos y otros respaldos", expanded=False):
+        with st.expander("5. Presentaciones, pagos y otros respaldos", expanded=False):
             st.caption("DDJJ presentada, acuses, VEP, comprobantes de pago y documentación adicional.")
             archivos_finales = st.file_uploader(
                 "Documentación final",
@@ -16611,8 +16954,7 @@ def render_liquidaciones_fiscales(cliente_fijo="", modo="admin"):
             )
 
         archivos = (
-            [(archivo, "") for archivo in archivos_permanentes]
-            + [(archivo, "ventas") for archivo in archivos_ventas]
+            [(archivo, "ventas") for archivo in archivos_ventas]
             + [(archivo, "compras") for archivo in archivos_compras]
             + [(archivo, "iva") for archivo in archivos_iva]
             + [(archivo, "iibb") for archivo in archivos_iibb]
@@ -17110,6 +17452,11 @@ def main():
                     cliente_fijo=cliente_equipo,
                     modo="equipo",
                 )
+            elif menu == "Ficha cliente":
+                render_ficha_maestra_cliente(
+                    cliente_fijo=cliente_equipo,
+                    modo="equipo",
+                )
             elif menu == "Contabilidad":
                 render_contabilidad(
                     cliente_fijo=cliente_equipo,
@@ -17159,6 +17506,8 @@ def main():
                 render_onboarding_cliente()
             elif menu == "Clientes":
                 render_gestion_clientes()
+            elif menu == "Ficha cliente":
+                render_ficha_maestra_cliente(modo="admin")
             elif menu == "Plan de trabajo":
                 render_plan_trabajo("", modo="admin")
             elif menu == "Cash Flow":

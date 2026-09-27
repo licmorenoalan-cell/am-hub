@@ -58,6 +58,12 @@ PERIODO_CONTABLE_COLUMNAS = [
     "autorizado_por", "observaciones", "fecha_actualizacion",
 ]
 
+EJERCICIO_CONTABLE_COLUMNAS = [
+    "id", "cliente", "ejercicio", "fecha_inicio", "fecha_cierre", "estado",
+    "plan_cuentas_json", "fecha_apertura", "abierto_por", "fecha_cierre_real",
+    "cerrado_por", "observaciones", "fecha_actualizacion",
+]
+
 ARCHIVO_CONTABLE_COLUMNAS = [
     "id", "cliente", "periodo", "categoria", "nombre", "tipo", "tamano",
     "sha256", "contenido_base64", "fecha_carga", "cargado_por",
