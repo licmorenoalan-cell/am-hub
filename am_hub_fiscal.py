@@ -76,8 +76,30 @@ def normalizar_cuit(valor: str) -> str:
 
 
 def periodo_desde_fecha(valor: str) -> str:
-    fecha = pd.to_datetime(valor, errors="coerce", dayfirst=True)
+    texto = str(valor or "").strip()
+    iso = re.match(r"^(20\d{2})-(0[1-9]|1[0-2])-", texto)
+    if iso:
+        return f"{iso.group(1)}-{iso.group(2)}"
+    fecha = pd.to_datetime(texto, errors="coerce", dayfirst=True)
     return "" if pd.isna(fecha) else fecha.strftime("%Y-%m")
+
+
+def preparar_movimientos_periodo(
+    movimientos: pd.DataFrame, periodo: str,
+) -> tuple[pd.DataFrame, int, int]:
+    """Deduplica y excluye movimientos fechados fuera del período elegido."""
+    if movimientos is None or movimientos.empty:
+        return pd.DataFrame(columns=MOVIMIENTO_COLUMNAS), 0, 0
+    base = movimientos.copy()
+    cantidad_original = len(base)
+    base = base.drop_duplicates(subset=["id"], keep="first")
+    duplicados = cantidad_original - len(base)
+    periodos_fecha = base.get(
+        "fecha", pd.Series("", index=base.index),
+    ).apply(periodo_desde_fecha)
+    fuera = periodos_fecha.ne("") & periodos_fecha.ne(str(periodo))
+    excluidos = int(fuera.sum())
+    return base[~fuera].reset_index(drop=True), excluidos, duplicados
 
 
 def periodo_aplicacion_cm05(periodo: str) -> str:
@@ -134,19 +156,37 @@ def parsear_comprobantes_arca(contenido: bytes, clase: str) -> pd.DataFrame:
         fecha = str(_valor(fila, "Fecha de Emisión"))
         tipo = str(_valor(fila, "Tipo de Comprobante"))
         punto = str(_valor(fila, "Punto de Venta"))
-        numero = str(_valor(fila, "Número Desde"))
+        numero = str(_valor(
+            fila, "Número Desde", "Número de Comprobante", "Numero de Comprobante",
+        ))
         cuit = str(_valor(
             fila,
-            "Nro. Doc. Emisor" if recibidos else "Nro. Doc. Receptor",
+            *(
+                ("Nro. Doc. Emisor", "Nro. Doc. Vendedor", "Nro. Doc. Proveedor")
+                if recibidos else
+                ("Nro. Doc. Receptor", "Nro. Doc. Comprador", "Nro. Doc. Cliente")
+            ),
         ))
         denominacion = str(_valor(
             fila,
-            "Denominación Emisor" if recibidos else "Denominación Receptor",
+            *(
+                ("Denominación Emisor", "Denominación Vendedor", "Denominación Proveedor")
+                if recibidos else
+                ("Denominación Receptor", "Denominación Comprador", "Denominación Cliente")
+            ),
         ))
-        iva = dinero(_valor(fila, "Total IVA"))
-        neto = dinero(_valor(fila, "Imp. Neto Gravado Total"))
-        otros = dinero(_valor(fila, "Otros Tributos"))
-        total = dinero(_valor(fila, "Imp. Total"))
+        iva = dinero(_valor(
+            fila,
+            *("Crédito Fiscal Computable", "Total IVA", "IVA") if recibidos
+            else ("Total IVA", "IVA"),
+        ))
+        neto = dinero(_valor(
+            fila, "Imp. Neto Gravado Total", "Total Neto Gravado", "Neto Gravado",
+        ))
+        otros = dinero(_valor(
+            fila, "Otros Tributos", "Importe Otros Tributos",
+        ))
+        total = dinero(_valor(fila, "Imp. Total", "Importe Total", "Total"))
         registro = _movimiento_base(
             id=_id_movimiento(
                 "ARCA", clase, fecha, tipo, punto, numero, cuit, total,
@@ -410,7 +450,13 @@ def analizar_archivo_fiscal(nombre: str, contenido: bytes, categoria_hint: str =
             clase = "emitido"
         else:
             encabezado = texto_inicial.splitlines()[0]
-            clase = "recibido" if "Nro. Doc. Emisor" in encabezado else "emitido"
+            clase = (
+                "recibido"
+                if any(marca in encabezado for marca in (
+                    "Nro. Doc. Emisor", "Nro. Doc. Vendedor", "Nro. Doc. Proveedor",
+                ))
+                else "emitido"
+            )
         resultado.update(
             categoria=f"comprobantes_{clase}s",
             familia=f"comprobantes_{clase}s",

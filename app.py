@@ -25,6 +25,7 @@ from am_hub_fiscal import (
     evaluar_expediente_fiscal,
     id_periodo_fiscal,
     periodo_aplicacion_cm05,
+    preparar_movimientos_periodo,
     resumir_movimientos,
     seleccionar_fuentes_calculo,
 )
@@ -1280,7 +1281,9 @@ def eliminar_postgres_por_id(tabla: str, registro_id: str):
     registrar_actividad("eliminar", tabla, registro_id)
 
 
-def insertar_postgres_registros(tabla: str, registros: list[dict]):
+def insertar_postgres_registros(
+    tabla: str, registros: list[dict], ignorar_conflictos: bool = False,
+):
     """Inserta filas nuevas sin leer ni reescribir la tabla completa."""
     validar_identificador_sql(tabla)
     if tabla not in set(POSTGRES_TABLE_MAP.values()):
@@ -1296,8 +1299,12 @@ def insertar_postgres_registros(tabla: str, registros: list[dict]):
 
     columnas_sql = _sql_cols(columnas)
     valores_sql = ", ".join(f":{columna}" for columna in columnas)
+    conflicto = (
+        ' ON CONFLICT ("id") DO NOTHING'
+        if ignorar_conflictos and "id" in columnas else ""
+    )
     sentencia = sql_text(
-        f'INSERT INTO "{tabla}" ({columnas_sql}) VALUES ({valores_sql})'
+        f'INSERT INTO "{tabla}" ({columnas_sql}) VALUES ({valores_sql}){conflicto}'
     )
     parametros = [
         {
@@ -1308,7 +1315,7 @@ def insertar_postgres_registros(tabla: str, registros: list[dict]):
     ]
 
     with get_postgres_engine().begin() as conn:
-        conn.execute(sentencia, parametros)
+        resultado = conn.execute(sentencia, parametros)
 
     _limpiar_cache_postgres()
     registrar_actividad(
@@ -1316,6 +1323,7 @@ def insertar_postgres_registros(tabla: str, registros: list[dict]):
         tabla,
         detalle=f"{len(registros)} fila(s)",
     )
+    return max(0, int(resultado.rowcount or 0))
 
 
 def guardar_postgres(df: pd.DataFrame, tabla: str):
@@ -14915,9 +14923,14 @@ def guardar_lote_fiscal(cliente, periodo, periodo_id, archivos):
 
     existentes_meta = cargar_archivos_fiscales(periodo_id, cliente)
     hashes_existentes = set(existentes_meta.get("sha256", pd.Series(dtype=str)).astype(str))
+    archivos_por_hash = dict(zip(
+        existentes_meta.get("sha256", pd.Series(dtype=str)).astype(str),
+        existentes_meta.get("id", pd.Series(dtype=str)).astype(str),
+    ))
     preparados = []
     analisis = []
     omitidos = []
+    avisos_periodo = []
     hashes_lote = set(hashes_existentes)
     bytes_lote = 0
     for entrada in archivos:
@@ -14932,13 +14945,38 @@ def guardar_lote_fiscal(cliente, periodo, periodo_id, archivos):
         if len(contenido) > FISCAL_ARCHIVO_MAX_BYTES:
             raise ValueError(f'"{archivo.name}" supera el límite de 15 MB.')
         huella = hashlib.sha256(contenido).hexdigest()
-        if huella in hashes_lote:
+        if huella in hashes_lote and huella not in hashes_existentes:
             omitidos.append(str(archivo.name))
             continue
-        hashes_lote.add(huella)
         resultado = analizar_archivo_fiscal(
             str(archivo.name), contenido, categoria_hint=categoria_hint,
         )
+        movimientos_filtrados, excluidos, duplicados = preparar_movimientos_periodo(
+            resultado.get("movimientos"), periodo,
+        )
+        resultado["movimientos"] = movimientos_filtrados
+        if excluidos:
+            mensaje = (
+                f'"{archivo.name}" contiene {excluidos} movimiento(s) de otro período. '
+                f"No se incluyeron en {periodo}."
+            )
+            resultado.setdefault("advertencias", []).append(mensaje)
+            avisos_periodo.append(mensaje)
+            if movimientos_filtrados.empty:
+                avisos_periodo.append(
+                    f'"{archivo.name}" no contiene movimientos correspondientes a {periodo}. '
+                    "Revisá el período seleccionado o elegí el archivo correcto."
+                )
+        if duplicados:
+            resultado.setdefault("advertencias", []).append(
+                f"Se omitieron {duplicados} movimiento(s) duplicados."
+            )
+        if huella in hashes_existentes:
+            omitidos.append(str(archivo.name))
+            resultado["archivo_id"] = archivos_por_hash.get(huella, "")
+            analisis.append(resultado)
+            continue
+        hashes_lote.add(huella)
         archivo_id = f"FARC-{uuid.uuid4().hex}"
         preparados.append({
             "id": archivo_id,
@@ -14960,13 +14998,13 @@ def guardar_lote_fiscal(cliente, periodo, periodo_id, archivos):
         resultado["archivo_id"] = archivo_id
         analisis.append(resultado)
 
-    if not preparados:
-        return 0, 0, omitidos
+    if not preparados and not analisis:
+        return 0, 0, omitidos, avisos_periodo
 
     asegurar_tablas_fiscales()
-    if usar_postgres():
+    if preparados and usar_postgres():
         insertar_postgres_registros("fiscal_archivos", preparados)
-    else:
+    elif preparados:
         actuales = read_csv(FISCAL_ARCHIVOS_PATH, FISCAL_ARCHIVO_COLUMNAS)
         save_csv(pd.concat([actuales, pd.DataFrame(preparados)], ignore_index=True), FISCAL_ARCHIVOS_PATH)
 
@@ -14993,6 +15031,10 @@ def guardar_lote_fiscal(cliente, periodo, periodo_id, archivos):
             )
             nuevos_movimientos.append({col: registro.get(col, "") for col in MOVIMIENTO_COLUMNAS})
 
+    nuevos_movimientos = list({
+        str(item["id"]): item for item in nuevos_movimientos
+    }.values())
+
     if nuevos_movimientos:
         if usar_postgres():
             existentes = _cargar_tabla_fiscal(
@@ -15000,7 +15042,9 @@ def guardar_lote_fiscal(cliente, periodo, periodo_id, archivos):
             )
             ids_existentes = set(existentes.get("id", pd.Series(dtype=str)).astype(str))
             por_insertar = [item for item in nuevos_movimientos if str(item["id"]) not in ids_existentes]
-            insertar_postgres_registros("fiscal_movimientos", por_insertar)
+            insertar_postgres_registros(
+                "fiscal_movimientos", por_insertar, ignorar_conflictos=True,
+            )
         else:
             actuales = _cargar_tabla_fiscal(FISCAL_MOVIMIENTOS_PATH, MOVIMIENTO_COLUMNAS)
             combinados = pd.concat([actuales, pd.DataFrame(nuevos_movimientos)], ignore_index=True)
@@ -15022,7 +15066,7 @@ def guardar_lote_fiscal(cliente, periodo, periodo_id, archivos):
 
     cargar_archivo_fiscal.clear()
     registrar_actividad("cargar", "liquidaciones", periodo_id, f"{len(preparados)} archivo(s), {len(nuevos_movimientos)} movimiento(s)")
-    return len(preparados), len(nuevos_movimientos), omitidos
+    return len(preparados), len(nuevos_movimientos), omitidos, avisos_periodo
 
 
 def _guardar_movimientos_periodo(periodo_id, movimientos):
@@ -15893,6 +15937,20 @@ def render_liquidaciones_fiscales(cliente_fijo="", modo="admin"):
     if seccion_fiscal == "Documentación":
         st.markdown("#### Cargar documentación del período")
         st.caption("Cada fuente tiene su lugar. Podés completar sólo los bloques que correspondan al cliente y procesar todo en una sola operación.")
+        st.info(
+            "Para calcular automáticamente, usá ZIP/CSV/XLSX/TXT exportados por el organismo. "
+            "Los PDF se guardan como respaldo, pero normalmente no alimentan los importes del papel de trabajo."
+        )
+        flash = st.session_state.pop(f"fiscal_flash_{periodo_id}", None)
+        if flash:
+            st.success(flash.get("exito", "Documentación procesada."))
+            if flash.get("omitidos"):
+                st.info(
+                    "Ya estaban cargados y se verificaron nuevamente: "
+                    + ", ".join(flash["omitidos"])
+                )
+            for aviso in flash.get("avisos", []):
+                st.warning(aviso)
 
         with st.expander("Declarar conceptos sin movimientos", expanded=False):
             st.caption("Usalo sólo cuando el período realmente no tenga información para ese concepto.")
@@ -15943,7 +16001,7 @@ def render_liquidaciones_fiscales(cliente_fijo="", modo="admin"):
         col_ventas, col_compras = st.columns(2)
         with col_ventas:
             st.markdown("##### 2. Ventas")
-            st.caption("Mis Comprobantes emitidos de ARCA, en ZIP, CSV, XLSX o PDF.")
+            st.caption("Exportación de ventas de Portal IVA o Mis Comprobantes emitidos: ZIP/CSV recomendado; también XLSX. PDF sólo como respaldo.")
             archivos_ventas = st.file_uploader(
                 "Comprobantes emitidos",
                 accept_multiple_files=True,
@@ -15952,7 +16010,7 @@ def render_liquidaciones_fiscales(cliente_fijo="", modo="admin"):
             )
         with col_compras:
             st.markdown("##### 3. Compras")
-            st.caption("Mis Comprobantes recibidos de ARCA, en ZIP, CSV, XLSX o PDF.")
+            st.caption("Exportación de compras de Portal IVA o Mis Comprobantes recibidos: ZIP/CSV recomendado; también XLSX. PDF sólo como respaldo.")
             archivos_compras = st.file_uploader(
                 "Comprobantes recibidos",
                 accept_multiple_files=True,
@@ -15963,7 +16021,7 @@ def render_liquidaciones_fiscales(cliente_fijo="", modo="admin"):
         col_iva, col_iibb = st.columns(2)
         with col_iva:
             st.markdown("##### 4. IVA - deducciones")
-            st.caption("Retenciones, percepciones, pagos a cuenta y otros créditos de IVA.")
+            st.caption("Retenciones y percepciones: CSV/TXT/XLS/XLSX exportado por ARCA. PDF sólo como respaldo.")
             archivos_iva = st.file_uploader(
                 "Retenciones y percepciones de IVA",
                 accept_multiple_files=True,
@@ -15972,7 +16030,7 @@ def render_liquidaciones_fiscales(cliente_fijo="", modo="admin"):
             )
         with col_iibb:
             st.markdown("##### 5. IIBB - deducciones")
-            st.caption("Retenciones, percepciones, SIRCREB/SIRCUPA y archivos AGIP/ARBA/SIFERE.")
+            st.caption("Detalle XLS/CSV de AGIP/ARBA/SIFERE recomendado. TXT de importación y PDF quedan como respaldo.")
             archivos_iibb = st.file_uploader(
                 "Deducciones de Ingresos Brutos",
                 accept_multiple_files=True,
@@ -16004,14 +16062,23 @@ def render_liquidaciones_fiscales(cliente_fijo="", modo="admin"):
         if st.button("Procesar documentación", type="primary", disabled=not archivos, key=f"fiscal_procesar_{periodo_id}"):
             try:
                 with st.spinner("Clasificando y guardando documentación..."):
-                    cantidad, movimientos_guardados, omitidos = guardar_lote_fiscal(cliente, periodo, periodo_id, archivos)
-                st.success(f"Se guardaron {cantidad} archivos y {movimientos_guardados} movimientos.")
-                if omitidos:
-                    st.info(f"Ya estaban cargados: {', '.join(omitidos)}")
+                    cantidad, movimientos_guardados, omitidos, avisos = guardar_lote_fiscal(
+                        cliente, periodo, periodo_id, archivos,
+                    )
+                st.session_state[f"fiscal_flash_{periodo_id}"] = {
+                    "exito": f"Se guardaron {cantidad} archivos nuevos y se procesaron {movimientos_guardados} movimientos de {periodo}.",
+                    "omitidos": omitidos,
+                    "avisos": avisos,
+                }
                 st.rerun()
+            except ValueError as exc:
+                st.error(str(exc))
             except Exception as exc:
                 LOGGER.exception("No se pudo procesar el lote fiscal")
-                st.error(f"No se pudo procesar el lote: {exc}")
+                st.error(
+                    "No pudimos guardar la documentación. No se incorporaron movimientos nuevos. "
+                    "Volvé a intentarlo; si el problema continúa, descargá los logs para revisarlo."
+                )
 
         if documentos.empty:
             st.info("Todavía no hay documentación cargada para este período.")

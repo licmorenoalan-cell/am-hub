@@ -18,6 +18,8 @@ from am_hub_fiscal import (
     evaluar_expediente_fiscal,
     id_periodo_fiscal,
     periodo_aplicacion_cm05,
+    periodo_desde_fecha,
+    preparar_movimientos_periodo,
     resumir_movimientos,
     seleccionar_fuentes_calculo,
 )
@@ -31,12 +33,28 @@ class FiscalTests(unittest.TestCase):
         self.assertEqual(primero, segundo)
         self.assertNotEqual(primero, otro)
 
+    def test_lote_excluye_otros_periodos_y_movimientos_duplicados(self):
+        movimientos = pd.DataFrame([
+            {"id": "A", "fecha": "20/05/2025", "importe": "10"},
+            {"id": "A", "fecha": "20/05/2025", "importe": "10"},
+            {"id": "B", "fecha": "14/06/2025", "importe": "20"},
+            {"id": "C", "fecha": "", "importe": "30"},
+        ])
+        filtrados, excluidos, duplicados = preparar_movimientos_periodo(
+            movimientos, "2025-05",
+        )
+        self.assertEqual(set(filtrados["id"]), {"A", "C"})
+        self.assertEqual(excluidos, 1)
+        self.assertEqual(duplicados, 1)
+
     def test_decimal_ar_admite_formatos_usuales(self):
         self.assertEqual(decimal_ar("$ 2.124.917,39"), Decimal("2124917.39"))
         self.assertEqual(decimal_ar("446232.61"), Decimal("446232.61"))
         self.assertEqual(decimal_ar("1,00"), Decimal("1.00"))
         self.assertEqual(periodo_aplicacion_cm05("2026-03"), "2025")
         self.assertEqual(periodo_aplicacion_cm05("2026-04"), "2026")
+        self.assertEqual(periodo_desde_fecha("2025-05-07"), "2025-05")
+        self.assertEqual(periodo_desde_fecha("07/05/2025"), "2025-05")
 
     def test_importa_zip_arca_sin_duplicar_fuentes(self):
         csv = (
@@ -56,6 +74,24 @@ class FiscalTests(unittest.TestCase):
 
         duplicado = analizar_archivo_fiscal("comprobantes_emitidos.csv", csv)
         self.assertEqual(seleccionar_fuentes_calculo([analisis, duplicado]), {0})
+
+    def test_importa_exportacion_compras_portal_iva(self):
+        csv = (
+            '"Fecha de Emisión";"Tipo de Comprobante";"Punto de Venta";'
+            '"Número de Comprobante";"Nro. Doc. Vendedor";"Denominación Vendedor";'
+            '"Importe Total";"Crédito Fiscal Computable";"Total Neto Gravado";"Total IVA"\n'
+            '2025-05-29;1;2;846;30680108346;"AF CONSTRUCCIONES SRL";'
+            '5150285,14;893851,14;4256434,00;893851,10\n'
+        ).encode("utf-8")
+        analisis = analizar_archivo_fiscal(
+            "comprobantes_periodo_compras.csv", csv,
+        )
+        self.assertEqual(analisis["categoria"], "comprobantes_recibidos")
+        movimiento = analisis["movimientos"].iloc[0]
+        self.assertEqual(movimiento["numero"], "846")
+        self.assertEqual(movimiento["cuit_contraparte"], "30-68010834-6")
+        self.assertEqual(movimiento["total"], "5150285.14")
+        self.assertEqual(movimiento["iva"], "893851.14")
 
     def test_calculo_casa_deser_julio(self):
         iva = calcular_iva(
