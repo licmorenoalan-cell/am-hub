@@ -4,6 +4,7 @@ import time
 import base64
 from PIL import Image
 from datetime import date
+from decimal import Decimal
 import pandas as pd
 import altair as alt
 import streamlit as st
@@ -37,6 +38,25 @@ from am_hub_core import (
     validar_identificador_sql,
 )
 from am_hub_i18n import LANGUAGES, normalize_language, translate
+from am_hub_accounting import (
+    ARCHIVO_CONTABLE_COLUMNAS,
+    ASIENTO_COLUMNAS,
+    ASIENTO_LINEA_COLUMNAS,
+    BANCO_MOVIMIENTO_COLUMNAS,
+    CUENTA_COLUMNAS,
+    PERIODO_CONTABLE_COLUMNAS,
+    SUELDO_COLUMNAS,
+    balance_sumas_saldos,
+    crear_asiento_manual,
+    generar_asiento_banco,
+    generar_asiento_sueldos,
+    generar_asientos_comprobantes,
+    generar_asientos_impuestos,
+    extraer_totales_f931,
+    parsear_extracto_bancario,
+    plan_cuentas_inicial,
+    validar_asientos,
+)
 
 
 def current_language() -> str:
@@ -84,6 +104,13 @@ FISCAL_ARCHIVOS_PATH = DATA_DIR / "fiscal_archivos.csv"
 FISCAL_AJUSTES_PATH = DATA_DIR / "fiscal_ajustes.csv"
 FISCAL_IIBB_JURISDICCIONES_PATH = DATA_DIR / "fiscal_iibb_jurisdicciones.csv"
 FISCAL_CM05_COEFICIENTES_PATH = DATA_DIR / "fiscal_cm05_coeficientes.csv"
+CONTABLE_CUENTAS_PATH = DATA_DIR / "contable_cuentas.csv"
+CONTABLE_ASIENTOS_PATH = DATA_DIR / "contable_asientos.csv"
+CONTABLE_LINEAS_PATH = DATA_DIR / "contable_asiento_lineas.csv"
+CONTABLE_BANCOS_PATH = DATA_DIR / "contable_banco_movimientos.csv"
+CONTABLE_SUELDOS_PATH = DATA_DIR / "contable_sueldos.csv"
+CONTABLE_PERIODOS_PATH = DATA_DIR / "contable_periodos.csv"
+CONTABLE_ARCHIVOS_PATH = DATA_DIR / "contable_archivos.csv"
 
 ACTIVIDAD_COLUMNS = [
     "id",
@@ -124,6 +151,13 @@ POSTGRES_TABLE_MAP = {
     "fiscal_ajustes.csv": "fiscal_ajustes",
     "fiscal_iibb_jurisdicciones.csv": "fiscal_iibb_jurisdicciones",
     "fiscal_cm05_coeficientes.csv": "fiscal_cm05_coeficientes",
+    "contable_cuentas.csv": "contable_cuentas",
+    "contable_asientos.csv": "contable_asientos",
+    "contable_asiento_lineas.csv": "contable_asiento_lineas",
+    "contable_banco_movimientos.csv": "contable_banco_movimientos",
+    "contable_sueldos.csv": "contable_sueldos",
+    "contable_periodos.csv": "contable_periodos",
+    "contable_archivos.csv": "contable_archivos",
 }
 
 POSTGRES_KEY_MAP = {
@@ -148,6 +182,13 @@ POSTGRES_KEY_MAP = {
     "fiscal_ajustes": "id",
     "fiscal_iibb_jurisdicciones": "id",
     "fiscal_cm05_coeficientes": "id",
+    "contable_cuentas": "id",
+    "contable_asientos": "id",
+    "contable_asiento_lineas": "id",
+    "contable_banco_movimientos": "id",
+    "contable_sueldos": "id",
+    "contable_periodos": "id",
+    "contable_archivos": "id",
 }
 
 POSTGRES_CORE_TABLES = [
@@ -513,6 +554,7 @@ def _limpiar_cache_postgres():
         "leer_postgres_clientes_cacheada",
         "leer_postgres_fiscal_filtrado_cacheada",
         "cargar_contexto_fiscal_postgres_cacheado",
+        "cargar_contexto_contable_postgres_cacheado",
         "leer_postgres_preview_cacheada",
         "contar_postgres_cacheada",
         "cargar_archivo_reporte",
@@ -652,6 +694,54 @@ def asegurar_tablas_fiscales():
             'CREATE INDEX IF NOT EXISTS "idx_fiscal_cm05_cliente_ejercicio" '
             'ON "fiscal_cm05_coeficientes" ("cliente", "ejercicio")'
         ))
+    return True
+
+
+@st.cache_resource(show_spinner=False)
+def asegurar_tablas_contables():
+    """Crea las tablas del piloto sólo al abrir Contabilidad."""
+    if not usar_postgres():
+        return True
+    definiciones = {
+        "contable_cuentas": CUENTA_COLUMNAS,
+        "contable_asientos": ASIENTO_COLUMNAS,
+        "contable_asiento_lineas": ASIENTO_LINEA_COLUMNAS,
+        "contable_banco_movimientos": BANCO_MOVIMIENTO_COLUMNAS,
+        "contable_sueldos": SUELDO_COLUMNAS,
+        "contable_periodos": PERIODO_CONTABLE_COLUMNAS,
+        "contable_archivos": ARCHIVO_CONTABLE_COLUMNAS,
+    }
+    nombres = list(definiciones)
+    consulta_existentes = sql_text(
+        "SELECT table_name FROM information_schema.tables "
+        "WHERE table_schema = current_schema() AND table_name IN :tablas"
+    ).bindparams(bindparam("tablas", expanding=True))
+    with get_postgres_engine().connect() as conn:
+        existentes = set(conn.execute(consulta_existentes, {"tablas": nombres}).scalars())
+    if existentes == set(nombres):
+        return True
+    with get_postgres_engine().begin() as conn:
+        for tabla, columnas in definiciones.items():
+            partes = [
+                f'"{columna}" TEXT{" PRIMARY KEY" if columna == "id" else ""}'
+                for columna in columnas
+            ]
+            conn.execute(sql_text(
+                f'CREATE TABLE IF NOT EXISTS "{tabla}" ({", ".join(partes)})'
+            ))
+        for tabla, columnas in {
+            "contable_cuentas": '("cliente", "codigo")',
+            "contable_asientos": '("cliente", "periodo")',
+            "contable_asiento_lineas": '("asiento_id")',
+            "contable_banco_movimientos": '("cliente", "periodo")',
+            "contable_sueldos": '("cliente", "periodo")',
+            "contable_periodos": '("cliente", "periodo")',
+            "contable_archivos": '("cliente", "periodo")',
+        }.items():
+            conn.execute(sql_text(
+                f'CREATE INDEX IF NOT EXISTS "idx_{tabla}_busqueda" '
+                f'ON "{tabla}" {columnas}'
+            ))
     return True
 
 
@@ -2903,7 +2993,7 @@ def menu_equipo_por_permisos():
         opciones += ["Plan de trabajo"]
 
     if servicios.get("contabilidad"):
-        opciones += ["Cash Flow", "Plan de trabajo", "Liquidaciones"]
+        opciones += ["Cash Flow", "Plan de trabajo", "Liquidaciones", "Contabilidad"]
 
     if servicios.get("digital"):
         opciones += ["Contenidos", "Materiales", "Campañas", "Reportes"]
@@ -2933,7 +3023,7 @@ def menu_por_servicios_cliente_para_equipo(cliente_nombre):
         opciones += ["Plan de trabajo"]
 
     if servicios.get("contabilidad"):
-        opciones += ["Cash Flow", "Plan de trabajo", "Liquidaciones"]
+        opciones += ["Cash Flow", "Plan de trabajo", "Liquidaciones", "Contabilidad"]
 
     opciones += ["Tareas"]
 
@@ -3063,6 +3153,7 @@ def sidebar():
                 "Cash Flow",
                 "Cuenta corriente",
                 "Liquidaciones",
+                "Contabilidad",
                 "Contenidos",
                 "Materiales",
                 "Campañas",
@@ -15137,6 +15228,490 @@ def guardar_iibb_jurisdicciones(periodo_id, cliente, periodo, calculo):
     save_csv(pd.concat([actuales, pd.DataFrame(filas)], ignore_index=True), FISCAL_IIBB_JURISDICCIONES_PATH)
 
 
+def _contable_cargar(path, columnas, cliente="", periodo=""):
+    asegurar_tablas_contables()
+    df = _cargar_tabla_fiscal(path, columnas, cliente)
+    if periodo and not df.empty and "periodo" in df.columns:
+        df = df[df["periodo"].astype(str).eq(str(periodo))].copy()
+    return normalizar_df_para_columnas(df, columnas)
+
+
+def _contable_upsert_dataframe(path, columnas, df):
+    if df is None or df.empty:
+        return 0
+    asegurar_tablas_contables()
+    tabla = tabla_postgres_para_path(path)
+    base = normalizar_df_para_columnas(df, columnas)
+    if usar_postgres() and tabla:
+        columnas_sql = _sql_cols(columnas)
+        valores_sql = ", ".join(f":{col}" for col in columnas)
+        actualizaciones = ", ".join(
+            f'"{col}" = EXCLUDED."{col}"' for col in columnas if col != "id"
+        )
+        consulta = sql_text(
+            f'INSERT INTO "{tabla}" ({columnas_sql}) VALUES ({valores_sql}) '
+            f'ON CONFLICT ("id") DO UPDATE SET {actualizaciones}'
+        )
+        filas = [
+            {col: _normalizar_valor_postgres(fila.get(col, "")) for col in columnas}
+            for fila in base.to_dict("records")
+        ]
+        with get_postgres_engine().begin() as conn:
+            conn.execute(consulta, filas)
+        _limpiar_cache_postgres()
+        return len(filas)
+    actuales = read_csv(path, columnas)
+    ids = set(base["id"].astype(str))
+    actuales = actuales[~actuales["id"].astype(str).isin(ids)]
+    save_csv(pd.concat([actuales, base], ignore_index=True), path)
+    return len(base)
+
+
+def _contable_eliminar_borradores_generados(cliente, periodo, origenes):
+    asientos = _contable_cargar(CONTABLE_ASIENTOS_PATH, ASIENTO_COLUMNAS, cliente, periodo)
+    borrar = asientos[
+        asientos["estado"].astype(str).eq("Borrador")
+        & asientos["origen"].astype(str).isin(origenes)
+    ]["id"].astype(str).tolist()
+    if not borrar:
+        return
+    if usar_postgres():
+        consulta = sql_text(
+            'DELETE FROM "contable_asiento_lineas" WHERE "asiento_id" IN :ids'
+        ).bindparams(bindparam("ids", expanding=True))
+        consulta_asientos = sql_text(
+            'DELETE FROM "contable_asientos" WHERE "id" IN :ids'
+        ).bindparams(bindparam("ids", expanding=True))
+        with get_postgres_engine().begin() as conn:
+            conn.execute(consulta, {"ids": borrar})
+            conn.execute(consulta_asientos, {"ids": borrar})
+        _limpiar_cache_postgres()
+        return
+    lineas = read_csv(CONTABLE_LINEAS_PATH, ASIENTO_LINEA_COLUMNAS)
+    save_csv(lineas[~lineas["asiento_id"].astype(str).isin(borrar)], CONTABLE_LINEAS_PATH)
+    todos = read_csv(CONTABLE_ASIENTOS_PATH, ASIENTO_COLUMNAS)
+    save_csv(todos[~todos["id"].astype(str).isin(borrar)], CONTABLE_ASIENTOS_PATH)
+
+
+def _contable_guardar_asientos(cabeceras, lineas):
+    if cabeceras is None or cabeceras.empty:
+        return 0
+    existentes = _contable_cargar(CONTABLE_ASIENTOS_PATH, ASIENTO_COLUMNAS)
+    protegidos = set(
+        existentes[~existentes["estado"].astype(str).eq("Borrador")]["id"].astype(str)
+    ) if not existentes.empty else set()
+    cabeceras = cabeceras[~cabeceras["id"].astype(str).isin(protegidos)].copy()
+    if cabeceras.empty:
+        return 0
+    ids = set(cabeceras["id"].astype(str))
+    lineas = lineas[lineas["asiento_id"].astype(str).isin(ids)].copy()
+    _contable_upsert_dataframe(CONTABLE_ASIENTOS_PATH, ASIENTO_COLUMNAS, cabeceras)
+    _contable_upsert_dataframe(CONTABLE_LINEAS_PATH, ASIENTO_LINEA_COLUMNAS, lineas)
+    return len(cabeceras)
+
+
+def _contable_guardar_archivo(cliente, periodo, categoria, archivo):
+    contenido = archivo.getvalue()
+    digest = hashlib.sha256(contenido).hexdigest()
+    registro = {
+        "id": f"CARC-{hashlib.sha256(f'{cliente}|{periodo}|{categoria}|{digest}'.encode()).hexdigest()[:28]}",
+        "cliente": cliente, "periodo": periodo, "categoria": categoria,
+        "nombre": archivo.name, "tipo": getattr(archivo, "type", "") or "application/octet-stream",
+        "tamano": str(len(contenido)), "sha256": digest,
+        "contenido_base64": base64.b64encode(contenido).decode("ascii"),
+        "fecha_carga": _fiscal_timestamp(), "cargado_por": st.session_state.get("username", ""),
+    }
+    return _contable_upsert_dataframe(
+        CONTABLE_ARCHIVOS_PATH, ARCHIVO_CONTABLE_COLUMNAS, pd.DataFrame([registro]),
+    )
+
+
+def _contable_periodo(cliente, periodo):
+    df = _contable_cargar(CONTABLE_PERIODOS_PATH, PERIODO_CONTABLE_COLUMNAS, cliente, periodo)
+    if df.empty:
+        return {
+            "id": f"CPER-{hashlib.sha256(f'{cliente}|{periodo}'.encode()).hexdigest()[:24]}",
+            "cliente": cliente, "periodo": periodo, "estado": "Abierto",
+            "fecha_autorizacion": "", "autorizado_por": "", "observaciones": "",
+            "fecha_actualizacion": "",
+        }
+    return df.iloc[-1].to_dict()
+
+
+def _contable_periodo_vacio(cliente, periodo):
+    return {
+        "id": f"CPER-{hashlib.sha256(f'{cliente}|{periodo}'.encode()).hexdigest()[:24]}",
+        "cliente": cliente, "periodo": periodo, "estado": "Abierto",
+        "fecha_autorizacion": "", "autorizado_por": "", "observaciones": "",
+        "fecha_actualizacion": "",
+    }
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def cargar_contexto_contable_postgres_cacheado(cliente, periodo):
+    """Carga todo el período contable en un único viaje, sin blobs."""
+    definiciones = {
+        "cuentas": ("contable_cuentas", CUENTA_COLUMNAS, '"cliente" = :cliente'),
+        "asientos": ("contable_asientos", ASIENTO_COLUMNAS, '"cliente" = :cliente AND "periodo" = :periodo'),
+        "lineas": ("contable_asiento_lineas", ASIENTO_LINEA_COLUMNAS, '"cliente" = :cliente AND "periodo" = :periodo'),
+        "bancos": ("contable_banco_movimientos", BANCO_MOVIMIENTO_COLUMNAS, '"cliente" = :cliente AND "periodo" = :periodo'),
+        "sueldos": ("contable_sueldos", SUELDO_COLUMNAS, '"cliente" = :cliente AND "periodo" = :periodo'),
+        "periodos": ("contable_periodos", PERIODO_CONTABLE_COLUMNAS, '"cliente" = :cliente AND "periodo" = :periodo'),
+    }
+    bloques = []
+    for alias, (tabla, columnas, condicion) in definiciones.items():
+        bloques.append(
+            "COALESCE((SELECT jsonb_agg(to_jsonb(fila)) FROM ("
+            f"SELECT {_sql_cols(columnas)} FROM \"{tabla}\" WHERE {condicion}"
+            f") AS fila), '[]'::jsonb) AS \"{alias}\""
+        )
+    with get_postgres_engine().connect() as conn:
+        fila = conn.execute(
+            sql_text("SELECT " + ", ".join(bloques)),
+            {"cliente": cliente, "periodo": periodo},
+        ).mappings().one()
+    salida = {}
+    for alias, (_, columnas, _) in definiciones.items():
+        salida[alias] = normalizar_df_para_columnas(pd.DataFrame(fila.get(alias) or []), columnas)
+    return salida
+
+
+def render_contabilidad(cliente_fijo="", modo="admin"):
+    header("Contabilidad", "Asientos automáticos, bancos, sueldos y sumas y saldos")
+    if st.session_state.get("role") not in ["admin_general", "admin", "equipo"]:
+        st.error("Acceso restringido al equipo de AM Consultora.")
+        return
+    asegurar_tablas_contables()
+    clientes = [cliente_fijo] if cliente_fijo else clientes_visibles_para_usuario()
+    if not clientes:
+        st.info("No hay clientes disponibles.")
+        return
+    cliente = cliente_fijo or st.selectbox("Cliente", clientes, key="contable_cliente")
+    p1, p2 = st.columns([1, 2])
+    fecha_periodo = p1.date_input(
+        "Período", value=date.today().replace(day=1), key=f"contable_periodo_{cliente}",
+    )
+    periodo = fecha_periodo.strftime("%Y-%m")
+    if usar_postgres():
+        contexto_contable = cargar_contexto_contable_postgres_cacheado(cliente, periodo)
+        periodos_contables = contexto_contable["periodos"]
+        periodo_contable = _contable_periodo_vacio(cliente, periodo) if periodos_contables.empty else periodos_contables.iloc[-1].to_dict()
+    else:
+        contexto_contable = None
+        periodo_contable = _contable_periodo(cliente, periodo)
+    p2.caption("Estado contable")
+    p2.markdown(f"**{periodo_contable.get('estado', 'Abierto')}** · {periodo}")
+
+    if contexto_contable is not None:
+        cuentas = contexto_contable["cuentas"]
+        asientos = contexto_contable["asientos"]
+        lineas = contexto_contable["lineas"]
+        bancos = contexto_contable["bancos"]
+        sueldos = contexto_contable["sueldos"]
+    else:
+        cuentas = _contable_cargar(CONTABLE_CUENTAS_PATH, CUENTA_COLUMNAS, cliente)
+        asientos = _contable_cargar(CONTABLE_ASIENTOS_PATH, ASIENTO_COLUMNAS, cliente, periodo)
+        lineas = _contable_cargar(CONTABLE_LINEAS_PATH, ASIENTO_LINEA_COLUMNAS, cliente, periodo)
+        bancos = _contable_cargar(CONTABLE_BANCOS_PATH, BANCO_MOVIMIENTO_COLUMNAS, cliente, periodo)
+        sueldos = _contable_cargar(CONTABLE_SUELDOS_PATH, SUELDO_COLUMNAS, cliente, periodo)
+
+    seccion = st.radio(
+        "Sección contable",
+        ["Resumen", "Plan de cuentas", "Generar", "Bancos", "Sueldos y F.931", "Revisión", "Reportes"],
+        horizontal=True, label_visibility="collapsed", key=f"contable_seccion_{cliente}_{periodo}",
+    )
+
+    if seccion == "Resumen":
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("Asientos", len(asientos))
+        m2.metric("Borradores", int(asientos["estado"].astype(str).eq("Borrador").sum()) if not asientos.empty else 0)
+        m3.metric("Banco pendiente", int((~bancos["conciliado"].astype(str).str.casefold().isin(["sí", "si", "true", "1"])).sum()) if not bancos.empty else 0)
+        m4.metric("Liquidaciones sueldos", len(sueldos))
+        if cuentas.empty:
+            st.warning("Primero creá el plan de cuentas del cliente.")
+        else:
+            st.success(f"Plan activo con {len(cuentas)} cuentas. El período está listo para recibir borradores.")
+        st.markdown("#### Circuito del período")
+        estado_fiscal = cargar_periodo_fiscal(cliente, periodo)
+        pasos = pd.DataFrame([
+            {"Etapa": "Plan de cuentas", "Estado": "Listo" if not cuentas.empty else "Pendiente"},
+            {"Etapa": "Papel fiscal", "Estado": "Listo" if str(estado_fiscal.get("ventas_neto", "")).strip() else "Pendiente"},
+            {"Etapa": "Asientos", "Estado": "Listo" if not asientos.empty else "Pendiente"},
+            {"Etapa": "Banco", "Estado": "Listo" if not bancos.empty else "Pendiente"},
+            {"Etapa": "Sueldos / F.931", "Estado": "Listo" if not sueldos.empty else "No cargado"},
+            {"Etapa": "Autorización", "Estado": periodo_contable.get("estado", "Abierto")},
+        ])
+        st.dataframe(pasos, hide_index=True, use_container_width=True)
+
+    if seccion == "Plan de cuentas":
+        st.markdown("#### Plan de cuentas del cliente")
+        if cuentas.empty:
+            st.caption("Se crea un plan base editable. Luego AM HUB reutiliza las mismas cuentas todos los meses.")
+            if st.button("Crear plan de cuentas base", type="primary"):
+                base = plan_cuentas_inicial(cliente, st.session_state.get("username", ""))
+                _contable_upsert_dataframe(CONTABLE_CUENTAS_PATH, CUENTA_COLUMNAS, base)
+                st.success("Plan de cuentas creado.")
+                st.rerun()
+        else:
+            editor = cuentas[["id", "codigo", "nombre", "tipo", "naturaleza", "activa"]].copy()
+            editado = st.data_editor(
+                editor, hide_index=True, use_container_width=True, num_rows="dynamic",
+                disabled=["id"], key=f"editor_cuentas_{cliente}",
+                column_config={
+                    "tipo": st.column_config.SelectboxColumn("Tipo", options=["Activo", "Pasivo", "Patrimonio neto", "Ingresos", "Egresos"]),
+                    "naturaleza": st.column_config.SelectboxColumn("Naturaleza", options=["Deudora", "Acreedora"]),
+                    "activa": st.column_config.SelectboxColumn("Activa", options=["Sí", "No"]),
+                },
+            )
+            if st.button("Guardar plan de cuentas", type="primary"):
+                filas = []
+                for _, fila in editado.iterrows():
+                    if not str(fila.get("codigo", "")).strip() or not str(fila.get("nombre", "")).strip():
+                        continue
+                    valor_id = fila.get("id", "")
+                    cuenta_id = (
+                        "" if pd.isna(valor_id) or str(valor_id).strip().casefold() in {"", "none", "nan"}
+                        else str(valor_id).strip()
+                    ) or f"CTA-{uuid.uuid4().hex}"
+                    filas.append({
+                        **{col: "" for col in CUENTA_COLUMNAS}, **fila.to_dict(),
+                        "id": cuenta_id, "cliente": cliente, "origen": "Edición manual",
+                        "fecha_actualizacion": _fiscal_timestamp(),
+                        "actualizado_por": st.session_state.get("username", ""),
+                    })
+                _contable_upsert_dataframe(CONTABLE_CUENTAS_PATH, CUENTA_COLUMNAS, pd.DataFrame(filas))
+                st.success("Plan actualizado.")
+                st.rerun()
+
+    if seccion == "Generar":
+        st.markdown("#### Generar borradores desde la liquidación fiscal")
+        if cuentas.empty:
+            st.warning("Primero creá el plan de cuentas.")
+        else:
+            registro_fiscal = cargar_periodo_fiscal(cliente, periodo)
+            movimientos_fiscales = _cargar_tabla_fiscal(
+                FISCAL_MOVIMIENTOS_PATH, MOVIMIENTO_COLUMNAS, cliente, registro_fiscal.get("id", ""),
+            )
+            g1, g2, g3 = st.columns(3)
+            g1.metric("Comprobantes disponibles", int(movimientos_fiscales["clase"].astype(str).isin(["emitido", "recibido"]).sum()) if not movimientos_fiscales.empty else 0)
+            g2.metric("Papel fiscal", "Calculado" if str(registro_fiscal.get("ventas_neto", "")).strip() else "Pendiente")
+            g3.metric("Borradores actuales", int(asientos["estado"].astype(str).eq("Borrador").sum()) if not asientos.empty else 0)
+            st.caption("Regenera sólo borradores automáticos. Los asientos autorizados y manuales no se modifican.")
+            if st.button("Generar o actualizar borradores", type="primary", disabled=movimientos_fiscales.empty):
+                _contable_eliminar_borradores_generados(
+                    cliente, periodo, ["Comprobante fiscal", "Papel de trabajo fiscal"],
+                )
+                cab1, lin1 = generar_asientos_comprobantes(
+                    movimientos_fiscales, cliente, periodo, st.session_state.get("username", ""),
+                )
+                cab2, lin2 = generar_asientos_impuestos(
+                    registro_fiscal, cliente, periodo, st.session_state.get("username", ""),
+                )
+                cab = pd.concat([cab1, cab2], ignore_index=True)
+                lin = pd.concat([lin1, lin2], ignore_index=True)
+                cantidad = _contable_guardar_asientos(cab, lin)
+                st.success(f"Se generaron {cantidad} asientos en borrador.")
+                st.rerun()
+
+    if seccion == "Bancos":
+        st.markdown("#### Extractos y conciliación")
+        cuenta_bancaria = st.text_input("Cuenta bancaria", placeholder="Ej.: Banco Galicia CC 1234")
+        archivo_banco = st.file_uploader(
+            "Extracto bancario CSV o XLSX", type=["csv", "xlsx", "xls"], key=f"banco_archivo_{cliente}_{periodo}",
+        )
+        if archivo_banco and cuenta_bancaria:
+            try:
+                vista = parsear_extracto_bancario(
+                    archivo_banco.getvalue(), archivo_banco.name, cliente, cuenta_bancaria,
+                    st.session_state.get("username", ""),
+                )
+                vista = vista[vista["periodo"].astype(str).eq(periodo)].copy()
+                st.caption(f"{len(vista)} movimiento(s) identificados para {periodo}.")
+                st.dataframe(vista[["fecha", "descripcion", "debito", "credito", "saldo"]].head(50), hide_index=True, use_container_width=True)
+                if st.button("Importar movimientos", type="primary", disabled=vista.empty):
+                    existentes = set(bancos["id"].astype(str)) if not bancos.empty else set()
+                    nuevos = vista[~vista["id"].astype(str).isin(existentes)]
+                    _contable_upsert_dataframe(CONTABLE_BANCOS_PATH, BANCO_MOVIMIENTO_COLUMNAS, nuevos)
+                    _contable_guardar_archivo(cliente, periodo, "Extracto bancario", archivo_banco)
+                    st.success(f"Se importaron {len(nuevos)} movimientos nuevos.")
+                    st.rerun()
+            except Exception as exc:
+                st.error(str(exc))
+        pendientes = bancos[~bancos["conciliado"].astype(str).str.casefold().isin(["sí", "si", "true", "1"])].copy() if not bancos.empty else bancos
+        if not pendientes.empty and not cuentas.empty:
+            st.markdown("##### Movimientos pendientes")
+            codigos = cuentas[cuentas["activa"].astype(str).str.casefold().isin(["sí", "si", "true", "1"])]["codigo"].astype(str).tolist()
+            pendientes.insert(0, "contabilizar", False)
+            editor_banco = st.data_editor(
+                pendientes[["contabilizar", "id", "fecha", "descripcion", "debito", "credito", "cuenta_sugerida"]],
+                hide_index=True, use_container_width=True, disabled=["id", "fecha", "descripcion", "debito", "credito"],
+                column_config={
+                    "contabilizar": st.column_config.CheckboxColumn("Generar"),
+                    "cuenta_sugerida": st.column_config.SelectboxColumn("Contrapartida", options=codigos),
+                }, key=f"editor_bancos_{cliente}_{periodo}",
+            )
+            if st.button("Generar asientos bancarios seleccionados", type="primary"):
+                seleccion = editor_banco[editor_banco["contabilizar"] == True]
+                cabeceras, detalles, actualizados = [], [], []
+                mapa = bancos.set_index("id").to_dict("index")
+                for _, fila in seleccion.iterrows():
+                    mov = mapa.get(str(fila["id"]), {})
+                    cab, det = generar_asiento_banco(mov, str(fila["cuenta_sugerida"]), st.session_state.get("username", ""))
+                    cabeceras.append(cab); detalles.extend(det)
+                    mov.update({"conciliado": "Sí", "asiento_id": cab["id"], "cuenta_sugerida": str(fila["cuenta_sugerida"])})
+                    actualizados.append(mov)
+                if cabeceras:
+                    _contable_guardar_asientos(pd.DataFrame(cabeceras), pd.DataFrame(detalles))
+                    _contable_upsert_dataframe(CONTABLE_BANCOS_PATH, BANCO_MOVIMIENTO_COLUMNAS, pd.DataFrame(actualizados))
+                st.success(f"Se generaron {len(cabeceras)} asientos bancarios.")
+                st.rerun()
+
+    if seccion == "Sueldos y F.931":
+        st.markdown("#### Liquidación de sueldos y cargas sociales")
+        archivo_931 = st.file_uploader("F.931 en PDF", type=["pdf"], key=f"f931_{cliente}_{periodo}")
+        sugeridos = {}
+        if archivo_931:
+            try:
+                sugeridos = extraer_totales_f931(archivo_931.getvalue())
+                if sugeridos.get("periodo") and sugeridos["periodo"] != periodo:
+                    st.warning(f"El PDF parece corresponder a {sugeridos['periodo']}, no a {periodo}.")
+                st.success(f"F.931 leído: {sugeridos.get('empleados') or '—'} empleado(s). Revisá los totales antes de guardar.")
+            except Exception as exc:
+                st.error(str(exc))
+        with st.form(f"sueldos_{cliente}_{periodo}"):
+            s1, s2, s3 = st.columns(3)
+            bruto = s1.number_input("Remuneración bruta", min_value=0.0, value=float(decimal_ar(sugeridos.get("remuneracion_bruta", 0))))
+            descuentos = s2.number_input("Aportes/descuentos", min_value=0.0, value=float(decimal_ar(sugeridos.get("descuentos_aportes", 0))))
+            neto = s3.number_input("Neto de sueldos", min_value=0.0, value=float(decimal_ar(sugeridos.get("neto_sueldos", 0))), help="Completar desde el resumen de sueldos; el F.931 no contiene este total.")
+            s4, s5, s6 = st.columns(3)
+            contribuciones = s4.number_input("Contribuciones patronales", min_value=0.0, value=float(decimal_ar(sugeridos.get("contribuciones_patronales", 0))))
+            art = s5.number_input("ART", min_value=0.0, value=float(decimal_ar(sugeridos.get("art", 0))))
+            otros = s6.number_input("Otros costos laborales", min_value=0.0, value=float(decimal_ar(sugeridos.get("otros_costos", 0))))
+            obs_sueldos = st.text_area("Observaciones")
+            guardar_sueldos = st.form_submit_button("Guardar y generar asiento", type="primary")
+        if guardar_sueldos:
+            sid = f"SUE-{hashlib.sha256(f'{cliente}|{periodo}'.encode()).hexdigest()[:24]}"
+            registro_sueldos = {
+                "id": sid, "cliente": cliente, "periodo": periodo,
+                "archivo_nombre": archivo_931.name if archivo_931 else "Carga manual",
+                "remuneracion_bruta": bruto, "descuentos_aportes": descuentos,
+                "neto_sueldos": neto, "contribuciones_patronales": contribuciones,
+                "art": art, "otros_costos": otros, "estado": "Borrador", "asiento_id": "",
+                "observaciones": obs_sueldos, "fecha_carga": _fiscal_timestamp(),
+                "cargado_por": st.session_state.get("username", ""),
+            }
+            cab, det = generar_asiento_sueldos(registro_sueldos, st.session_state.get("username", ""))
+            registro_sueldos["asiento_id"] = cab["id"]
+            _contable_guardar_asientos(pd.DataFrame([cab]), pd.DataFrame(det))
+            _contable_upsert_dataframe(CONTABLE_SUELDOS_PATH, SUELDO_COLUMNAS, pd.DataFrame([registro_sueldos]))
+            if archivo_931:
+                _contable_guardar_archivo(cliente, periodo, "F.931", archivo_931)
+            st.success("Liquidación y asiento de sueldos guardados en borrador.")
+            st.rerun()
+
+    if seccion == "Revisión":
+        st.markdown("#### Revisión y autorización")
+        if not cuentas.empty:
+            with st.expander("Agregar asiento de apertura o ajuste manual", expanded=False):
+                codigos_cuentas = cuentas[
+                    cuentas["activa"].astype(str).str.casefold().isin(["sí", "si", "true", "1"])
+                ]["codigo"].astype(str).tolist()
+                fecha_manual = st.date_input("Fecha del asiento", value=fecha_periodo, key=f"fecha_manual_{cliente}_{periodo}")
+                descripcion_manual = st.text_input("Descripción", placeholder="Ej.: Asiento de apertura", key=f"descripcion_manual_{cliente}_{periodo}")
+                plantilla_manual = pd.DataFrame([
+                    {"cuenta_codigo": codigos_cuentas[0] if codigos_cuentas else "", "debe": 0.0, "haber": 0.0, "detalle": ""},
+                    {"cuenta_codigo": codigos_cuentas[0] if codigos_cuentas else "", "debe": 0.0, "haber": 0.0, "detalle": ""},
+                ])
+                lineas_manuales = st.data_editor(
+                    plantilla_manual, num_rows="dynamic", hide_index=True, use_container_width=True,
+                    key=f"lineas_manual_{cliente}_{periodo}",
+                    column_config={
+                        "cuenta_codigo": st.column_config.SelectboxColumn("Cuenta", options=codigos_cuentas, required=True),
+                        "debe": st.column_config.NumberColumn("Debe", min_value=0.0, format="%.2f"),
+                        "haber": st.column_config.NumberColumn("Haber", min_value=0.0, format="%.2f"),
+                    },
+                )
+                if st.button("Guardar asiento manual", type="primary", key=f"guardar_manual_{cliente}_{periodo}"):
+                    mapa_nombres = dict(zip(cuentas["codigo"].astype(str), cuentas["nombre"].astype(str)))
+                    filas_manual = []
+                    for _, fila in lineas_manuales.iterrows():
+                        if decimal_ar(fila.get("debe", 0)) == 0 and decimal_ar(fila.get("haber", 0)) == 0:
+                            continue
+                        codigo = str(fila.get("cuenta_codigo", ""))
+                        filas_manual.append({
+                            "cuenta_codigo": codigo, "cuenta_nombre": mapa_nombres.get(codigo, ""),
+                            "debe": fila.get("debe", 0), "haber": fila.get("haber", 0),
+                            "detalle": str(fila.get("detalle", "")),
+                        })
+                    try:
+                        cab, det = crear_asiento_manual(
+                            cliente, periodo, fecha_manual.isoformat(), descripcion_manual,
+                            filas_manual, st.session_state.get("username", ""),
+                            "Asiento de apertura" if "apertura" in descripcion_manual.casefold() else "Asiento manual",
+                        )
+                        _contable_guardar_asientos(pd.DataFrame([cab]), pd.DataFrame(det))
+                        st.success("Asiento manual guardado en borrador.")
+                        st.rerun()
+                    except ValueError as exc:
+                        st.error(str(exc))
+        controles = validar_asientos(asientos, lineas)
+        if asientos.empty:
+            st.info("Todavía no hay asientos para revisar.")
+        else:
+            totales = dict(zip(controles["asiento_id"].astype(str), controles["balanceado"]))
+            vista = asientos[["id", "fecha", "tipo", "descripcion", "origen", "estado"]].copy()
+            vista["balanceado"] = vista["id"].astype(str).map(totales).fillna(False)
+            st.dataframe(vista, hide_index=True, use_container_width=True)
+            asiento_id = st.selectbox("Ver asiento", vista["id"].astype(str), format_func=lambda aid: f"{vista.set_index('id').loc[aid, 'fecha']} · {vista.set_index('id').loc[aid, 'descripcion']}")
+            detalle = lineas[lineas["asiento_id"].astype(str).eq(asiento_id)]
+            st.dataframe(detalle[["cuenta_codigo", "cuenta_nombre", "debe", "haber", "tercero_nombre", "comprobante"]], hide_index=True, use_container_width=True)
+            borradores = asientos[asientos["estado"].astype(str).eq("Borrador")]
+            todos_balanceados = not borradores.empty and all(totales.get(aid, False) for aid in borradores["id"].astype(str))
+            st.caption("Autorizar convierte todos los borradores balanceados del período en asientos definitivos y deja registro del usuario y fecha.")
+            if st.button("Autorizar período", type="primary", disabled=not todos_balanceados):
+                ahora = _fiscal_timestamp()
+                actualizados = borradores.copy()
+                actualizados["estado"] = "Autorizado"
+                actualizados["fecha_autorizacion"] = ahora
+                actualizados["autorizado_por"] = st.session_state.get("username", "")
+                _contable_upsert_dataframe(CONTABLE_ASIENTOS_PATH, ASIENTO_COLUMNAS, actualizados)
+                periodo_contable.update({
+                    "estado": "Autorizado", "fecha_autorizacion": ahora,
+                    "autorizado_por": st.session_state.get("username", ""), "fecha_actualizacion": ahora,
+                })
+                _contable_upsert_dataframe(CONTABLE_PERIODOS_PATH, PERIODO_CONTABLE_COLUMNAS, pd.DataFrame([periodo_contable]))
+                st.success("Período autorizado. Los asientos ya integran los reportes definitivos.")
+                st.rerun()
+
+    if seccion == "Reportes":
+        st.markdown("#### Libros y balance")
+        incluir_borradores = st.checkbox("Incluir borradores", value=True)
+        asientos_reporte = asientos if incluir_borradores else asientos[asientos["estado"].astype(str).eq("Autorizado")]
+        ids_reporte = set(asientos_reporte["id"].astype(str))
+        lineas_reporte = lineas[lineas["asiento_id"].astype(str).isin(ids_reporte)].copy()
+        reporte = balance_sumas_saldos(lineas_reporte, cuentas)
+        if reporte.empty:
+            st.info("No hay movimientos para el reporte seleccionado.")
+        else:
+            t1, t2, t3, t4 = st.columns(4)
+            t1.metric("Debe", _fiscal_moneda(sum(reporte["debe"], Decimal("0"))))
+            t2.metric("Haber", _fiscal_moneda(sum(reporte["haber"], Decimal("0"))))
+            t3.metric("Saldo deudor", _fiscal_moneda(sum(reporte["saldo_deudor"], Decimal("0"))))
+            t4.metric("Saldo acreedor", _fiscal_moneda(sum(reporte["saldo_acreedor"], Decimal("0"))))
+            st.markdown("##### Balance de sumas y saldos")
+            st.dataframe(reporte, hide_index=True, use_container_width=True)
+            st.download_button(
+                "Descargar sumas y saldos", reporte.to_csv(index=False).encode("utf-8-sig"),
+                file_name=f"sumas_y_saldos_{cliente}_{periodo}.csv".replace(" ", "_"), mime="text/csv",
+            )
+            with st.expander("Libro Diario"):
+                diario = lineas_reporte.merge(
+                    asientos_reporte[["id", "fecha", "descripcion", "estado"]],
+                    left_on="asiento_id", right_on="id", how="left",
+                )
+                st.dataframe(diario[["fecha", "descripcion", "cuenta_codigo", "cuenta_nombre", "debe", "haber", "estado"]], hide_index=True, use_container_width=True)
+
+
 def render_liquidaciones_fiscales(cliente_fijo="", modo="admin"):
     header("Liquidaciones", "Papeles de trabajo de IVA e Ingresos Brutos")
     if st.session_state.get("role") not in ["admin_general", "admin", "equipo"]:
@@ -15876,6 +16451,11 @@ def main():
                     cliente_fijo=cliente_equipo,
                     modo="equipo",
                 )
+            elif menu == "Contabilidad":
+                render_contabilidad(
+                    cliente_fijo=cliente_equipo,
+                    modo="equipo",
+                )
             elif menu == "Contenidos":
                 render_contenidos_equipo(cliente_equipo)
             elif menu == "Materiales":
@@ -15928,6 +16508,8 @@ def main():
                 render_cuenta_corriente_admin()
             elif menu == "Liquidaciones":
                 render_liquidaciones_fiscales(modo="admin")
+            elif menu == "Contabilidad":
+                render_contabilidad(modo="admin")
             elif menu == "Contenidos":
                 render_contenidos_admin()
             elif menu == "Materiales":
