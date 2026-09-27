@@ -25,7 +25,6 @@ from am_hub_fiscal import (
     evaluar_expediente_fiscal,
     id_periodo_fiscal,
     periodo_aplicacion_cm05,
-    preparar_movimientos_periodo,
     resumir_movimientos,
     seleccionar_fuentes_calculo,
 )
@@ -14914,6 +14913,31 @@ def cargar_coeficientes_cm05(cliente, periodo_aplicacion=""):
     return df
 
 
+def _preparar_movimientos_periodo_carga(movimientos, periodo):
+    """Filtro local para soportar despliegues Streamlit con recarga en caliente."""
+    if movimientos is None or movimientos.empty:
+        return pd.DataFrame(columns=MOVIMIENTO_COLUMNAS), 0, 0
+    base = movimientos.copy()
+    cantidad_original = len(base)
+    base = base.drop_duplicates(subset=["id"], keep="first")
+    duplicados = cantidad_original - len(base)
+
+    def periodo_fecha(valor):
+        texto = str(valor or "").strip()
+        iso = re.match(r"^(20\d{2})-(0[1-9]|1[0-2])-", texto)
+        if iso:
+            return f"{iso.group(1)}-{iso.group(2)}"
+        fecha = pd.to_datetime(texto, errors="coerce", dayfirst=True)
+        return "" if pd.isna(fecha) else fecha.strftime("%Y-%m")
+
+    periodos_fecha = base.get(
+        "fecha", pd.Series("", index=base.index),
+    ).apply(periodo_fecha)
+    fuera = periodos_fecha.ne("") & periodos_fecha.ne(str(periodo))
+    excluidos = int(fuera.sum())
+    return base[~fuera].reset_index(drop=True), excluidos, duplicados
+
+
 def guardar_lote_fiscal(cliente, periodo, periodo_id, archivos):
     archivos = list(archivos or [])
     if not archivos:
@@ -14951,7 +14975,7 @@ def guardar_lote_fiscal(cliente, periodo, periodo_id, archivos):
         resultado = analizar_archivo_fiscal(
             str(archivo.name), contenido, categoria_hint=categoria_hint,
         )
-        movimientos_filtrados, excluidos, duplicados = preparar_movimientos_periodo(
+        movimientos_filtrados, excluidos, duplicados = _preparar_movimientos_periodo_carga(
             resultado.get("movimientos"), periodo,
         )
         resultado["movimientos"] = movimientos_filtrados
