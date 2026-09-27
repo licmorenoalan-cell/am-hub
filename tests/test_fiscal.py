@@ -15,17 +15,52 @@ from am_hub_fiscal import (
     decimal_ar,
     extraer_perfil_constancia_pdf,
     extraer_cm05_pdf,
+    extraer_libro_iva_pdf,
     evaluar_expediente_fiscal,
     id_periodo_fiscal,
     periodo_aplicacion_cm05,
     periodo_desde_fecha,
     preparar_movimientos_periodo,
+    resumir_libro_iva,
     resumir_movimientos,
     seleccionar_fuentes_calculo,
 )
 
 
 class FiscalTests(unittest.TestCase):
+    def test_extrae_libro_iva_casa_deser_mayo_2025(self):
+        ruta = Path(
+            "/Users/alanmoreno/Downloads/"
+            "formulario_2083_300_30718935225_1_1102224462.pdf"
+        )
+        if not ruta.exists():
+            self.skipTest("El F.2083 de Casa Deser no está disponible.")
+        libro = extraer_libro_iva_pdf(ruta.read_bytes())
+        self.assertEqual(libro["periodo"], "2025-05")
+        self.assertEqual(libro["transaccion"], "1102224462")
+        self.assertEqual(decimal_ar(libro["compras"]["neto"]), Decimal("12446734.00"))
+        self.assertEqual(decimal_ar(libro["compras"]["iva"]), Decimal("1753864.14"))
+        self.assertEqual(decimal_ar(libro["compras_sin_credito"]), Decimal("5713791.00"))
+
+    def test_resumen_libro_iva_separa_compras_sin_credito(self):
+        movimientos = pd.DataFrame([
+            {
+                "clase": "recibido", "impuesto": "IVA", "tipo_comprobante": "Factura A",
+                "neto_gravado": "100.00", "iva": "21.00", "otros_tributos": "0",
+                "total": "151.00",
+            },
+            {
+                "clase": "emitido", "impuesto": "IVA", "tipo_comprobante": "Factura A",
+                "neto_gravado": "200.00", "iva": "42.00", "otros_tributos": "0",
+                "total": "242.00",
+            },
+        ])
+        libro = resumir_libro_iva(movimientos)
+        self.assertEqual(libro["compras"]["neto"], Decimal("100.00"))
+        self.assertEqual(libro["compras"]["iva"], Decimal("21.00"))
+        self.assertEqual(libro["compras_sin_credito"], Decimal("30.00"))
+        self.assertEqual(libro["ventas"]["neto"], Decimal("200.00"))
+
     def test_periodo_nuevo_conserva_id_entre_recargas(self):
         primero = id_periodo_fiscal("CASA DESER SRL", "2026-07")
         segundo = id_periodo_fiscal(" casa deser srl ", "2026-07")

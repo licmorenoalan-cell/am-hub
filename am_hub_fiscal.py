@@ -391,6 +391,107 @@ def extraer_cm05_pdf(contenido: bytes) -> dict:
     }
 
 
+def extraer_libro_iva_pdf(contenido: bytes) -> dict:
+    """Extrae el cuadro resumen del Libro IVA Digital F.2083."""
+    try:
+        from pypdf import PdfReader
+
+        pagina = PdfReader(io.BytesIO(contenido)).pages[0]
+        fragmentos = []
+
+        def visitar(texto, _cm, tm, _fuente, _tamano):
+            limpio = " ".join(str(texto or "").split())
+            if limpio:
+                fragmentos.append((float(tm[4]), float(tm[5]), limpio))
+
+        texto = pagina.extract_text(visitor_text=visitar) or ""
+    except Exception:
+        return {}
+    if not re.search(r"\bF\.\s*2083\b", texto, re.I):
+        return {}
+
+    def moneda_en_fila(y_objetivo, x_min=0, x_max=1000):
+        candidatos = [
+            (x, valor) for x, y, valor in fragmentos
+            if abs(y - y_objetivo) <= 7 and x_min <= x < x_max and "$" in valor
+        ]
+        if not candidatos:
+            return "0.00"
+        candidatos.sort(key=lambda item: item[0])
+        return f"{dinero(candidatos[0][1]):.2f}"
+
+    def fila(y):
+        return {
+            "neto": moneda_en_fila(y, 140, 300),
+            "exento": moneda_en_fila(y, 300, 460),
+            "iva": moneda_en_fila(y, 460, 1000),
+        }
+
+    periodo = re.search(r"Periodo:\s*(\d{6})", texto, re.I)
+    transaccion = re.search(r"Nro\. de Transacci[oó]n:\s*(\d+)", texto, re.I)
+    fecha = re.search(r"Fecha de Presentaci[oó]n:\s*([\d/]+)", texto, re.I)
+    cuit = re.search(r"CUIT:\s*([\d-]+)", texto, re.I)
+    return {
+        "periodo": f"{periodo.group(1)[:4]}-{periodo.group(1)[4:]}" if periodo else "",
+        "transaccion": transaccion.group(1) if transaccion else "",
+        "fecha_presentacion": fecha.group(1) if fecha else "",
+        "cuit": cuit.group(1) if cuit else "",
+        "ventas": fila(313.3),
+        "nc_ventas": fila(293.3),
+        "exportaciones": moneda_en_fila(253.3, 140, 300),
+        "compras": fila(173.3),
+        "nc_compras": fila(153.3),
+        "compras_sin_credito": moneda_en_fila(109.3, 140, 300),
+    }
+
+
+def resumir_libro_iva(movimientos: pd.DataFrame) -> dict:
+    """Arma el cuadro tipo F.2083 desde los comprobantes importados."""
+    if movimientos is None or movimientos.empty:
+        movimientos = pd.DataFrame(columns=MOVIMIENTO_COLUMNAS)
+
+    def suma(mascara, columna):
+        return dinero(sum(
+            movimientos.loc[mascara, columna].apply(decimal_ar), Decimal("0")
+        )) if columna in movimientos.columns else Decimal("0.00")
+
+    clase = movimientos.get("clase", pd.Series("", index=movimientos.index)).astype(str)
+    impuesto = movimientos.get("impuesto", pd.Series("", index=movimientos.index)).astype(str)
+    tipo = movimientos.get("tipo_comprobante", pd.Series("", index=movimientos.index)).astype(str)
+    nc = tipo.apply(es_nota_credito)
+    ventas = impuesto.eq("IVA") & clase.eq("emitido")
+    compras = impuesto.eq("IVA") & clase.eq("recibido")
+
+    residuales = movimientos.apply(
+        lambda fila: max(dinero(fila.get("total", 0)) - dinero(fila.get("neto_gravado", 0))
+                         - dinero(fila.get("iva", 0)) - dinero(fila.get("otros_tributos", 0)), Decimal("0")),
+        axis=1,
+    ) if not movimientos.empty else pd.Series(dtype=object)
+
+    def bloque(mascara):
+        return {
+            "neto": suma(mascara, "neto_gravado"),
+            "exento": dinero(sum(residuales.loc[mascara], Decimal("0"))) if len(residuales) else Decimal("0.00"),
+            "iva": suma(mascara, "iva"),
+        }
+
+    compras_operaciones = compras & ~nc
+    compras_no_credito = dinero(sum(
+        residuales.loc[compras_operaciones], Decimal("0"),
+    )) if len(residuales) else Decimal("0.00")
+    compras_bloque = bloque(compras_operaciones)
+    # El F.2083 expone operaciones sin crédito en una fila separada.
+    compras_bloque["exento"] = Decimal("0.00")
+    return {
+        "ventas": bloque(ventas & ~nc),
+        "nc_ventas": bloque(ventas & nc),
+        "exportaciones": Decimal("0.00"),
+        "compras": compras_bloque,
+        "nc_compras": bloque(compras & nc),
+        "compras_sin_credito": compras_no_credito,
+    }
+
+
 def analizar_archivo_fiscal(nombre: str, contenido: bytes, categoria_hint: str = "") -> dict:
     """Clasifica un archivo fiscal y extrae movimientos cuando corresponde."""
     nombre_bajo = Path(nombre).name.casefold()
@@ -421,7 +522,13 @@ def analizar_archivo_fiscal(nombre: str, contenido: bytes, categoria_hint: str =
     if nombre_bajo.endswith(".pdf"):
         resultado["perfil"] = extraer_perfil_constancia_pdf(contenido)
         cm05 = extraer_cm05_pdf(contenido)
-        if cm05:
+        libro_iva = extraer_libro_iva_pdf(contenido)
+        if libro_iva:
+            resultado.update(
+                categoria="libro_iva_digital", familia="libro_iva_digital",
+                prioridad=100, libro_iva=libro_iva,
+            )
+        elif cm05:
             resultado.update(
                 categoria="cm05_anual", familia="cm05_anual",
                 prioridad=100, cm05=cm05,

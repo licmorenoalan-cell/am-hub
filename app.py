@@ -14,6 +14,7 @@ import logging
 import html
 import uuid
 import hashlib
+import json
 
 from am_hub_fiscal import (
     MOVIMIENTO_COLUMNAS,
@@ -105,6 +106,7 @@ FISCAL_ARCHIVOS_PATH = DATA_DIR / "fiscal_archivos.csv"
 FISCAL_AJUSTES_PATH = DATA_DIR / "fiscal_ajustes.csv"
 FISCAL_IIBB_JURISDICCIONES_PATH = DATA_DIR / "fiscal_iibb_jurisdicciones.csv"
 FISCAL_CM05_COEFICIENTES_PATH = DATA_DIR / "fiscal_cm05_coeficientes.csv"
+FISCAL_PAPELES_PATH = DATA_DIR / "fiscal_papeles.csv"
 CONTABLE_CUENTAS_PATH = DATA_DIR / "contable_cuentas.csv"
 CONTABLE_ASIENTOS_PATH = DATA_DIR / "contable_asientos.csv"
 CONTABLE_LINEAS_PATH = DATA_DIR / "contable_asiento_lineas.csv"
@@ -152,6 +154,7 @@ POSTGRES_TABLE_MAP = {
     "fiscal_ajustes.csv": "fiscal_ajustes",
     "fiscal_iibb_jurisdicciones.csv": "fiscal_iibb_jurisdicciones",
     "fiscal_cm05_coeficientes.csv": "fiscal_cm05_coeficientes",
+    "fiscal_papeles.csv": "fiscal_papeles",
     "contable_cuentas.csv": "contable_cuentas",
     "contable_asientos.csv": "contable_asientos",
     "contable_asiento_lineas.csv": "contable_asiento_lineas",
@@ -183,6 +186,7 @@ POSTGRES_KEY_MAP = {
     "fiscal_ajustes": "id",
     "fiscal_iibb_jurisdicciones": "id",
     "fiscal_cm05_coeficientes": "id",
+    "fiscal_papeles": "id",
     "contable_cuentas": "id",
     "contable_asientos": "id",
     "contable_asiento_lineas": "id",
@@ -618,7 +622,7 @@ FISCAL_PERIODO_COLUMNAS = [
 FISCAL_ARCHIVO_COLUMNAS = [
     "id", "periodo_id", "cliente", "periodo", "categoria", "familia", "nombre",
     "tipo", "tamano", "sha256", "contenido_base64", "visible_cliente",
-    "fecha_carga", "cargado_por", "advertencias",
+    "fecha_carga", "cargado_por", "advertencias", "resumen_json",
 ]
 FISCAL_AJUSTE_COLUMNAS = [
     "id", "periodo_id", "cliente", "periodo", "impuesto", "concepto",
@@ -636,6 +640,11 @@ FISCAL_CM05_COEFICIENTE_COLUMNAS = [
     "id", "cliente", "cuit", "ejercicio", "periodo_aplicacion", "codigo",
     "jurisdiccion", "coeficiente_ingresos", "coeficiente_gastos",
     "coeficiente_unificado", "archivo_id", "fecha_carga", "cargado_por",
+]
+FISCAL_PAPEL_COLUMNAS = [
+    "id", "periodo_id", "cliente", "periodo", "impuesto", "version",
+    "estado", "datos_json", "fuente_oficial_json", "fecha_guardado",
+    "guardado_por", "fecha_autorizacion", "autorizado_por", "observaciones",
 ]
 FISCAL_ARCHIVO_MAX_BYTES = 15 * 1024 * 1024
 FISCAL_ARCHIVOS_MAX_POR_CARGA = 24
@@ -656,6 +665,7 @@ def asegurar_tablas_fiscales():
         "fiscal_ajustes": FISCAL_AJUSTE_COLUMNAS,
         "fiscal_iibb_jurisdicciones": FISCAL_IIBB_JURISDICCION_COLUMNAS,
         "fiscal_cm05_coeficientes": FISCAL_CM05_COEFICIENTE_COLUMNAS,
+        "fiscal_papeles": FISCAL_PAPEL_COLUMNAS,
     }
     with get_postgres_engine().begin() as conn:
         for tabla, columnas in definiciones.items():
@@ -676,6 +686,10 @@ def asegurar_tablas_fiscales():
                 f'ADD COLUMN IF NOT EXISTS "{columna}" TEXT'
             ))
         conn.execute(sql_text(
+            'ALTER TABLE "fiscal_archivos" '
+            'ADD COLUMN IF NOT EXISTS "resumen_json" TEXT'
+        ))
+        conn.execute(sql_text(
             'CREATE INDEX IF NOT EXISTS "idx_fiscal_periodos_cliente" '
             'ON "fiscal_periodos" ("cliente", "periodo")'
         ))
@@ -694,6 +708,10 @@ def asegurar_tablas_fiscales():
         conn.execute(sql_text(
             'CREATE INDEX IF NOT EXISTS "idx_fiscal_cm05_cliente_ejercicio" '
             'ON "fiscal_cm05_coeficientes" ("cliente", "ejercicio")'
+        ))
+        conn.execute(sql_text(
+            'CREATE INDEX IF NOT EXISTS "idx_fiscal_papeles_periodo" '
+            'ON "fiscal_papeles" ("periodo_id", "impuesto", "version")'
         ))
     return True
 
@@ -14646,6 +14664,7 @@ FISCAL_CATEGORIA_ETIQUETAS = {
     "constancia_arca": "Constancia ARCA",
     "constancia_iibb": "Constancia IIBB",
     "ddjj_iva": "DDJJ IVA",
+    "libro_iva_digital": "Libro IVA Digital F.2083",
     "ddjj_iibb": "DDJJ IIBB",
     "vep": "VEP",
     "respaldo": "Otro respaldo",
@@ -14768,6 +14787,134 @@ def _upsert_tabla_fiscal(path, columnas, registro):
     save_csv(pd.concat([df, nuevo], ignore_index=True), path)
 
 
+def _json_fiscal(valor):
+    """Serializa snapshots fiscales sin perder importes Decimal ni fechas."""
+    return json.dumps(valor, ensure_ascii=False, default=str)
+
+
+def cargar_papeles_fiscales(periodo_id, cliente="", impuesto=""):
+    papeles = _cargar_tabla_fiscal(
+        FISCAL_PAPELES_PATH, FISCAL_PAPEL_COLUMNAS, cliente, periodo_id,
+    )
+    if impuesto and not papeles.empty:
+        papeles = papeles[papeles["impuesto"].astype(str).eq(str(impuesto))].copy()
+    if not papeles.empty:
+        papeles["version_num"] = pd.to_numeric(papeles["version"], errors="coerce").fillna(0)
+        papeles = papeles.sort_values(["version_num", "fecha_guardado"], ascending=False)
+    return papeles
+
+
+def guardar_version_papel_fiscal(
+    cliente, periodo, periodo_id, impuesto, datos, fuente_oficial=None,
+    observaciones="",
+):
+    existentes = cargar_papeles_fiscales(periodo_id, cliente, impuesto)
+    version = 1
+    if not existentes.empty:
+        version = int(pd.to_numeric(existentes["version"], errors="coerce").fillna(0).max()) + 1
+    registro = {
+        "id": f"FPAP-{uuid.uuid4().hex}", "periodo_id": str(periodo_id),
+        "cliente": str(cliente), "periodo": str(periodo), "impuesto": str(impuesto),
+        "version": str(version), "estado": "Borrador", "datos_json": _json_fiscal(datos),
+        "fuente_oficial_json": _json_fiscal(fuente_oficial or {}),
+        "fecha_guardado": _fiscal_timestamp(),
+        "guardado_por": st.session_state.get("username", ""),
+        "fecha_autorizacion": "", "autorizado_por": "",
+        "observaciones": str(observaciones or ""),
+    }
+    _upsert_tabla_fiscal(FISCAL_PAPELES_PATH, FISCAL_PAPEL_COLUMNAS, registro)
+    return registro
+
+
+def autorizar_papel_fiscal(papel_id, periodo_id, cliente, impuesto):
+    """Deja una única versión autorizada por impuesto y período."""
+    papeles = cargar_papeles_fiscales(periodo_id, cliente, impuesto)
+    if papeles.empty or str(papel_id) not in set(papeles["id"].astype(str)):
+        raise ValueError("No se encontró el papel de trabajo seleccionado.")
+    usuario = st.session_state.get("username", "")
+    ahora = _fiscal_timestamp()
+    for _, fila in papeles.iterrows():
+        registro = {col: fila.get(col, "") for col in FISCAL_PAPEL_COLUMNAS}
+        if str(registro["id"]) == str(papel_id):
+            registro.update(
+                estado="Autorizado", fecha_autorizacion=ahora,
+                autorizado_por=usuario,
+            )
+        elif str(registro.get("estado", "")) == "Autorizado":
+            registro.update(estado="Reemplazado", fecha_autorizacion="", autorizado_por="")
+        _upsert_tabla_fiscal(FISCAL_PAPELES_PATH, FISCAL_PAPEL_COLUMNAS, registro)
+
+
+def ultimo_papel_autorizado(periodo_id, cliente, impuesto):
+    papeles = cargar_papeles_fiscales(periodo_id, cliente, impuesto)
+    if papeles.empty:
+        return {}
+    autorizados = papeles[papeles["estado"].astype(str).eq("Autorizado")]
+    return autorizados.iloc[0].to_dict() if not autorizados.empty else {}
+
+
+def _resumen_libro_iva_local(movimientos):
+    """Cuadro comparable con el F.2083 sin depender de imports nuevos al recargar."""
+    if movimientos is None or movimientos.empty:
+        movimientos = pd.DataFrame(columns=MOVIMIENTO_COLUMNAS)
+    base = movimientos.copy()
+    clase = base.get("clase", pd.Series("", index=base.index)).astype(str)
+    impuesto = base.get("impuesto", pd.Series("", index=base.index)).astype(str)
+    tipo = base.get("tipo_comprobante", pd.Series("", index=base.index)).astype(str).str.casefold()
+    es_nc = tipo.str.contains(r"nota\s+de\s+cr[eé]dito|\bnc\b", regex=True, na=False)
+    ventas = impuesto.eq("IVA") & clase.eq("emitido")
+    compras = impuesto.eq("IVA") & clase.eq("recibido")
+
+    def suma(mascara, columna):
+        if columna not in base.columns:
+            return Decimal("0.00")
+        return sum((decimal_ar(v) for v in base.loc[mascara, columna]), Decimal("0.00"))
+
+    residual = base.apply(
+        lambda fila: max(
+            decimal_ar(fila.get("total", 0)) - decimal_ar(fila.get("neto_gravado", 0))
+            - decimal_ar(fila.get("iva", 0)) - decimal_ar(fila.get("otros_tributos", 0)),
+            Decimal("0.00"),
+        ), axis=1,
+    ) if not base.empty else pd.Series(dtype=object)
+
+    def bloque(mascara, exento=True):
+        return {
+            "neto": suma(mascara, "neto_gravado"),
+            "exento": sum(residual.loc[mascara], Decimal("0.00")) if exento and len(residual) else Decimal("0.00"),
+            "iva": suma(mascara, "iva"),
+        }
+
+    compras_operaciones = compras & ~es_nc
+    return {
+        "ventas": bloque(ventas & ~es_nc),
+        "nc_ventas": bloque(ventas & es_nc),
+        "exportaciones": Decimal("0.00"),
+        "compras": bloque(compras_operaciones, exento=False),
+        "nc_compras": bloque(compras & es_nc),
+        "compras_sin_credito": (
+            sum(residual.loc[compras_operaciones], Decimal("0.00")) if len(residual) else Decimal("0.00")
+        ),
+    }
+
+
+def _actualizar_resumen_archivo_fiscal(archivo_id, resumen):
+    texto_resumen = _json_fiscal(resumen)
+    if usar_postgres():
+        with get_postgres_engine().begin() as conn:
+            conn.execute(
+                sql_text('UPDATE "fiscal_archivos" SET "resumen_json" = :resumen WHERE "id" = :id'),
+                {"resumen": texto_resumen, "id": str(archivo_id)},
+            )
+        _limpiar_cache_postgres()
+        return
+    archivos = read_csv(FISCAL_ARCHIVOS_PATH, FISCAL_ARCHIVO_COLUMNAS)
+    mascara = archivos["id"].astype(str).eq(str(archivo_id))
+    if mascara.any():
+        archivos.loc[mascara, "resumen_json"] = texto_resumen
+        save_csv(archivos, FISCAL_ARCHIVOS_PATH)
+
+
 def cargar_perfil_fiscal(cliente):
     df = _cargar_tabla_fiscal(FISCAL_CLIENTES_PATH, FISCAL_CLIENTE_COLUMNAS, cliente)
     if df.empty:
@@ -14804,6 +14951,7 @@ def cargar_archivos_fiscales(periodo_id, cliente=""):
                     'SELECT "id", "periodo_id", "cliente", "periodo", "categoria", '
                     '"familia", "nombre", "tipo", "tamano", "sha256", '
                     '"visible_cliente", "fecha_carga", "cargado_por", "advertencias" '
+                    ', "resumen_json" '
                     'FROM "fiscal_archivos" WHERE "periodo_id" = :periodo_id '
                     'ORDER BY "fecha_carga" DESC'
                 ),
@@ -14998,6 +15146,10 @@ def guardar_lote_fiscal(cliente, periodo, periodo_id, archivos):
         if huella in hashes_existentes:
             omitidos.append(str(archivo.name))
             resultado["archivo_id"] = archivos_por_hash.get(huella, "")
+            if resultado.get("libro_iva") and resultado["archivo_id"]:
+                _actualizar_resumen_archivo_fiscal(
+                    resultado["archivo_id"], resultado["libro_iva"],
+                )
             analisis.append(resultado)
             continue
         hashes_lote.add(huella)
@@ -15018,6 +15170,9 @@ def guardar_lote_fiscal(cliente, periodo, periodo_id, archivos):
             "fecha_carga": _fiscal_timestamp(),
             "cargado_por": st.session_state.get("username", ""),
             "advertencias": " ".join(resultado.get("advertencias", [])),
+            "resumen_json": json.dumps(
+                resultado.get("libro_iva", {}), ensure_ascii=False,
+            ),
         })
         resultado["archivo_id"] = archivo_id
         analisis.append(resultado)
@@ -15558,6 +15713,12 @@ def render_contabilidad(cliente_fijo="", modo="admin"):
             st.warning("Primero creá el plan de cuentas.")
         else:
             registro_fiscal = cargar_periodo_fiscal(cliente, periodo)
+            papel_iva_autorizado = ultimo_papel_autorizado(
+                registro_fiscal.get("id", ""), cliente, "IVA",
+            )
+            papel_iibb_autorizado = ultimo_papel_autorizado(
+                registro_fiscal.get("id", ""), cliente, "IIBB",
+            )
             movimientos_fiscales = _cargar_tabla_fiscal(
                 FISCAL_MOVIMIENTOS_PATH, MOVIMIENTO_COLUMNAS, cliente, registro_fiscal.get("id", ""),
             )
@@ -15565,7 +15726,13 @@ def render_contabilidad(cliente_fijo="", modo="admin"):
             g1.metric("Comprobantes disponibles", int(movimientos_fiscales["clase"].astype(str).isin(["emitido", "recibido"]).sum()) if not movimientos_fiscales.empty else 0)
             g2.metric("Papel fiscal", "Calculado" if str(registro_fiscal.get("ventas_neto", "")).strip() else "Pendiente")
             g3.metric("Borradores actuales", int(asientos["estado"].astype(str).eq("Borrador").sum()) if not asientos.empty else 0)
-            st.caption("Regenera sólo borradores automáticos. Los asientos autorizados y manuales no se modifican.")
+            st.caption(
+                "Regenera comprobantes automáticamente. Las liquidaciones impositivas sólo se contabilizan "
+                "cuando su papel está autorizado; los asientos autorizados y manuales no se modifican."
+            )
+            a1, a2 = st.columns(2)
+            a1.info("IVA: autorizado" if papel_iva_autorizado else "IVA: pendiente de autorización")
+            a2.info("IIBB: autorizado" if papel_iibb_autorizado else "IIBB: pendiente de autorización")
             if st.button("Generar o actualizar borradores", type="primary", disabled=movimientos_fiscales.empty):
                 _contable_eliminar_borradores_generados(
                     cliente, periodo, ["Comprobante fiscal", "Papel de trabajo fiscal"],
@@ -15573,8 +15740,21 @@ def render_contabilidad(cliente_fijo="", modo="admin"):
                 cab1, lin1 = generar_asientos_comprobantes(
                     movimientos_fiscales, cliente, periodo, st.session_state.get("username", ""),
                 )
+                registro_contable = dict(registro_fiscal)
+                if not papel_iva_autorizado:
+                    for campo in [
+                        "iva_debito", "iva_credito", "iva_saldo_tecnico_anterior",
+                        "iva_saldo_tecnico_favor", "iva_saldo_pagar", "iva_uso_libre",
+                    ]:
+                        registro_contable[campo] = "0"
+                if not papel_iibb_autorizado:
+                    for campo in [
+                        "iibb_determinado", "iibb_saldo_pagar", "iibb_saldo_favor",
+                        "iibb_retenciones", "iibb_percepciones",
+                    ]:
+                        registro_contable[campo] = "0"
                 cab2, lin2 = generar_asientos_impuestos(
-                    registro_fiscal, cliente, periodo, st.session_state.get("username", ""),
+                    registro_contable, cliente, periodo, st.session_state.get("username", ""),
                 )
                 cab = pd.concat([cab1, cab2], ignore_index=True)
                 lin = pd.concat([lin1, lin2], ignore_index=True)
@@ -15779,6 +15959,365 @@ def render_contabilidad(cliente_fijo="", modo="admin"):
                     left_on="asiento_id", right_on="id", how="left",
                 )
                 st.dataframe(diario[["fecha", "descripcion", "cuenta_codigo", "cuenta_nombre", "debe", "haber", "estado"]], hide_index=True, use_container_width=True)
+
+
+def _cargar_fuente_libro_iva(documentos, periodo_id, periodo):
+    if documentos is None or documentos.empty:
+        return {}, {}
+    candidatos = documentos[
+        documentos["categoria"].astype(str).eq("libro_iva_digital")
+    ].copy()
+    if candidatos.empty:
+        return {}, {}
+    candidatos = candidatos.sort_values("fecha_carga", ascending=False)
+    for _, documento in candidatos.iterrows():
+        resumen = {}
+        try:
+            resumen = json.loads(str(documento.get("resumen_json", "") or "{}"))
+        except (TypeError, ValueError, json.JSONDecodeError):
+            resumen = {}
+        if not resumen:
+            dato = cargar_archivo_fiscal(str(documento["id"]), periodo_id)
+            contenido = str(dato.get("contenido_base64", ""))
+            if contenido:
+                try:
+                    import am_hub_fiscal as fiscal_motor
+                    extractor = getattr(fiscal_motor, "extraer_libro_iva_pdf", None)
+                    resumen = extractor(base64.b64decode(contenido)) if extractor else {}
+                    if resumen:
+                        _actualizar_resumen_archivo_fiscal(documento["id"], resumen)
+                except Exception:
+                    LOGGER.exception("No se pudo leer el Libro IVA Digital")
+        if resumen and str(resumen.get("periodo", "")) == str(periodo):
+            return resumen, documento.to_dict()
+    return {}, {}
+
+
+def _filas_libro_iva(resumen_libro):
+    ventas = resumen_libro.get("ventas", {})
+    nc_ventas = resumen_libro.get("nc_ventas", {})
+    compras = resumen_libro.get("compras", {})
+    nc_compras = resumen_libro.get("nc_compras", {})
+    return pd.DataFrame([
+        {"Sección": "Ventas", "Concepto": "Operaciones de venta", "Neto gravado": decimal_ar(ventas.get("neto", 0)), "Exento / no gravado": decimal_ar(ventas.get("exento", 0)), "IVA": decimal_ar(ventas.get("iva", 0))},
+        {"Sección": "Ventas", "Concepto": "Notas de crédito de ventas", "Neto gravado": decimal_ar(nc_ventas.get("neto", 0)), "Exento / no gravado": decimal_ar(nc_ventas.get("exento", 0)), "IVA": decimal_ar(nc_ventas.get("iva", 0))},
+        {"Sección": "Ventas", "Concepto": "Exportaciones", "Neto gravado": decimal_ar(resumen_libro.get("exportaciones", 0)), "Exento / no gravado": Decimal("0"), "IVA": Decimal("0")},
+        {"Sección": "Compras", "Concepto": "Operaciones de compra", "Neto gravado": decimal_ar(compras.get("neto", 0)), "Exento / no gravado": decimal_ar(compras.get("exento", 0)), "IVA": decimal_ar(compras.get("iva", 0))},
+        {"Sección": "Compras", "Concepto": "Notas de crédito de compras", "Neto gravado": decimal_ar(nc_compras.get("neto", 0)), "Exento / no gravado": decimal_ar(nc_compras.get("exento", 0)), "IVA": decimal_ar(nc_compras.get("iva", 0))},
+        {"Sección": "Compras", "Concepto": "Operaciones sin crédito fiscal", "Neto gravado": decimal_ar(resumen_libro.get("compras_sin_credito", 0)), "Exento / no gravado": Decimal("0"), "IVA": Decimal("0")},
+    ])
+
+
+def _mostrar_cuadro_libro_iva(titulo, resumen_libro):
+    st.markdown(f"##### {titulo}")
+    tabla = _filas_libro_iva(resumen_libro).copy()
+    for columna in ["Neto gravado", "Exento / no gravado", "IVA"]:
+        tabla[columna] = tabla[columna].apply(_fiscal_moneda)
+    st.dataframe(tabla, hide_index=True, use_container_width=True)
+
+
+def _mostrar_comparacion_libro_iva(calculado, oficial):
+    filas_calculo = _filas_libro_iva(calculado)
+    filas_oficial = _filas_libro_iva(oficial)
+    filas = []
+    for indice in range(len(filas_calculo)):
+        for campo in ["Neto gravado", "Exento / no gravado", "IVA"]:
+            am_hub = decimal_ar(filas_calculo.iloc[indice][campo])
+            organismo = decimal_ar(filas_oficial.iloc[indice][campo])
+            if am_hub or organismo:
+                filas.append({
+                    "Concepto": filas_calculo.iloc[indice]["Concepto"],
+                    "Campo": campo, "AM HUB": _fiscal_moneda(am_hub),
+                    "Libro IVA": _fiscal_moneda(organismo),
+                    "Diferencia": _fiscal_moneda(am_hub - organismo),
+                    "Control": "Coincide" if abs(am_hub - organismo) < Decimal("0.01") else "Revisar",
+                })
+    comparacion = pd.DataFrame(filas)
+    if comparacion.empty or comparacion["Control"].eq("Coincide").all():
+        st.success("El cuadro de AM HUB coincide con el Libro IVA Digital cargado.")
+    else:
+        st.warning("Hay diferencias con el Libro IVA Digital. Revisalas antes de autorizar.")
+    st.dataframe(comparacion, hide_index=True, use_container_width=True)
+
+
+def _render_papel_iva(cliente, periodo, periodo_id, registro, movimientos, documentos):
+    calculado = _resumen_libro_iva_local(movimientos)
+    oficial, documento_oficial = _cargar_fuente_libro_iva(documentos, periodo_id, periodo)
+    papeles = cargar_papeles_fiscales(periodo_id, cliente, "IVA")
+    ultimo = papeles.iloc[0].to_dict() if not papeles.empty else {}
+    st.markdown("#### Papel de trabajo IVA")
+    st.caption(
+        f"{periodo} · " + (
+            f"última versión v{ultimo.get('version')} · {ultimo.get('estado')}"
+            if ultimo else "todavía sin versión guardada"
+        )
+    )
+    _mostrar_cuadro_libro_iva("Libro IVA calculado por AM HUB", calculado)
+    if oficial:
+        with st.expander("Contraste con Libro IVA Digital F.2083", expanded=True):
+            st.caption(
+                f"Fuente: {documento_oficial.get('nombre', '')} · transacción {oficial.get('transaccion', '—')}"
+            )
+            _mostrar_comparacion_libro_iva(calculado, oficial)
+    else:
+        st.info("Cargá el F.2083 en Documentación para contrastar este cuadro con el Libro IVA Digital oficial.")
+
+    percepciones_iva = movimientos[
+        movimientos["impuesto"].astype(str).eq("IVA")
+        & movimientos["clase"].astype(str).eq("percepcion")
+    ].copy() if not movimientos.empty else pd.DataFrame()
+    if not percepciones_iva.empty:
+        with st.expander("Revisar retenciones y percepciones de IVA", expanded=False):
+            editor = percepciones_iva[["id", "computado", "fecha", "cuit_contraparte", "regimen", "importe"]].copy()
+            editor["computado"] = editor["computado"].astype(str).str.casefold().isin(["sí", "si", "true", "1"])
+            editado = st.data_editor(
+                editor, hide_index=True,
+                disabled=["id", "fecha", "cuit_contraparte", "regimen", "importe"],
+                column_config={"computado": st.column_config.CheckboxColumn("Computar")},
+                use_container_width=True, key=f"fiscal_percepciones_{periodo_id}",
+            )
+            if st.button("Guardar selección", key=f"guardar_computado_{periodo_id}"):
+                mapa = dict(zip(editado["id"].astype(str), editado["computado"]))
+                movimientos["computado"] = movimientos.apply(
+                    lambda fila: ("Sí" if mapa[str(fila["id"])] else "No") if str(fila["id"]) in mapa else fila["computado"], axis=1,
+                )
+                _guardar_movimientos_periodo(periodo_id, movimientos)
+                st.success("Selección actualizada.")
+                st.rerun()
+
+    with st.form(f"papel_iva_{periodo_id}"):
+        i1, i2, i3 = st.columns(3)
+        tecnico_anterior = i1.number_input("Saldo técnico anterior", value=float(decimal_ar(registro.get("iva_saldo_tecnico_anterior", 0))), step=100.0)
+        libre_anterior = i2.number_input("Saldo libre anterior", value=float(decimal_ar(registro.get("iva_saldo_libre_anterior", 0))), step=100.0)
+        iva_ajustes = i3.number_input("Otros créditos/ajustes", value=float(decimal_ar(registro.get("iva_ajustes", 0))), step=100.0)
+        i4, i5 = st.columns(2)
+        uso_libre = i4.number_input("Saldo libre a utilizar", value=float(decimal_ar(registro.get("iva_uso_libre", 0))), step=100.0)
+        venc_iva = i5.date_input("Vencimiento IVA", value=_fecha_fiscal(registro.get("fecha_vencimiento_iva", "")))
+        responsable = st.text_input("Responsable interno", value=str(registro.get("responsable", "")))
+        observaciones = st.text_area("Observaciones IVA", value=str(registro.get("observaciones", "")), height=80)
+        guardar = st.form_submit_button("Calcular y guardar nueva versión IVA", type="primary")
+    if guardar:
+        resumen_actual = resumir_movimientos(movimientos)
+        iva_calc = calcular_iva(
+            resumen_actual["iva_debito"], resumen_actual["iva_credito"],
+            tecnico_anterior, libre_anterior, resumen_actual["iva_percepciones"],
+            iva_ajustes, uso_libre,
+        )
+        _registrar_ajuste_fiscal(
+            periodo_id, cliente, periodo, "IVA", "Otros créditos/ajustes IVA",
+            registro.get("iva_ajustes", 0), iva_ajustes, observaciones,
+        )
+        registro.update({
+            "ventas_neto": resumen_actual["ventas_neto"], "iva_debito": resumen_actual["iva_debito"],
+            "compras_neto": resumen_actual["compras_neto"], "iva_credito": resumen_actual["iva_credito"],
+            "iva_saldo_tecnico_anterior": tecnico_anterior, "iva_saldo_libre_anterior": libre_anterior,
+            "iva_deducciones": resumen_actual["iva_percepciones"], "iva_ajustes": iva_ajustes,
+            "iva_uso_libre": uso_libre, "iva_saldo_tecnico_favor": iva_calc["saldo_tecnico_favor"],
+            "iva_saldo_libre_favor": iva_calc["saldo_libre_favor"], "iva_saldo_pagar": iva_calc["saldo_pagar"],
+            "fecha_vencimiento_iva": venc_iva.isoformat(), "responsable": responsable,
+            "observaciones": observaciones, "fecha_actualizacion": _fiscal_timestamp(),
+            "actualizado_por": st.session_state.get("username", ""),
+        })
+        _upsert_tabla_fiscal(FISCAL_PERIODOS_PATH, FISCAL_PERIODO_COLUMNAS, registro)
+        guardar_version_papel_fiscal(
+            cliente, periodo, periodo_id, "IVA",
+            {"libro_iva": calculado, "liquidacion": iva_calc, "registro": {k: registro.get(k, "") for k in FISCAL_PERIODO_COLUMNAS if k.startswith("iva_") or k in {"ventas_neto", "compras_neto", "fecha_vencimiento_iva"}}},
+            oficial, observaciones,
+        )
+        st.success("Nueva versión del papel IVA guardada. Ya está disponible en Papeles guardados.")
+        st.rerun()
+
+    if str(registro.get("iva_debito", "")).strip():
+        st.markdown("##### Último resultado calculado")
+        r1, r2, r3 = st.columns(3)
+        r1.metric("IVA a pagar", _fiscal_moneda(registro.get("iva_saldo_pagar", 0)))
+        r2.metric("Saldo técnico a favor", _fiscal_moneda(registro.get("iva_saldo_tecnico_favor", 0)))
+        r3.metric("Saldo libre a favor", _fiscal_moneda(registro.get("iva_saldo_libre_favor", 0)))
+
+
+def _render_papel_iibb(cliente, periodo, periodo_id, perfil, registro, movimientos):
+    resumen_actual = resumir_movimientos(movimientos)
+    es_convenio = str(perfil.get("iibb_regimen", "")) == "Convenio Multilateral"
+    papeles = cargar_papeles_fiscales(periodo_id, cliente, "IIBB")
+    ultimo = papeles.iloc[0].to_dict() if not papeles.empty else {}
+    st.markdown("#### Papel de trabajo Ingresos Brutos")
+    st.caption(
+        f"{periodo} · " + (
+            f"última versión v{ultimo.get('version')} · {ultimo.get('estado')}"
+            if ultimo else "todavía sin versión guardada"
+        )
+    )
+    m1, m2, m3 = st.columns(3)
+    m1.metric("Base sugerida", _fiscal_moneda(resumen_actual["ventas_neto"]))
+    m2.metric("Retenciones importadas", _fiscal_moneda(resumen_actual["iibb_retenciones"]))
+    m3.metric("Percepciones importadas", _fiscal_moneda(resumen_actual["iibb_percepciones"]))
+
+    detalle_guardado = cargar_iibb_jurisdicciones(periodo_id, cliente) if es_convenio else pd.DataFrame()
+    with st.form(f"papel_iibb_{periodo_id}"):
+        base_iibb = st.number_input(
+            "Base imponible IIBB",
+            value=float(decimal_ar(registro.get("iibb_base", resumen_actual["ventas_neto"]) or resumen_actual["ventas_neto"])),
+            step=100.0,
+        )
+        detalle_editado = pd.DataFrame()
+        if es_convenio:
+            st.caption("Matriz CM03 por jurisdicción. Abrila sólo cuando necesites editar coeficientes o alícuotas.")
+            columnas_editor = [
+                "codigo", "jurisdiccion", "actividad", "base_actividad", "coeficiente", "alicuota",
+                "retenciones", "percepciones", "recaudaciones_bancarias", "saldo_favor_anterior",
+                "otros_creditos", "valores_suman",
+            ]
+            base_editor = (
+                _plantilla_iibb_convenio_con_arrastre(cliente, periodo, perfil.get("actividad_principal", ""))
+                if detalle_guardado.empty else detalle_guardado.reindex(columns=columnas_editor).copy()
+            )
+            for columna in columnas_editor[3:]:
+                base_editor[columna] = base_editor[columna].apply(
+                    lambda valor: None if str(valor).strip() in {"", "nan"} else float(decimal_ar(valor))
+                )
+            editar = st.checkbox("Editar matriz por jurisdicción", value=False)
+            detalle_editado = base_editor
+            if editar:
+                detalle_editado = st.data_editor(
+                    base_editor, hide_index=True, use_container_width=True, num_rows="dynamic",
+                    column_config={
+                        "coeficiente": st.column_config.NumberColumn("Coef. CM05", min_value=0.0, max_value=1.0, format="%.4f"),
+                        "alicuota": st.column_config.NumberColumn("Alícuota %", min_value=0.0, max_value=20.0, format="%.4f"),
+                    }, key=f"fiscal_convenio_{periodo_id}",
+                )
+            else:
+                st.caption(f"{len(base_editor)} fila(s) · coeficientes {_total_coeficientes_convenio(base_editor):.4f}")
+            tasa_iibb = saldo_anterior = otros = ajustes = 0.0
+            venc_iibb = st.date_input("Vencimiento CM03", value=_fecha_fiscal(registro.get("fecha_vencimiento_iibb", "")))
+        else:
+            b1, b2 = st.columns(2)
+            tasa_iibb = b1.number_input("Alícuota IIBB (%)", value=float(decimal_ar(registro.get("iibb_alicuota", perfil.get("alicuota_iibb", 0)) or perfil.get("alicuota_iibb", 0))), min_value=0.0, max_value=20.0, step=0.01)
+            saldo_anterior = b2.number_input("Saldo a favor anterior", value=float(decimal_ar(registro.get("iibb_saldo_favor_anterior", 0))), step=100.0)
+            b3, b4, b5 = st.columns(3)
+            otros = b3.number_input("Otros créditos", value=float(decimal_ar(registro.get("iibb_otros_creditos", 0))), step=100.0)
+            ajustes = b4.number_input("Ajuste conciliatorio", value=float(decimal_ar(registro.get("iibb_ajustes", 0))), step=100.0)
+            venc_iibb = b5.date_input("Vencimiento IIBB", value=_fecha_fiscal(registro.get("fecha_vencimiento_iibb", "")))
+        responsable = st.text_input("Responsable interno", value=str(registro.get("responsable", "")), key=f"resp_iibb_{periodo_id}")
+        observaciones = st.text_area("Observaciones IIBB", height=80, key=f"obs_iibb_{periodo_id}")
+        guardar = st.form_submit_button("Calcular y guardar nueva versión IIBB", type="primary")
+    if guardar:
+        if es_convenio:
+            calculo = calcular_iibb_convenio(base_iibb, detalle_editado)
+            activas = [fila for fila in calculo["detalle"] if decimal_ar(fila.get("coeficiente", 0)) > 0]
+            if abs(calculo["coeficiente_total"] - Decimal("1")) > Decimal("0.0001") or any(decimal_ar(f.get("alicuota", 0)) <= 0 for f in activas):
+                st.error("No se guardó: los coeficientes deben sumar 1,0000 y cada jurisdicción activa debe tener alícuota.")
+                st.stop()
+            guardar_iibb_jurisdicciones(periodo_id, cliente, periodo, calculo)
+        else:
+            calculo = calcular_iibb(
+                base_iibb, tasa_iibb, resumen_actual["iibb_retenciones"],
+                resumen_actual["iibb_percepciones"], saldo_anterior, otros, ajustes,
+            )
+            _registrar_ajuste_fiscal(
+                periodo_id, cliente, periodo, "IIBB", "Ajuste conciliatorio IIBB",
+                registro.get("iibb_ajustes", 0), ajustes, observaciones,
+            )
+        registro.update({
+            "iibb_base": base_iibb, "iibb_alicuota": tasa_iibb,
+            "iibb_determinado": calculo["impuesto_determinado"],
+            "iibb_retenciones": calculo["creditos"] if es_convenio else resumen_actual["iibb_retenciones"],
+            "iibb_percepciones": "" if es_convenio else resumen_actual["iibb_percepciones"],
+            "iibb_saldo_favor_anterior": saldo_anterior, "iibb_otros_creditos": otros,
+            "iibb_ajustes": ajustes, "iibb_saldo_favor": calculo["saldo_favor"],
+            "iibb_saldo_pagar": calculo["saldo_pagar"], "fecha_vencimiento_iibb": venc_iibb.isoformat(),
+            "responsable": responsable, "fecha_actualizacion": _fiscal_timestamp(),
+            "actualizado_por": st.session_state.get("username", ""),
+        })
+        _upsert_tabla_fiscal(FISCAL_PERIODOS_PATH, FISCAL_PERIODO_COLUMNAS, registro)
+        guardar_version_papel_fiscal(
+            cliente, periodo, periodo_id, "IIBB",
+            {"liquidacion": calculo, "registro": {k: registro.get(k, "") for k in FISCAL_PERIODO_COLUMNAS if k.startswith("iibb_") or k == "fecha_vencimiento_iibb"}},
+            {}, observaciones,
+        )
+        st.success("Nueva versión del papel IIBB guardada. Ya está disponible en Papeles guardados.")
+        st.rerun()
+    if str(registro.get("iibb_determinado", "")).strip():
+        st.markdown("##### Último resultado calculado")
+        r1, r2, r3 = st.columns(3)
+        r1.metric("Impuesto determinado", _fiscal_moneda(registro.get("iibb_determinado", 0)))
+        r2.metric("IIBB a pagar", _fiscal_moneda(registro.get("iibb_saldo_pagar", 0)))
+        r3.metric("Saldo a favor", _fiscal_moneda(registro.get("iibb_saldo_favor", 0)))
+
+
+def _render_papeles_guardados(cliente, periodo, periodo_id):
+    st.markdown("#### Papeles guardados y autorización")
+    st.caption("Cada cálculo crea una versión inalterable. Sólo una versión por impuesto puede quedar autorizada para contabilizar.")
+    papeles = cargar_papeles_fiscales(periodo_id, cliente)
+    if papeles.empty:
+        st.info("Todavía no guardaste ningún papel de trabajo para este período.")
+        return
+    vista = papeles[["id", "impuesto", "version", "estado", "fecha_guardado", "guardado_por", "fecha_autorizacion", "autorizado_por"]].copy()
+    st.dataframe(vista.drop(columns=["id"]), hide_index=True, use_container_width=True)
+    ids = vista["id"].astype(str).tolist()
+    etiquetas = {
+        str(fila["id"]): f"{fila['impuesto']} · v{fila['version']} · {fila['estado']} · {fila['fecha_guardado']}"
+        for _, fila in vista.iterrows()
+    }
+    elegido = st.selectbox("Versión para revisar", ids, format_func=lambda valor: etiquetas.get(valor, valor), key=f"papel_guardado_{periodo_id}")
+    fila = papeles[papeles["id"].astype(str).eq(str(elegido))].iloc[0].to_dict()
+    try:
+        datos = json.loads(str(fila.get("datos_json", "") or "{}"))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        datos = {}
+    liquidacion = datos.get("liquidacion", {})
+    if liquidacion:
+        resumen = pd.DataFrame([
+            {"Concepto": clave.replace("_", " ").title(), "Importe": _fiscal_moneda(valor)}
+            for clave, valor in liquidacion.items()
+            if clave not in {"detalle"} and str(valor).replace(".", "", 1).replace("-", "", 1).isdigit()
+        ])
+        if not resumen.empty:
+            st.dataframe(resumen, hide_index=True, use_container_width=True)
+    if fila.get("observaciones"):
+        st.caption(f"Observaciones: {fila['observaciones']}")
+    descarga = pd.DataFrame([{
+        "cliente": cliente, "periodo": periodo, "impuesto": fila.get("impuesto"),
+        "version": fila.get("version"), "estado": fila.get("estado"), **liquidacion,
+    }]).to_csv(index=False).encode("utf-8-sig")
+    c1, c2 = st.columns(2)
+    c1.download_button(
+        "Descargar versión CSV", data=descarga,
+        file_name=f"papel_{fila.get('impuesto')}_{cliente}_{periodo}_v{fila.get('version')}.csv".replace(" ", "_"),
+        mime="text/csv", use_container_width=True,
+    )
+    puede_autorizar = st.session_state.get("role") in ["admin_general", "admin"]
+    if c2.button(
+        "Autorizar esta versión", type="primary", use_container_width=True,
+        disabled=not puede_autorizar or fila.get("estado") == "Autorizado",
+        key=f"autorizar_{elegido}",
+    ):
+        autorizar_papel_fiscal(elegido, periodo_id, cliente, fila.get("impuesto", ""))
+        registro_fiscal = cargar_periodo_fiscal(cliente, periodo)
+        registro_contable = dict(registro_fiscal)
+        if not ultimo_papel_autorizado(periodo_id, cliente, "IVA"):
+            for campo in [
+                "iva_debito", "iva_credito", "iva_saldo_tecnico_anterior",
+                "iva_saldo_tecnico_favor", "iva_saldo_pagar", "iva_uso_libre",
+            ]:
+                registro_contable[campo] = "0"
+        if not ultimo_papel_autorizado(periodo_id, cliente, "IIBB"):
+            for campo in [
+                "iibb_determinado", "iibb_saldo_pagar", "iibb_saldo_favor",
+                "iibb_retenciones", "iibb_percepciones",
+            ]:
+                registro_contable[campo] = "0"
+        _contable_eliminar_borradores_generados(
+            cliente, periodo, ["Papel de trabajo fiscal"],
+        )
+        cabeceras, lineas = generar_asientos_impuestos(
+            registro_contable, cliente, periodo, st.session_state.get("username", ""),
+        )
+        cantidad = _contable_guardar_asientos(cabeceras, lineas)
+        st.success(
+            "Papel autorizado. "
+            + (f"Se actualizaron {cantidad} asiento(s) impositivo(s) en borrador." if cantidad else "No había importes para contabilizar.")
+        )
+        st.rerun()
 
 
 def render_liquidaciones_fiscales(cliente_fijo="", modo="admin"):
@@ -16144,6 +16683,20 @@ def render_liquidaciones_fiscales(cliente_fijo="", modo="admin"):
                 )
 
     if seccion_fiscal == "Papel de trabajo":
+        subseccion_papel = st.radio(
+            "Impuesto",
+            ["IVA", "Ingresos Brutos", "Papeles guardados"],
+            horizontal=True, label_visibility="collapsed",
+            key=f"fiscal_papel_subseccion_{periodo_id}",
+        )
+        if subseccion_papel == "IVA":
+            _render_papel_iva(cliente, periodo, periodo_id, registro, movimientos, documentos)
+        elif subseccion_papel == "Ingresos Brutos":
+            _render_papel_iibb(cliente, periodo, periodo_id, perfil, registro, movimientos)
+        else:
+            _render_papeles_guardados(cliente, periodo, periodo_id)
+
+    if False and seccion_fiscal == "Papel de trabajo":
         c1, c2, c3, c4 = st.columns(4)
         c1.metric("Ventas netas", _fiscal_moneda(resumen["ventas_neto"]))
         c2.metric("Débito IVA", _fiscal_moneda(resumen["iva_debito"]))
@@ -16379,6 +16932,20 @@ def render_liquidaciones_fiscales(cliente_fijo="", modo="admin"):
             estados = ["Borrador", "En revisión"]
             convenio_listo = True
             expediente_listo = expediente["listo_para_revision"]
+            iva_autorizado = bool(ultimo_papel_autorizado(periodo_id, cliente, "IVA"))
+            requiere_iibb = str(perfil.get("iibb_regimen", "")).strip() != "Exento"
+            iibb_autorizado = bool(ultimo_papel_autorizado(periodo_id, cliente, "IIBB"))
+            papeles_listos = iva_autorizado and (iibb_autorizado or not requiere_iibb)
+            if not papeles_listos:
+                pendientes_papeles = []
+                if not iva_autorizado:
+                    pendientes_papeles.append("IVA")
+                if requiere_iibb and not iibb_autorizado:
+                    pendientes_papeles.append("Ingresos Brutos")
+                st.warning(
+                    "Antes de confirmar el período, autorizá el papel de trabajo de "
+                    + " e ".join(pendientes_papeles) + "."
+                )
             if not expediente_listo:
                 faltantes_cierre = [
                     item["etapa"] for item in expediente["items"]
@@ -16405,7 +16972,7 @@ def render_liquidaciones_fiscales(cliente_fijo="", modo="admin"):
                     )
             if (
                 st.session_state.get("role") in ["admin_general", "admin"]
-                and convenio_listo and expediente_listo
+                and convenio_listo and expediente_listo and papeles_listos
             ):
                 estados += ["Confirmada", "Presentada", "Pendiente de pago", "Pagada"]
             estado_actual = registro.get("estado", "Borrador")
