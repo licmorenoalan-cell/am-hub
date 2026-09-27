@@ -10,11 +10,18 @@ from am_hub_accounting import (
     generar_asiento_sueldos,
     generar_asientos_comprobantes,
     parsear_extracto_bancario,
+    plan_cuentas_inicial,
     validar_asientos,
 )
 
 
 class AccountingTests(unittest.TestCase):
+    def test_plan_base_incluye_usos_automaticos_editables(self):
+        plan = plan_cuentas_inicial("Cliente prueba", "admin")
+        banco = plan[plan["codigo"].eq("1.1.02")].iloc[0]
+        self.assertEqual(banco["uso_automatico"], "Banco")
+        self.assertIn("clave_origen", plan.columns)
+
     def test_comprobantes_generan_asientos_balanceados(self):
         movimientos = pd.DataFrame([
             {
@@ -53,6 +60,10 @@ class AccountingTests(unittest.TestCase):
         cab, lineas = generar_asiento_banco(movimientos.iloc[0].to_dict(), "2.1.03")
         control = validar_asientos(pd.DataFrame([cab]), pd.DataFrame(lineas))
         self.assertTrue(control.iloc[0]["balanceado"])
+        _, lineas_especificas = generar_asiento_banco(
+            movimientos.iloc[0].to_dict(), "2.1.03", cuenta_banco="1.1.02.001",
+        )
+        self.assertIn("1.1.02.001", {linea["cuenta_codigo"] for linea in lineas_especificas})
 
     def test_sueldos_balancean_y_alimentan_sumas_saldos(self):
         registro = {

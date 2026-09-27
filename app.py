@@ -747,6 +747,13 @@ def asegurar_tablas_contables():
     with get_postgres_engine().connect() as conn:
         existentes = set(conn.execute(consulta_existentes, {"tablas": nombres}).scalars())
     if existentes == set(nombres):
+        with get_postgres_engine().begin() as conn:
+            conn.execute(sql_text(
+                'ALTER TABLE "contable_cuentas" ADD COLUMN IF NOT EXISTS "uso_automatico" TEXT'
+            ))
+            conn.execute(sql_text(
+                'ALTER TABLE "contable_cuentas" ADD COLUMN IF NOT EXISTS "clave_origen" TEXT'
+            ))
         return True
     with get_postgres_engine().begin() as conn:
         for tabla, columnas in definiciones.items():
@@ -771,6 +778,12 @@ def asegurar_tablas_contables():
                 f'CREATE INDEX IF NOT EXISTS "idx_{tabla}_busqueda" '
                 f'ON "{tabla}" {columnas}'
             ))
+        conn.execute(sql_text(
+            'ALTER TABLE "contable_cuentas" ADD COLUMN IF NOT EXISTS "uso_automatico" TEXT'
+        ))
+        conn.execute(sql_text(
+            'ALTER TABLE "contable_cuentas" ADD COLUMN IF NOT EXISTS "clave_origen" TEXT'
+        ))
     return True
 
 
@@ -15570,6 +15583,78 @@ FISCAL_CATEGORIAS_PERMANENTES = {
     "constancia_arca", "constancia_iibb", "cm05_anual",
 }
 
+CONTABLE_CODIGO_USO_BASE = {
+    "1.1.01": "Caja", "1.1.02": "Banco", "1.1.03": "Clientes",
+    "1.1.04": "IVA crédito fiscal", "1.1.05": "IVA saldo técnico",
+    "1.1.06": "IVA libre disponibilidad", "1.1.07": "Deducciones IIBB",
+    "1.1.08": "IIBB saldo a favor", "1.1.09": "Otros créditos fiscales",
+    "1.2.01": "Bienes de uso", "2.1.01": "Proveedores",
+    "2.1.02": "IVA débito fiscal", "2.1.03": "IVA a pagar",
+    "2.1.04": "IIBB a pagar", "2.1.05": "Sueldos a pagar",
+    "2.1.06": "Cargas sociales a pagar", "2.1.07": "Otras obligaciones fiscales",
+    "3.1.01": "Capital y resultados", "4.1.01": "Ventas gravadas",
+    "4.1.02": "Otros ingresos", "4.1.03": "Ventas exentas",
+    "5.1.01": "Compras y gastos", "5.1.02": "Gastos bancarios",
+    "5.1.03": "Sueldos gasto", "5.1.04": "Cargas sociales gasto",
+    "5.1.05": "ART y otros costos", "5.1.06": "IIBB gasto",
+    "5.9.99": "Diferencias de redondeo",
+}
+CONTABLE_USOS_AUTOMATICOS = [""] + list(dict.fromkeys(CONTABLE_CODIGO_USO_BASE.values()))
+
+
+def _clave_mapeo_contable(valor):
+    return re.sub(r"\s+", " ", str(valor or "").strip().casefold())
+
+
+def _aplicar_mapeo_contable(lineas, cuentas):
+    if lineas is None or lineas.empty:
+        return lineas
+    salida = lineas.copy()
+    activas = cuentas[
+        cuentas["activa"].astype(str).str.casefold().isin(["sí", "si", "true", "1"])
+    ].copy() if cuentas is not None and not cuentas.empty else pd.DataFrame(columns=CUENTA_COLUMNAS)
+    uso_a_codigo = {uso: codigo for codigo, uso in CONTABLE_CODIGO_USO_BASE.items()}
+    if not activas.empty:
+        por_uso = activas[
+            activas["uso_automatico"].astype(str).str.strip().ne("")
+            & activas["clave_origen"].astype(str).str.strip().eq("")
+        ]
+        for _, cuenta in por_uso.iterrows():
+            uso_a_codigo[str(cuenta["uso_automatico"])] = str(cuenta["codigo"])
+    codigo_destino = {
+        codigo_base: uso_a_codigo.get(uso, codigo_base)
+        for codigo_base, uso in CONTABLE_CODIGO_USO_BASE.items()
+    }
+    salida["cuenta_codigo"] = salida["cuenta_codigo"].astype(str).map(
+        lambda codigo: codigo_destino.get(codigo, codigo)
+    )
+    nombres = dict(zip(
+        activas.get("codigo", pd.Series(dtype=str)).astype(str),
+        activas.get("nombre", pd.Series(dtype=str)).astype(str),
+    ))
+    salida["cuenta_nombre"] = salida.apply(
+        lambda fila: nombres.get(str(fila.get("cuenta_codigo", "")), fila.get("cuenta_nombre", "")), axis=1,
+    )
+    return salida
+
+
+def _cuenta_banco_para_origen(cuentas, origen):
+    if cuentas is None or cuentas.empty:
+        return "1.1.02"
+    bancos = cuentas[
+        cuentas["activa"].astype(str).str.casefold().isin(["sí", "si", "true", "1"])
+        & cuentas["uso_automatico"].astype(str).eq("Banco")
+    ].copy()
+    clave = _clave_mapeo_contable(origen)
+    if clave:
+        coincidencia = bancos[
+            bancos["clave_origen"].apply(_clave_mapeo_contable).eq(clave)
+        ]
+        if not coincidencia.empty:
+            return str(coincidencia.iloc[0]["codigo"])
+    generica = bancos[bancos["clave_origen"].astype(str).str.strip().eq("")]
+    return str(generica.iloc[0]["codigo"]) if not generica.empty else "1.1.02"
+
 
 def cargar_documentos_permanentes_cliente(cliente):
     columnas = [col for col in FISCAL_ARCHIVO_COLUMNAS if col != "contenido_base64"]
@@ -15608,7 +15693,14 @@ def _render_editor_plan_cuentas(cliente, key_prefix="ficha"):
             st.success("Plan de cuentas maestro creado.")
             st.rerun()
         return
-    editor = cuentas[["id", "codigo", "nombre", "tipo", "naturaleza", "activa"]].copy()
+    editor = cuentas[[
+        "id", "codigo", "nombre", "tipo", "naturaleza", "activa",
+        "uso_automatico", "clave_origen",
+    ]].copy()
+    editor["uso_automatico"] = editor.apply(
+        lambda fila: str(fila.get("uso_automatico", "")).strip()
+        or CONTABLE_CODIGO_USO_BASE.get(str(fila.get("codigo", "")), ""), axis=1,
+    )
     editado = st.data_editor(
         editor, hide_index=True, use_container_width=True, num_rows="dynamic",
         disabled=["id"], key=f"{key_prefix}_editor_cuentas_{cliente}",
@@ -15616,9 +15708,41 @@ def _render_editor_plan_cuentas(cliente, key_prefix="ficha"):
             "tipo": st.column_config.SelectboxColumn("Tipo", options=["Activo", "Pasivo", "Patrimonio neto", "Ingresos", "Egresos"]),
             "naturaleza": st.column_config.SelectboxColumn("Naturaleza", options=["Deudora", "Acreedora"]),
             "activa": st.column_config.SelectboxColumn("Activa", options=["Sí", "No"]),
+            "uso_automatico": st.column_config.SelectboxColumn(
+                "Uso automático", options=CONTABLE_USOS_AUTOMATICOS,
+                help="Define qué movimientos automáticos utilizarán esta cuenta.",
+            ),
+            "clave_origen": st.column_config.TextColumn(
+                "Origen específico",
+                help="Para bancos, escribí exactamente el nombre usado al importar el extracto, por ejemplo Banco Galicia CC 1234.",
+            ),
         },
     )
+    st.caption(
+        "Para agregar un banco, creá una fila nueva, asignale un código propio, elegí uso automático Banco "
+        "y completá el mismo nombre de origen que usarás al importar su extracto."
+    )
     if st.button("Guardar plan de cuentas", type="primary", key=f"{key_prefix}_guardar_plan_{cliente}"):
+        codigos_validos = editado["codigo"].astype(str).str.strip()
+        if codigos_validos[codigos_validos.ne("")].duplicated().any():
+            st.error("No se guardó: cada código contable debe ser único.")
+            st.stop()
+        bancos_especificos = editado[
+            editado["uso_automatico"].astype(str).eq("Banco")
+            & editado["clave_origen"].astype(str).str.strip().ne("")
+        ]
+        claves_banco = bancos_especificos["clave_origen"].apply(_clave_mapeo_contable)
+        if claves_banco.duplicated().any():
+            st.error("No se guardó: hay dos cuentas bancarias con el mismo origen específico.")
+            st.stop()
+        usos_genericos = editado[
+            editado["activa"].astype(str).str.casefold().isin(["sí", "si", "true", "1"])
+            & editado["uso_automatico"].astype(str).str.strip().ne("")
+            & editado["clave_origen"].astype(str).str.strip().eq("")
+        ]["uso_automatico"].astype(str)
+        if usos_genericos.duplicated().any():
+            st.error("No se guardó: cada uso automático general puede asignarse a una sola cuenta activa.")
+            st.stop()
         filas = []
         for _, fila in editado.iterrows():
             if not str(fila.get("codigo", "")).strip() or not str(fila.get("nombre", "")).strip():
@@ -15809,7 +15933,7 @@ def _contable_datos_ejercicio(cliente, periodos):
 
 @st.cache_data(ttl=60, show_spinner=False)
 def cargar_contexto_contable_postgres_cacheado(cliente, periodo):
-    """Carga todo el período contable en un único viaje, sin blobs."""
+    """Carga el período contable y la configuración de imputación en un viaje."""
     definiciones = {
         "cuentas": ("contable_cuentas", CUENTA_COLUMNAS, '"cliente" = :cliente'),
         "asientos": ("contable_asientos", ASIENTO_COLUMNAS, '"cliente" = :cliente AND "periodo" = :periodo'),
@@ -15908,11 +16032,11 @@ def render_contabilidad(cliente_fijo="", modo="admin"):
 
     seccion = st.radio(
         "Sección contable",
-        ["Resumen", "Ejercicio", "Generar", "Bancos", "Sueldos y F.931", "Revisión", "Reportes"],
+        ["Resumen", "Ejercicio", "Generar", "Bancos", "Sueldos y F.931", "Revisar y autorizar mes", "Reportes"],
         horizontal=True, label_visibility="collapsed", key=f"contable_seccion_{cliente}_{periodo}",
     )
     ejercicio_cerrado = str(ejercicio_contable.get("estado", "")) == "Cerrado"
-    if ejercicio_cerrado and seccion in ["Generar", "Bancos", "Sueldos y F.931", "Revisión"]:
+    if ejercicio_cerrado and seccion in ["Generar", "Bancos", "Sueldos y F.931", "Revisar y autorizar mes"]:
         st.warning("El ejercicio está cerrado y no admite modificaciones. Podés consultar Resumen o Reportes.")
         return
 
@@ -15937,6 +16061,10 @@ def render_contabilidad(cliente_fijo="", modo="admin"):
             {"Etapa": "Autorización", "Estado": periodo_contable.get("estado", "Abierto")},
         ])
         st.dataframe(pasos, hide_index=True, use_container_width=True)
+        st.info(
+            "Circuito: las liquidaciones autorizadas generan borradores. Cuando terminaste de revisar el mes, "
+            "abrí Revisar y autorizar mes para convertirlos en contabilidad definitiva."
+        )
 
     if seccion == "Ejercicio":
         st.markdown(f"#### Ejercicio {ejercicio_num}")
@@ -16102,13 +16230,23 @@ def render_contabilidad(cliente_fijo="", modo="admin"):
                 )
                 cab = pd.concat([cab1, cab2], ignore_index=True)
                 lin = pd.concat([lin1, lin2], ignore_index=True)
+                lin = _aplicar_mapeo_contable(lin, cuentas)
                 cantidad = _contable_guardar_asientos(cab, lin)
                 st.success(f"Se generaron {cantidad} asientos en borrador.")
                 st.rerun()
 
     if seccion == "Bancos":
         st.markdown("#### Extractos y conciliación")
-        cuenta_bancaria = st.text_input("Cuenta bancaria", placeholder="Ej.: Banco Galicia CC 1234")
+        bancos_configurados = cuentas[
+            cuentas["activa"].astype(str).str.casefold().isin(["sí", "si", "true", "1"])
+            & cuentas["uso_automatico"].astype(str).eq("Banco")
+            & cuentas["clave_origen"].astype(str).str.strip().ne("")
+        ]["clave_origen"].astype(str).tolist() if not cuentas.empty else []
+        if bancos_configurados:
+            cuenta_bancaria = st.selectbox("Cuenta bancaria", bancos_configurados)
+        else:
+            cuenta_bancaria = st.text_input("Cuenta bancaria", placeholder="Ej.: Banco Galicia CC 1234")
+            st.warning("Todavía no hay una cuenta bancaria específica vinculada. Configurala en Ficha cliente → Plan de cuentas.")
         archivo_banco = st.file_uploader(
             "Extracto bancario CSV o XLSX", type=["csv", "xlsx", "xls"], key=f"banco_archivo_{cliente}_{periodo}",
         )
@@ -16149,7 +16287,12 @@ def render_contabilidad(cliente_fijo="", modo="admin"):
                 mapa = bancos.set_index("id").to_dict("index")
                 for _, fila in seleccion.iterrows():
                     mov = mapa.get(str(fila["id"]), {})
-                    cab, det = generar_asiento_banco(mov, str(fila["cuenta_sugerida"]), st.session_state.get("username", ""))
+                    cuenta_banco = _cuenta_banco_para_origen(cuentas, mov.get("cuenta_bancaria", ""))
+                    cab, det = generar_asiento_banco(
+                        mov, str(fila["cuenta_sugerida"]), st.session_state.get("username", ""),
+                        cuenta_banco=cuenta_banco,
+                    )
+                    det = _aplicar_mapeo_contable(pd.DataFrame(det), cuentas).to_dict("records")
                     cabeceras.append(cab); detalles.extend(det)
                     mov.update({"conciliado": "Sí", "asiento_id": cab["id"], "cuenta_sugerida": str(fila["cuenta_sugerida"])})
                     actualizados.append(mov)
@@ -16194,6 +16337,7 @@ def render_contabilidad(cliente_fijo="", modo="admin"):
                 "cargado_por": st.session_state.get("username", ""),
             }
             cab, det = generar_asiento_sueldos(registro_sueldos, st.session_state.get("username", ""))
+            det = _aplicar_mapeo_contable(pd.DataFrame(det), cuentas).to_dict("records")
             registro_sueldos["asiento_id"] = cab["id"]
             _contable_guardar_asientos(pd.DataFrame([cab]), pd.DataFrame(det))
             _contable_upsert_dataframe(CONTABLE_SUELDOS_PATH, SUELDO_COLUMNAS, pd.DataFrame([registro_sueldos]))
@@ -16202,7 +16346,7 @@ def render_contabilidad(cliente_fijo="", modo="admin"):
             st.success("Liquidación y asiento de sueldos guardados en borrador.")
             st.rerun()
 
-    if seccion == "Revisión":
+    if seccion == "Revisar y autorizar mes":
         st.markdown("#### Revisión y autorización")
         if not cuentas.empty:
             with st.expander("Agregar asiento de apertura o ajuste manual", expanded=False):
@@ -16478,7 +16622,7 @@ def _render_papel_iva(cliente, periodo, periodo_id, registro, movimientos, docum
             {"libro_iva": calculado, "liquidacion": iva_calc, "registro": {k: registro.get(k, "") for k in FISCAL_PERIODO_COLUMNAS if k.startswith("iva_") or k in {"ventas_neto", "compras_neto", "fecha_vencimiento_iva"}}},
             oficial, observaciones,
         )
-        st.success("Nueva versión del papel IVA guardada. Ya está disponible en Papeles guardados.")
+        st.success("Nueva versión del papel IVA guardada. Revisala y autorizala desde Revisar y autorizar.")
         st.rerun()
 
     if str(registro.get("iva_debito", "")).strip():
@@ -16588,7 +16732,7 @@ def _render_papel_iibb(cliente, periodo, periodo_id, perfil, registro, movimient
             {"liquidacion": calculo, "registro": {k: registro.get(k, "") for k in FISCAL_PERIODO_COLUMNAS if k.startswith("iibb_") or k == "fecha_vencimiento_iibb"}},
             {}, observaciones,
         )
-        st.success("Nueva versión del papel IIBB guardada. Ya está disponible en Papeles guardados.")
+        st.success("Nueva versión del papel IIBB guardada. Revisala y autorizala desde Revisar y autorizar.")
         st.rerun()
     if str(registro.get("iibb_determinado", "")).strip():
         st.markdown("##### Último resultado calculado")
@@ -16599,8 +16743,11 @@ def _render_papel_iibb(cliente, periodo, periodo_id, perfil, registro, movimient
 
 
 def _render_papeles_guardados(cliente, periodo, periodo_id):
-    st.markdown("#### Papeles guardados y autorización")
-    st.caption("Cada cálculo crea una versión inalterable. Sólo una versión por impuesto puede quedar autorizada para contabilizar.")
+    st.markdown("#### Revisar y autorizar liquidaciones")
+    st.caption(
+        "Seleccioná la versión correcta de IVA o IIBB y autorizala. En ese momento AM HUB genera "
+        "o actualiza el asiento impositivo del mes en estado Borrador."
+    )
     papeles = cargar_papeles_fiscales(periodo_id, cliente)
     if papeles.empty:
         st.info("Todavía no guardaste ningún papel de trabajo para este período.")
@@ -16666,6 +16813,8 @@ def _render_papeles_guardados(cliente, periodo, periodo_id):
         cabeceras, lineas = generar_asientos_impuestos(
             registro_contable, cliente, periodo, st.session_state.get("username", ""),
         )
+        cuentas = _contable_cargar(CONTABLE_CUENTAS_PATH, CUENTA_COLUMNAS, cliente)
+        lineas = _aplicar_mapeo_contable(lineas, cuentas)
         cantidad = _contable_guardar_asientos(cabeceras, lineas)
         st.success(
             "Papel autorizado. "
@@ -17025,9 +17174,13 @@ def render_liquidaciones_fiscales(cliente_fijo="", modo="admin"):
                 )
 
     if seccion_fiscal == "Papel de trabajo":
+        st.info(
+            "Guardá primero la liquidación de cada impuesto. Después entrá en Revisar y autorizar: "
+            "al autorizar una versión se genera automáticamente su asiento contable en borrador."
+        )
         subseccion_papel = st.radio(
             "Impuesto",
-            ["IVA", "Ingresos Brutos", "Papeles guardados"],
+            ["IVA", "Ingresos Brutos", "Revisar y autorizar"],
             horizontal=True, label_visibility="collapsed",
             key=f"fiscal_papel_subseccion_{periodo_id}",
         )

@@ -24,7 +24,8 @@ CENTAVOS = Decimal("0.01")
 
 CUENTA_COLUMNAS = [
     "id", "cliente", "codigo", "nombre", "tipo", "naturaleza", "activa",
-    "origen", "fecha_actualizacion", "actualizado_por",
+    "uso_automatico", "clave_origen", "origen", "fecha_actualizacion",
+    "actualizado_por",
 ]
 
 ASIENTO_COLUMNAS = [
@@ -105,6 +106,23 @@ PLAN_CUENTAS_BASE = [
 
 NOMBRES_CUENTAS = {codigo: nombre for codigo, nombre, _, _ in PLAN_CUENTAS_BASE}
 
+USOS_AUTOMATICOS_BASE = {
+    "1.1.01": "Caja", "1.1.02": "Banco", "1.1.03": "Clientes",
+    "1.1.04": "IVA crédito fiscal", "1.1.05": "IVA saldo técnico",
+    "1.1.06": "IVA libre disponibilidad", "1.1.07": "Deducciones IIBB",
+    "1.1.08": "IIBB saldo a favor", "1.1.09": "Otros créditos fiscales",
+    "1.2.01": "Bienes de uso", "2.1.01": "Proveedores",
+    "2.1.02": "IVA débito fiscal", "2.1.03": "IVA a pagar",
+    "2.1.04": "IIBB a pagar", "2.1.05": "Sueldos a pagar",
+    "2.1.06": "Cargas sociales a pagar", "2.1.07": "Otras obligaciones fiscales",
+    "3.1.01": "Capital y resultados", "4.1.01": "Ventas gravadas",
+    "4.1.02": "Otros ingresos", "4.1.03": "Ventas exentas",
+    "5.1.01": "Compras y gastos", "5.1.02": "Gastos bancarios",
+    "5.1.03": "Sueldos gasto", "5.1.04": "Cargas sociales gasto",
+    "5.1.05": "ART y otros costos", "5.1.06": "IIBB gasto",
+    "5.9.99": "Diferencias de redondeo",
+}
+
 
 def dinero(valor) -> Decimal:
     return decimal_ar(valor).quantize(CENTAVOS, rounding=ROUND_HALF_UP)
@@ -132,6 +150,8 @@ def plan_cuentas_inicial(cliente: str, usuario: str = "") -> pd.DataFrame:
             "tipo": tipo,
             "naturaleza": naturaleza,
             "activa": "Sí",
+            "uso_automatico": USOS_AUTOMATICOS_BASE.get(codigo, ""),
+            "clave_origen": "",
             "origen": "Plan base AM HUB",
             "fecha_actualizacion": hoy,
             "actualizado_por": usuario,
@@ -462,15 +482,15 @@ def sugerir_cuenta_bancaria(descripcion: str, debito=0, credito=0) -> str:
 
 
 def generar_asiento_banco(movimiento: dict, cuenta_contrapartida: str,
-                          usuario: str = "") -> tuple[dict, list[dict]]:
+                          usuario: str = "", cuenta_banco: str = "1.1.02") -> tuple[dict, list[dict]]:
     debito, credito = dinero(movimiento.get("debito", 0)), dinero(movimiento.get("credito", 0))
     importe = debito or credito
     if not importe:
         raise ValueError("El movimiento bancario no tiene importe.")
     if debito:
-        lineas = [_linea(cuenta_contrapartida, debe=importe), _linea("1.1.02", haber=importe)]
+        lineas = [_linea(cuenta_contrapartida, debe=importe), _linea(cuenta_banco, haber=importe)]
     else:
-        lineas = [_linea("1.1.02", debe=importe), _linea(cuenta_contrapartida, haber=importe)]
+        lineas = [_linea(cuenta_banco, debe=importe), _linea(cuenta_contrapartida, haber=importe)]
     return _asiento(
         movimiento.get("cliente", ""), movimiento.get("periodo", ""),
         movimiento.get("fecha", ""), "Movimiento bancario", "Extracto bancario",
