@@ -9,6 +9,7 @@ import pandas as pd
 from am_hub_fiscal import (
     analizar_archivo_fiscal,
     calcular_iibb,
+    calcular_iibb_local_actividades,
     calcular_iibb_convenio,
     calcular_coeficientes_cm05,
     calcular_iva,
@@ -175,6 +176,19 @@ class FiscalTests(unittest.TestCase):
         self.assertEqual(calculo["detalle"][0]["saldo_pagar"], Decimal("88984.24"))
         self.assertEqual(calculo["detalle"][1]["impuesto_determinado"], Decimal("1598.72"))
         self.assertEqual(calculo["detalle"][1]["saldo_pagar"], Decimal("1541.02"))
+
+    def test_iibb_local_separa_actividades_y_deducciones(self):
+        calculo = calcular_iibb_local_actividades([
+            {"codigo": "1", "actividad": "Servicios", "tratamiento": "Gravada", "base_imponible": "100000", "alicuota": "3"},
+            {"codigo": "2", "actividad": "Intereses exentos", "tratamiento": "Exenta", "base_imponible": "20000", "alicuota": "3"},
+            {"codigo": "3", "actividad": "No alcanzada", "tratamiento": "No gravada", "base_imponible": "5000", "alicuota": "0"},
+        ], retenciones=500, percepciones=250, recaudaciones_bancarias=100, saldo_favor_anterior=50)
+        self.assertEqual(calculo["base_imponible"], Decimal("100000.00"))
+        self.assertEqual(calculo["base_exenta"], Decimal("20000.00"))
+        self.assertEqual(calculo["base_no_gravada"], Decimal("5000.00"))
+        self.assertEqual(calculo["impuesto_determinado"], Decimal("3000.00"))
+        self.assertEqual(calculo["creditos"], Decimal("900.00"))
+        self.assertEqual(calculo["saldo_pagar"], Decimal("2100.00"))
 
     def test_cm05_calcula_coeficiente_ingresos_gastos_y_unificado(self):
         calculo = calcular_coeficientes_cm05([

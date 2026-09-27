@@ -20,6 +20,7 @@ from am_hub_fiscal import (
     MOVIMIENTO_COLUMNAS,
     analizar_archivo_fiscal,
     calcular_iibb,
+    calcular_iibb_local_actividades,
     calcular_iibb_convenio,
     calcular_iva,
     decimal_ar,
@@ -106,6 +107,7 @@ FISCAL_MOVIMIENTOS_PATH = DATA_DIR / "fiscal_movimientos.csv"
 FISCAL_ARCHIVOS_PATH = DATA_DIR / "fiscal_archivos.csv"
 FISCAL_AJUSTES_PATH = DATA_DIR / "fiscal_ajustes.csv"
 FISCAL_IIBB_JURISDICCIONES_PATH = DATA_DIR / "fiscal_iibb_jurisdicciones.csv"
+FISCAL_IIBB_ACTIVIDADES_PATH = DATA_DIR / "fiscal_iibb_actividades.csv"
 FISCAL_CM05_COEFICIENTES_PATH = DATA_DIR / "fiscal_cm05_coeficientes.csv"
 FISCAL_PAPELES_PATH = DATA_DIR / "fiscal_papeles.csv"
 CONTABLE_CUENTAS_PATH = DATA_DIR / "contable_cuentas.csv"
@@ -622,6 +624,8 @@ FISCAL_PERIODO_COLUMNAS = [
     "actualizado_por", "fecha_confirmacion", "confirmado_por",
     "sin_ventas", "sin_compras", "sin_deducciones_iva",
     "sin_deducciones_iibb",
+    "iva_estado_presentacion", "iva_fecha_presentacion",
+    "iibb_estado_presentacion", "iibb_fecha_presentacion",
 ]
 FISCAL_ARCHIVO_COLUMNAS = [
     "id", "periodo_id", "cliente", "periodo", "categoria", "familia", "nombre",
@@ -638,6 +642,11 @@ FISCAL_IIBB_JURISDICCION_COLUMNAS = [
     "base_atribuida", "impuesto_determinado", "retenciones", "percepciones",
     "recaudaciones_bancarias", "saldo_favor_anterior", "otros_creditos",
     "valores_suman", "creditos", "saldo_pagar", "saldo_favor",
+    "fecha_actualizacion", "actualizado_por",
+]
+FISCAL_IIBB_ACTIVIDAD_COLUMNAS = [
+    "id", "periodo_id", "cliente", "periodo", "codigo", "actividad",
+    "tratamiento", "base_imponible", "alicuota", "impuesto_determinado",
     "fecha_actualizacion", "actualizado_por",
 ]
 FISCAL_CM05_COEFICIENTE_COLUMNAS = [
@@ -668,6 +677,7 @@ def asegurar_tablas_fiscales():
         "fiscal_archivos": FISCAL_ARCHIVO_COLUMNAS,
         "fiscal_ajustes": FISCAL_AJUSTE_COLUMNAS,
         "fiscal_iibb_jurisdicciones": FISCAL_IIBB_JURISDICCION_COLUMNAS,
+        "fiscal_iibb_actividades": FISCAL_IIBB_ACTIVIDAD_COLUMNAS,
         "fiscal_cm05_coeficientes": FISCAL_CM05_COEFICIENTE_COLUMNAS,
         "fiscal_papeles": FISCAL_PAPEL_COLUMNAS,
     }
@@ -683,7 +693,9 @@ def asegurar_tablas_fiscales():
             ))
         for columna in [
             "sin_ventas", "sin_compras", "sin_deducciones_iva",
-            "sin_deducciones_iibb",
+            "sin_deducciones_iibb", "iva_estado_presentacion",
+            "iva_fecha_presentacion", "iibb_estado_presentacion",
+            "iibb_fecha_presentacion",
         ]:
             conn.execute(sql_text(
                 f'ALTER TABLE "fiscal_periodos" '
@@ -712,6 +724,10 @@ def asegurar_tablas_fiscales():
         conn.execute(sql_text(
             'CREATE INDEX IF NOT EXISTS "idx_fiscal_iibb_jur_periodo" '
             'ON "fiscal_iibb_jurisdicciones" ("periodo_id")'
+        ))
+        conn.execute(sql_text(
+            'CREATE INDEX IF NOT EXISTS "idx_fiscal_iibb_act_periodo" '
+            'ON "fiscal_iibb_actividades" ("periodo_id")'
         ))
         conn.execute(sql_text(
             'CREATE INDEX IF NOT EXISTS "idx_fiscal_cm05_cliente_ejercicio" '
@@ -15272,6 +15288,15 @@ def guardar_lote_fiscal(cliente, periodo, periodo_id, archivos):
         )
         _upsert_tabla_fiscal(FISCAL_CLIENTES_PATH, FISCAL_CLIENTE_COLUMNAS, perfil)
 
+    if nuevos_movimientos:
+        asientos_generados = _sincronizar_asientos_comprobantes(
+            cliente, periodo, periodo_id,
+        )
+        if asientos_generados:
+            avisos_periodo.append(
+                f"Se generaron {asientos_generados} asiento(s) contable(s) en borrador desde compras y ventas."
+            )
+
     cargar_archivo_fiscal.clear()
     registrar_actividad("cargar", "liquidaciones", periodo_id, f"{len(preparados)} archivo(s), {len(nuevos_movimientos)} movimiento(s)")
     return len(preparados), len(nuevos_movimientos), omitidos, avisos_periodo
@@ -15481,6 +15506,64 @@ def guardar_iibb_jurisdicciones(periodo_id, cliente, periodo, calculo):
     save_csv(pd.concat([actuales, pd.DataFrame(filas)], ignore_index=True), FISCAL_IIBB_JURISDICCIONES_PATH)
 
 
+def cargar_iibb_actividades(periodo_id, cliente=""):
+    return _cargar_tabla_fiscal(
+        FISCAL_IIBB_ACTIVIDADES_PATH, FISCAL_IIBB_ACTIVIDAD_COLUMNAS,
+        cliente, periodo_id,
+    )
+
+
+def _plantilla_iibb_local(perfil, base_sugerida):
+    actividades = [
+        item.strip() for item in re.split(r"[;\n]+", str(perfil.get("actividades", "")))
+        if item.strip()
+    ]
+    if not actividades:
+        actividades = [str(perfil.get("actividad_principal", "") or "Actividad principal")]
+    return pd.DataFrame([
+        {
+            "codigo": "", "actividad": actividad, "tratamiento": "Gravada",
+            "base_imponible": float(decimal_ar(base_sugerida)) if indice == 0 else 0.0,
+            "alicuota": float(decimal_ar(perfil.get("alicuota_iibb", 0))),
+        }
+        for indice, actividad in enumerate(actividades)
+    ])
+
+
+def guardar_iibb_actividades(periodo_id, cliente, periodo, calculo):
+    ahora = _fiscal_timestamp()
+    usuario = st.session_state.get("username", "")
+    filas = []
+    for indice, item in enumerate(calculo.get("detalle", [])):
+        identidad = hashlib.sha256(
+            f"{periodo_id}|{indice}|{item.get('codigo', '')}|{item.get('actividad', '')}".encode("utf-8")
+        ).hexdigest()[:20]
+        fila = {col: str(item.get(col, "")) for col in FISCAL_IIBB_ACTIVIDAD_COLUMNAS}
+        fila.update({
+            "id": f"FIACT-{identidad}", "periodo_id": str(periodo_id),
+            "cliente": str(cliente), "periodo": str(periodo),
+            "fecha_actualizacion": ahora, "actualizado_por": usuario,
+        })
+        filas.append(fila)
+    asegurar_tablas_fiscales()
+    if usar_postgres():
+        with get_postgres_engine().begin() as conn:
+            conn.execute(sql_text(
+                'DELETE FROM "fiscal_iibb_actividades" WHERE "periodo_id" = :periodo_id'
+            ), {"periodo_id": str(periodo_id)})
+            if filas:
+                columnas = list(filas[0].keys())
+                conn.execute(sql_text(
+                    f'INSERT INTO "fiscal_iibb_actividades" ({_sql_cols(columnas)}) '
+                    f'VALUES ({", ".join(f":{col}" for col in columnas)})'
+                ), filas)
+        _limpiar_cache_postgres()
+        return
+    actuales = read_csv(FISCAL_IIBB_ACTIVIDADES_PATH, FISCAL_IIBB_ACTIVIDAD_COLUMNAS)
+    actuales = actuales[~actuales["periodo_id"].astype(str).eq(str(periodo_id))]
+    save_csv(pd.concat([actuales, pd.DataFrame(filas)], ignore_index=True), FISCAL_IIBB_ACTIVIDADES_PATH)
+
+
 def _contable_cargar(path, columnas, cliente="", periodo=""):
     asegurar_tablas_contables()
     df = _cargar_tabla_fiscal(path, columnas, cliente)
@@ -15561,6 +15644,30 @@ def _contable_guardar_asientos(cabeceras, lineas):
     _contable_upsert_dataframe(CONTABLE_ASIENTOS_PATH, ASIENTO_COLUMNAS, cabeceras)
     _contable_upsert_dataframe(CONTABLE_LINEAS_PATH, ASIENTO_LINEA_COLUMNAS, lineas)
     return len(cabeceras)
+
+
+def _sincronizar_asientos_comprobantes(cliente, periodo, periodo_id):
+    """Mantiene borradores contables alineados con compras y ventas importadas."""
+    if not re.fullmatch(r"20\d{2}-(0[1-9]|1[0-2])", str(periodo)):
+        return 0
+    movimientos = _cargar_tabla_fiscal(
+        FISCAL_MOVIMIENTOS_PATH, MOVIMIENTO_COLUMNAS, cliente, periodo_id,
+    )
+    comprobantes = movimientos[
+        movimientos.get("clase", pd.Series(dtype=str)).astype(str).isin(["emitido", "recibido"])
+    ] if not movimientos.empty else movimientos
+    if comprobantes.empty:
+        return 0
+    cuentas = _contable_cargar(CONTABLE_CUENTAS_PATH, CUENTA_COLUMNAS, cliente)
+    if cuentas.empty:
+        cuentas = plan_cuentas_inicial(cliente, st.session_state.get("username", ""))
+        _contable_upsert_dataframe(CONTABLE_CUENTAS_PATH, CUENTA_COLUMNAS, cuentas)
+    _contable_eliminar_borradores_generados(cliente, periodo, ["Comprobante fiscal"])
+    cabeceras, lineas = generar_asientos_comprobantes(
+        comprobantes, cliente, periodo, st.session_state.get("username", ""),
+    )
+    lineas = _aplicar_mapeo_contable(lineas, cuentas)
+    return _contable_guardar_asientos(cabeceras, lineas)
 
 
 def _contable_guardar_archivo(cliente, periodo, categoria, archivo):
@@ -16635,91 +16742,103 @@ def _render_papel_iva(cliente, periodo, periodo_id, registro, movimientos, docum
 
 def _render_papel_iibb(cliente, periodo, periodo_id, perfil, registro, movimientos):
     resumen_actual = resumir_movimientos(movimientos)
-    es_convenio = str(perfil.get("iibb_regimen", "")) == "Convenio Multilateral"
+    es_convenio = str(perfil.get("iibb_regimen", "")).strip() == "Convenio Multilateral"
+    regimen = "Convenio Multilateral · CM03" if es_convenio else f"Contribuyente local · {perfil.get('iibb_jurisdiccion') or 'jurisdicción sin definir'}"
     papeles = cargar_papeles_fiscales(periodo_id, cliente, "IIBB")
     ultimo = papeles.iloc[0].to_dict() if not papeles.empty else {}
-    st.markdown("#### Papel de trabajo Ingresos Brutos")
+    st.markdown(f"#### Papel de trabajo IIBB — {regimen}")
     st.caption(
-        f"{periodo} · " + (
-            f"última versión v{ultimo.get('version')} · {ultimo.get('estado')}"
-            if ultimo else "todavía sin versión guardada"
-        )
+        f"{periodo} · cálculo interno para contrastar con el borrador oficial; AM HUB no presenta la DDJJ. "
+        + (f"Última versión v{ultimo.get('version')} · {ultimo.get('estado')}." if ultimo else "Todavía sin versión guardada.")
     )
     m1, m2, m3 = st.columns(3)
-    m1.metric("Base sugerida", _fiscal_moneda(resumen_actual["ventas_neto"]))
+    m1.metric("Ventas netas sugeridas", _fiscal_moneda(resumen_actual["ventas_neto"]))
     m2.metric("Retenciones importadas", _fiscal_moneda(resumen_actual["iibb_retenciones"]))
     m3.metric("Percepciones importadas", _fiscal_moneda(resumen_actual["iibb_percepciones"]))
 
-    detalle_guardado = cargar_iibb_jurisdicciones(periodo_id, cliente) if es_convenio else pd.DataFrame()
+    detalle_guardado = cargar_iibb_jurisdicciones(periodo_id, cliente) if es_convenio else cargar_iibb_actividades(periodo_id, cliente)
+    cm05 = cargar_coeficientes_cm05(cliente, periodo_aplicacion_cm05(str(periodo))) if es_convenio else pd.DataFrame()
+    if es_convenio:
+        aplicacion = periodo_aplicacion_cm05(str(periodo))
+        if cm05.empty:
+            st.warning(f"No hay CM05 cargado para el período de aplicación {aplicacion}. Podés completar los coeficientes manualmente, pero deben sumar 1,0000.")
+        else:
+            st.success(f"Coeficientes unificados tomados del CM05 aplicable {aplicacion}. SIRCREB/SIRCUPA se informa como deducción, nunca como coeficiente.")
+
     with st.form(f"papel_iibb_{periodo_id}"):
-        base_iibb = st.number_input(
-            "Base imponible IIBB",
-            value=float(decimal_ar(registro.get("iibb_base", resumen_actual["ventas_neto"]) or resumen_actual["ventas_neto"])),
-            step=100.0,
-        )
-        detalle_editado = pd.DataFrame()
+        base_iibb = float(decimal_ar(registro.get("iibb_base", resumen_actual["ventas_neto"]) or resumen_actual["ventas_neto"]))
+        tasa_iibb = 0.0
+        recaudaciones = 0.0
         if es_convenio:
-            st.caption("Matriz CM03 por jurisdicción. Abrila sólo cuando necesites editar coeficientes o alícuotas.")
-            columnas_editor = [
+            base_iibb = st.number_input("Base general del período", value=base_iibb, step=100.0)
+            columnas = [
                 "codigo", "jurisdiccion", "actividad", "base_actividad", "coeficiente", "alicuota",
                 "retenciones", "percepciones", "recaudaciones_bancarias", "saldo_favor_anterior",
                 "otros_creditos", "valores_suman",
             ]
-            base_editor = (
-                _plantilla_iibb_convenio_con_arrastre(cliente, periodo, perfil.get("actividad_principal", ""))
-                if detalle_guardado.empty else detalle_guardado.reindex(columns=columnas_editor).copy()
+            base_editor = (_plantilla_iibb_convenio_con_arrastre(cliente, periodo, perfil.get("actividad_principal", ""))
+                           if detalle_guardado.empty else detalle_guardado.reindex(columns=columnas).copy())
+            for columna in columnas[3:]:
+                base_editor[columna] = base_editor[columna].apply(lambda v: None if str(v).strip() in {"", "nan"} else float(decimal_ar(v)))
+            detalle_editado = st.data_editor(
+                base_editor, hide_index=True, use_container_width=True, num_rows="dynamic",
+                column_config={
+                    "base_actividad": st.column_config.NumberColumn("Base propia", help="Vacío: usa la base general", format="%.2f"),
+                    "coeficiente": st.column_config.NumberColumn("Coef. CM05", min_value=0.0, max_value=1.0, format="%.4f"),
+                    "alicuota": st.column_config.NumberColumn("Alícuota %", min_value=0.0, max_value=20.0, format="%.4f"),
+                    "recaudaciones_bancarias": st.column_config.NumberColumn("SIRCREB/SIRCUPA", format="%.2f"),
+                }, key=f"fiscal_convenio_{periodo_id}",
             )
-            for columna in columnas_editor[3:]:
-                base_editor[columna] = base_editor[columna].apply(
-                    lambda valor: None if str(valor).strip() in {"", "nan"} else float(decimal_ar(valor))
-                )
-            editar = st.checkbox("Editar matriz por jurisdicción", value=False)
-            detalle_editado = base_editor
-            if editar:
-                detalle_editado = st.data_editor(
-                    base_editor, hide_index=True, use_container_width=True, num_rows="dynamic",
-                    column_config={
-                        "coeficiente": st.column_config.NumberColumn("Coef. CM05", min_value=0.0, max_value=1.0, format="%.4f"),
-                        "alicuota": st.column_config.NumberColumn("Alícuota %", min_value=0.0, max_value=20.0, format="%.4f"),
-                    }, key=f"fiscal_convenio_{periodo_id}",
-                )
-            else:
-                st.caption(f"{len(base_editor)} fila(s) · coeficientes {_total_coeficientes_convenio(base_editor):.4f}")
-            tasa_iibb = saldo_anterior = otros = ajustes = 0.0
+            saldo_anterior = otros = ajustes = 0.0
+            st.caption(f"Control actual de coeficientes: {_total_coeficientes_convenio(detalle_editado):.4f} (debe ser 1,0000).")
             venc_iibb = st.date_input("Vencimiento CM03", value=_fecha_fiscal(registro.get("fecha_vencimiento_iibb", "")))
         else:
-            b1, b2 = st.columns(2)
-            tasa_iibb = b1.number_input("Alícuota IIBB (%)", value=float(decimal_ar(registro.get("iibb_alicuota", perfil.get("alicuota_iibb", 0)) or perfil.get("alicuota_iibb", 0))), min_value=0.0, max_value=20.0, step=0.01)
+            columnas = ["codigo", "actividad", "tratamiento", "base_imponible", "alicuota"]
+            base_editor = (_plantilla_iibb_local(perfil, base_iibb) if detalle_guardado.empty
+                           else detalle_guardado.reindex(columns=columnas).copy())
+            for columna in ["base_imponible", "alicuota"]:
+                base_editor[columna] = base_editor[columna].apply(lambda v: float(decimal_ar(v)))
+            st.caption("Separá las actividades gravadas, exentas y no gravadas. El impuesto se calcula sólo sobre las gravadas.")
+            detalle_editado = st.data_editor(
+                base_editor, hide_index=True, use_container_width=True, num_rows="dynamic",
+                column_config={
+                    "tratamiento": st.column_config.SelectboxColumn("Tratamiento", options=["Gravada", "Exenta", "No gravada"], required=True),
+                    "base_imponible": st.column_config.NumberColumn("Base", min_value=0.0, format="%.2f"),
+                    "alicuota": st.column_config.NumberColumn("Alícuota %", min_value=0.0, max_value=20.0, format="%.4f"),
+                }, key=f"fiscal_local_{periodo_id}",
+            )
+            b1, b2, b3, b4 = st.columns(4)
+            recaudaciones = b1.number_input("Recaudaciones bancarias", value=0.0, step=100.0)
             saldo_anterior = b2.number_input("Saldo a favor anterior", value=float(decimal_ar(registro.get("iibb_saldo_favor_anterior", 0))), step=100.0)
-            b3, b4, b5 = st.columns(3)
             otros = b3.number_input("Otros créditos", value=float(decimal_ar(registro.get("iibb_otros_creditos", 0))), step=100.0)
             ajustes = b4.number_input("Ajuste conciliatorio", value=float(decimal_ar(registro.get("iibb_ajustes", 0))), step=100.0)
-            venc_iibb = b5.date_input("Vencimiento IIBB", value=_fecha_fiscal(registro.get("fecha_vencimiento_iibb", "")))
+            venc_iibb = st.date_input("Vencimiento IIBB", value=_fecha_fiscal(registro.get("fecha_vencimiento_iibb", "")))
         responsable = st.text_input("Responsable interno", value=str(registro.get("responsable", "")), key=f"resp_iibb_{periodo_id}")
         observaciones = st.text_area("Observaciones IIBB", height=80, key=f"obs_iibb_{periodo_id}")
         guardar = st.form_submit_button("Calcular y guardar nueva versión IIBB", type="primary")
+
     if guardar:
         if es_convenio:
             calculo = calcular_iibb_convenio(base_iibb, detalle_editado)
             activas = [fila for fila in calculo["detalle"] if decimal_ar(fila.get("coeficiente", 0)) > 0]
             if abs(calculo["coeficiente_total"] - Decimal("1")) > Decimal("0.0001") or any(decimal_ar(f.get("alicuota", 0)) <= 0 for f in activas):
-                st.error("No se guardó: los coeficientes deben sumar 1,0000 y cada jurisdicción activa debe tener alícuota.")
+                st.error("No se guardó: los coeficientes unificados deben sumar 1,0000 y cada jurisdicción activa debe tener alícuota.")
                 st.stop()
             guardar_iibb_jurisdicciones(periodo_id, cliente, periodo, calculo)
+            fuente = {"regimen": "Convenio Multilateral", "formulario": "CM03", "cm05_periodo_aplicacion": periodo_aplicacion_cm05(str(periodo)), "cm05_cargado": not cm05.empty}
         else:
-            calculo = calcular_iibb(
-                base_iibb, tasa_iibb, resumen_actual["iibb_retenciones"],
-                resumen_actual["iibb_percepciones"], saldo_anterior, otros, ajustes,
+            calculo = calcular_iibb_local_actividades(
+                detalle_editado, resumen_actual["iibb_retenciones"], resumen_actual["iibb_percepciones"],
+                recaudaciones, saldo_anterior, otros, ajustes,
             )
-            _registrar_ajuste_fiscal(
-                periodo_id, cliente, periodo, "IIBB", "Ajuste conciliatorio IIBB",
-                registro.get("iibb_ajustes", 0), ajustes, observaciones,
-            )
+            guardar_iibb_actividades(periodo_id, cliente, periodo, calculo)
+            fuente = {"regimen": "Local", "jurisdiccion": perfil.get("iibb_jurisdiccion", "")}
+            _registrar_ajuste_fiscal(periodo_id, cliente, periodo, "IIBB", "Ajuste conciliatorio IIBB", registro.get("iibb_ajustes", 0), ajustes, observaciones)
         registro.update({
-            "iibb_base": base_iibb, "iibb_alicuota": tasa_iibb,
+            "iibb_base": calculo.get("base_imponible", base_iibb), "iibb_alicuota": tasa_iibb,
             "iibb_determinado": calculo["impuesto_determinado"],
-            "iibb_retenciones": calculo["creditos"] if es_convenio else resumen_actual["iibb_retenciones"],
-            "iibb_percepciones": "" if es_convenio else resumen_actual["iibb_percepciones"],
+            "iibb_retenciones": calculo.get("retenciones", calculo["creditos"] if es_convenio else resumen_actual["iibb_retenciones"]),
+            "iibb_percepciones": calculo.get("percepciones", "" if es_convenio else resumen_actual["iibb_percepciones"]),
             "iibb_saldo_favor_anterior": saldo_anterior, "iibb_otros_creditos": otros,
             "iibb_ajustes": ajustes, "iibb_saldo_favor": calculo["saldo_favor"],
             "iibb_saldo_pagar": calculo["saldo_pagar"], "fecha_vencimiento_iibb": venc_iibb.isoformat(),
@@ -16730,16 +16849,19 @@ def _render_papel_iibb(cliente, periodo, periodo_id, perfil, registro, movimient
         guardar_version_papel_fiscal(
             cliente, periodo, periodo_id, "IIBB",
             {"liquidacion": calculo, "registro": {k: registro.get(k, "") for k in FISCAL_PERIODO_COLUMNAS if k.startswith("iibb_") or k == "fecha_vencimiento_iibb"}},
-            {}, observaciones,
+            fuente, observaciones,
         )
-        st.success("Nueva versión del papel IIBB guardada. Revisala y autorizala desde Revisar y autorizar.")
+        st.success("Nueva versión guardada. Contrastala con el borrador oficial y autorizala si coincide.")
         st.rerun()
+
     if str(registro.get("iibb_determinado", "")).strip():
-        st.markdown("##### Último resultado calculado")
         r1, r2, r3 = st.columns(3)
         r1.metric("Impuesto determinado", _fiscal_moneda(registro.get("iibb_determinado", 0)))
         r2.metric("IIBB a pagar", _fiscal_moneda(registro.get("iibb_saldo_pagar", 0)))
         r3.metric("Saldo a favor", _fiscal_moneda(registro.get("iibb_saldo_favor", 0)))
+        if not detalle_guardado.empty:
+            with st.expander("Ver detalle guardado para contrastar", expanded=False):
+                st.dataframe(detalle_guardado, hide_index=True, use_container_width=True)
 
 
 def _render_papeles_guardados(cliente, periodo, periodo_id):
@@ -16882,7 +17004,7 @@ def render_liquidaciones_fiscales(cliente_fijo="", modo="admin"):
 
     seccion_fiscal = st.radio(
         "Sección",
-        ["Expediente", "Documentación", "Papel de trabajo", "Cierre"],
+        ["Expediente", "Documentación", "Papel de trabajo", "Cierre mensual"],
         horizontal=True,
         label_visibility="collapsed",
         key=f"fiscal_seccion_{cliente}_{periodo}",
@@ -17418,9 +17540,9 @@ def render_liquidaciones_fiscales(cliente_fijo="", modo="admin"):
                         use_container_width=True,
                     )
 
-    if seccion_fiscal == "Cierre":
-        st.markdown("#### Control y publicación")
-        st.caption("El cliente no ve comprobantes, bases, ajustes ni papeles internos. Sólo ve el resultado confirmado y los archivos marcados para cliente.")
+    if seccion_fiscal == "Cierre mensual":
+        st.markdown("#### Cierre mensual y control de presentación")
+        st.caption("Confirmar en AM HUB valida el papel y habilita el resultado al cliente. Presentar en ARCA, AGIP, ARBA o SIFERE sigue siendo un paso oficial manual y separado.")
         if not str(registro.get("ventas_neto", "")).strip():
             st.warning("Primero guardá el papel de trabajo.")
         else:
@@ -17469,7 +17591,7 @@ def render_liquidaciones_fiscales(cliente_fijo="", modo="admin"):
                 st.session_state.get("role") in ["admin_general", "admin"]
                 and convenio_listo and expediente_listo and papeles_listos
             ):
-                estados += ["Confirmada", "Presentada", "Pendiente de pago", "Pagada"]
+                estados += ["Confirmada", "Pendiente de pago", "Pagada"]
             estado_actual = registro.get("estado", "Borrador")
             if estado_actual not in estados:
                 estados.append(estado_actual)
@@ -17483,6 +17605,64 @@ def render_liquidaciones_fiscales(cliente_fijo="", modo="admin"):
                     registro["confirmado_por"] = registro.get("confirmado_por") or st.session_state.get("username", "")
                 _upsert_tabla_fiscal(FISCAL_PERIODOS_PATH, FISCAL_PERIODO_COLUMNAS, registro)
                 st.success("Estado actualizado.")
+                st.rerun()
+
+            st.markdown("##### Estado de las presentaciones oficiales")
+            p1, p2 = st.columns(2)
+            opciones_presentacion = ["Pendiente", "Presentada"]
+            estado_iva = str(registro.get("iva_estado_presentacion", "") or "Pendiente")
+            estado_iibb = str(registro.get("iibb_estado_presentacion", "") or "Pendiente")
+            if estado_iva not in opciones_presentacion:
+                estado_iva = "Pendiente"
+            if estado_iibb not in opciones_presentacion:
+                estado_iibb = "Pendiente"
+            nuevo_iva = p1.selectbox("Portal IVA", opciones_presentacion, index=opciones_presentacion.index(estado_iva), key=f"presentacion_iva_{periodo_id}")
+            nuevo_iibb = p2.selectbox("IIBB oficial", opciones_presentacion, index=opciones_presentacion.index(estado_iibb), disabled=not requiere_iibb, key=f"presentacion_iibb_{periodo_id}")
+            if st.button("Guardar estado de presentación", key=f"guardar_presentaciones_{periodo_id}"):
+                ahora = _fiscal_timestamp()
+                registro["iva_estado_presentacion"] = nuevo_iva
+                registro["iva_fecha_presentacion"] = ahora if nuevo_iva == "Presentada" else ""
+                registro["iibb_estado_presentacion"] = nuevo_iibb if requiere_iibb else "No corresponde"
+                registro["iibb_fecha_presentacion"] = ahora if requiere_iibb and nuevo_iibb == "Presentada" else ""
+                registro["fecha_actualizacion"] = ahora
+                registro["actualizado_por"] = st.session_state.get("username", "")
+                _upsert_tabla_fiscal(FISCAL_PERIODOS_PATH, FISCAL_PERIODO_COLUMNAS, registro)
+                st.success("Presentaciones oficiales actualizadas sin alterar la autorización interna.")
+                st.rerun()
+
+            st.markdown("##### Contabilidad generada")
+            asientos_mes = _contable_cargar(CONTABLE_ASIENTOS_PATH, ASIENTO_COLUMNAS, cliente, periodo)
+            lineas_mes = _contable_cargar(CONTABLE_LINEAS_PATH, ASIENTO_LINEA_COLUMNAS, cliente, periodo)
+            controles_mes = validar_asientos(asientos_mes, lineas_mes)
+            borradores_mes = asientos_mes[asientos_mes["estado"].astype(str).eq("Borrador")] if not asientos_mes.empty else asientos_mes
+            mapa_balance = dict(zip(controles_mes.get("asiento_id", pd.Series(dtype=str)).astype(str), controles_mes.get("balanceado", pd.Series(dtype=bool))))
+            borradores_balanceados = (
+                not borradores_mes.empty
+                and all(bool(mapa_balance.get(aid, False)) for aid in borradores_mes["id"].astype(str))
+            )
+            c1, c2, c3 = st.columns(3)
+            c1.metric("Asientos del mes", len(asientos_mes))
+            c2.metric("Borradores", len(borradores_mes))
+            c3.metric("Desbalanceados", sum(not bool(mapa_balance.get(aid, False)) for aid in borradores_mes.get("id", pd.Series(dtype=str)).astype(str)))
+            if st.button(
+                "Autorizar contabilidad del mes", type="primary",
+                disabled=not (papeles_listos and expediente_listo and convenio_listo and borradores_balanceados),
+                key=f"autorizar_contabilidad_cierre_{periodo_id}",
+            ):
+                ahora = _fiscal_timestamp()
+                actualizados = borradores_mes.copy()
+                actualizados["estado"] = "Autorizado"
+                actualizados["fecha_autorizacion"] = ahora
+                actualizados["autorizado_por"] = st.session_state.get("username", "")
+                _contable_upsert_dataframe(CONTABLE_ASIENTOS_PATH, ASIENTO_COLUMNAS, actualizados)
+                periodo_contable = _contable_periodo(cliente, periodo)
+                periodo_contable.update({
+                    "estado": "Autorizado", "fecha_autorizacion": ahora,
+                    "autorizado_por": st.session_state.get("username", ""),
+                    "fecha_actualizacion": ahora,
+                })
+                _contable_upsert_dataframe(CONTABLE_PERIODOS_PATH, PERIODO_CONTABLE_COLUMNAS, pd.DataFrame([periodo_contable]))
+                st.success("Contabilidad mensual autorizada. Ya integra los reportes del ejercicio.")
                 st.rerun()
 
 

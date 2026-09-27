@@ -752,6 +752,67 @@ def calcular_iibb(
     }
 
 
+def calcular_iibb_local_actividades(
+    actividades, retenciones=0, percepciones=0, recaudaciones_bancarias=0,
+    saldo_favor_anterior=0, otros_creditos=0, ajustes=0,
+) -> dict:
+    """Calcula una DDJJ local separando actividades gravadas, exentas y no gravadas."""
+    filas = (
+        actividades.to_dict("records")
+        if isinstance(actividades, pd.DataFrame)
+        else list(actividades or [])
+    )
+    detalle = []
+    for fila in filas:
+        actividad = str(fila.get("actividad", "")).strip()
+        codigo = str(fila.get("codigo", "")).strip()
+        if not actividad and not codigo:
+            continue
+        tratamiento = str(fila.get("tratamiento", "Gravada") or "Gravada").strip()
+        base = dinero(fila.get("base_imponible", 0))
+        alicuota = decimal_ar(fila.get("alicuota", 0))
+        determinado = (
+            dinero(base * alicuota / Decimal("100"))
+            if tratamiento.casefold() == "gravada" else Decimal("0.00")
+        )
+        detalle.append({
+            **fila, "codigo": codigo, "actividad": actividad,
+            "tratamiento": tratamiento, "base_imponible": base,
+            "alicuota": alicuota, "impuesto_determinado": determinado,
+        })
+
+    def sumar_base(tratamiento):
+        return dinero(sum((
+            decimal_ar(fila["base_imponible"]) for fila in detalle
+            if fila["tratamiento"].casefold() == tratamiento
+        ), Decimal("0")))
+
+    determinado = dinero(sum(
+        (decimal_ar(fila["impuesto_determinado"]) for fila in detalle), Decimal("0")
+    ))
+    creditos = dinero(
+        dinero(retenciones) + dinero(percepciones) + dinero(recaudaciones_bancarias)
+        + dinero(saldo_favor_anterior) + dinero(otros_creditos) + dinero(ajustes)
+    )
+    diferencia = dinero(determinado - creditos)
+    return {
+        "base_imponible": sumar_base("gravada"),
+        "base_exenta": sumar_base("exenta"),
+        "base_no_gravada": sumar_base("no gravada"),
+        "impuesto_determinado": determinado,
+        "retenciones": dinero(retenciones),
+        "percepciones": dinero(percepciones),
+        "recaudaciones_bancarias": dinero(recaudaciones_bancarias),
+        "saldo_favor_anterior": dinero(saldo_favor_anterior),
+        "otros_creditos": dinero(otros_creditos),
+        "ajustes": dinero(ajustes),
+        "creditos": creditos,
+        "saldo_pagar": dinero(max(diferencia, Decimal("0"))),
+        "saldo_favor": dinero(max(-diferencia, Decimal("0"))),
+        "detalle": detalle,
+    }
+
+
 def calcular_iibb_convenio(base_general, jurisdicciones) -> dict:
     """Calcula CM03 por jurisdicción sin mezclar coeficientes SIRCREB.
 
