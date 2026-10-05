@@ -7,6 +7,7 @@ from am_hub_accounting import (
     balance_sumas_saldos,
     crear_asiento_manual,
     generar_asiento_banco,
+    generar_asiento_operacion,
     generar_asiento_sueldos,
     generar_asientos_comprobantes,
     parsear_extracto_bancario,
@@ -85,6 +86,35 @@ class AccountingTests(unittest.TestCase):
                 "Cliente", "2026-07", "2026-07-01", "Apertura",
                 [{"cuenta_codigo": "1.1.02", "debe": 100, "haber": 0}],
             )
+
+    def test_operacion_cliente_bimonetaria_genera_borrador_balanceado(self):
+        operacion = {
+            "id": "O1", "cliente": "Cliente prueba", "periodo": "2026-07",
+            "fecha": "2026-07-03", "tipo_operacion": "Venta",
+            "tercero_cuit": "30-1", "tercero_nombre": "Comprador",
+            "tipo_comprobante": "Factura A", "punto_venta": "1", "numero": "25",
+            "moneda": "USD", "tipo_cambio": "1000", "neto": "100",
+            "iva": "21", "otros": "0", "total": "121", "importe_pesos": "121000",
+            "cuenta_resultado": "4.1.01", "centro_costo": "Servicios",
+        }
+        cab, lineas = generar_asiento_operacion(operacion, "cliente")
+        self.assertEqual(cab["estado"], "Borrador")
+        self.assertEqual(cab["origen"], "Operación cliente")
+        control = validar_asientos(pd.DataFrame([cab]), pd.DataFrame(lineas))
+        self.assertTrue(control.iloc[0]["balanceado"])
+
+    def test_compra_personal_no_toma_credito_fiscal(self):
+        operacion = {
+            "id": "O2", "cliente": "Cliente prueba", "periodo": "2026-07",
+            "fecha": "2026-07-04", "tipo_operacion": "Compra",
+            "tercero_nombre": "Proveedor", "neto": "1000", "iva": "210",
+            "total": "1210", "importe_pesos": "1210", "tipo_cambio": "1",
+            "es_personal": "Sí",
+        }
+        cab, lineas = generar_asiento_operacion(operacion)
+        codigos = {linea["cuenta_codigo"] for linea in lineas}
+        self.assertIn("3.1.02", codigos)
+        self.assertNotIn("1.1.04", codigos)
 
 
 if __name__ == "__main__":

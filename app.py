@@ -46,13 +46,17 @@ from am_hub_accounting import (
     ASIENTO_COLUMNAS,
     ASIENTO_LINEA_COLUMNAS,
     BANCO_MOVIMIENTO_COLUMNAS,
+    CONFIG_GESTION_COLUMNAS,
     CUENTA_COLUMNAS,
     EJERCICIO_CONTABLE_COLUMNAS,
     PERIODO_CONTABLE_COLUMNAS,
     SUELDO_COLUMNAS,
+    TERCERO_COLUMNAS,
+    OPERACION_COLUMNAS,
     balance_sumas_saldos,
     crear_asiento_manual,
     generar_asiento_banco,
+    generar_asiento_operacion,
     generar_asiento_sueldos,
     generar_asientos_comprobantes,
     generar_asientos_impuestos,
@@ -118,6 +122,9 @@ CONTABLE_SUELDOS_PATH = DATA_DIR / "contable_sueldos.csv"
 CONTABLE_PERIODOS_PATH = DATA_DIR / "contable_periodos.csv"
 CONTABLE_EJERCICIOS_PATH = DATA_DIR / "contable_ejercicios.csv"
 CONTABLE_ARCHIVOS_PATH = DATA_DIR / "contable_archivos.csv"
+CONTABLE_TERCEROS_PATH = DATA_DIR / "contable_terceros.csv"
+CONTABLE_OPERACIONES_PATH = DATA_DIR / "contable_operaciones.csv"
+CONTABLE_CONFIG_GESTION_PATH = DATA_DIR / "contable_config_gestion.csv"
 
 ACTIVIDAD_COLUMNS = [
     "id",
@@ -754,6 +761,9 @@ def asegurar_tablas_contables():
         "contable_periodos": PERIODO_CONTABLE_COLUMNAS,
         "contable_ejercicios": EJERCICIO_CONTABLE_COLUMNAS,
         "contable_archivos": ARCHIVO_CONTABLE_COLUMNAS,
+        "contable_terceros": TERCERO_COLUMNAS,
+        "contable_operaciones": OPERACION_COLUMNAS,
+        "contable_config_gestion": CONFIG_GESTION_COLUMNAS,
     }
     nombres = list(definiciones)
     consulta_existentes = sql_text(
@@ -770,6 +780,12 @@ def asegurar_tablas_contables():
             conn.execute(sql_text(
                 'ALTER TABLE "contable_cuentas" ADD COLUMN IF NOT EXISTS "clave_origen" TEXT'
             ))
+            conn.execute(sql_text(
+                'ALTER TABLE "contable_archivos" ADD COLUMN IF NOT EXISTS "source_tipo" TEXT'
+            ))
+            conn.execute(sql_text(
+                'ALTER TABLE "contable_archivos" ADD COLUMN IF NOT EXISTS "source_id" TEXT'
+            ))
         return True
     with get_postgres_engine().begin() as conn:
         for tabla, columnas in definiciones.items():
@@ -780,6 +796,10 @@ def asegurar_tablas_contables():
             conn.execute(sql_text(
                 f'CREATE TABLE IF NOT EXISTS "{tabla}" ({", ".join(partes)})'
             ))
+        for columna in ["source_tipo", "source_id"]:
+            conn.execute(sql_text(
+                f'ALTER TABLE "contable_archivos" ADD COLUMN IF NOT EXISTS "{columna}" TEXT'
+            ))
         for tabla, columnas in {
             "contable_cuentas": '("cliente", "codigo")',
             "contable_asientos": '("cliente", "periodo")',
@@ -788,6 +808,8 @@ def asegurar_tablas_contables():
             "contable_sueldos": '("cliente", "periodo")',
             "contable_periodos": '("cliente", "periodo")',
             "contable_ejercicios": '("cliente", "ejercicio")',
+            "contable_terceros": '("cliente", "tipo")',
+            "contable_operaciones": '("cliente", "periodo", "estado_revision")',
             "contable_archivos": '("cliente", "periodo")',
         }.items():
             conn.execute(sql_text(
@@ -2920,6 +2942,7 @@ def menu_cliente_por_servicios(cliente_nombre):
 
     if servicios["contabilidad"]:
         opciones += [
+            "Gestión contable",
             "Cash Flow",
             "Plan de trabajo",
             "Impuestos",
@@ -15292,9 +15315,14 @@ def guardar_lote_fiscal(cliente, periodo, periodo_id, archivos):
         asientos_generados = _sincronizar_asientos_comprobantes(
             cliente, periodo, periodo_id,
         )
-        if asientos_generados:
+        if asientos_generados > 0:
             avisos_periodo.append(
                 f"Se generaron {asientos_generados} asiento(s) contable(s) en borrador desde compras y ventas."
+            )
+        elif asientos_generados < 0:
+            avisos_periodo.append(
+                "Los comprobantes de ARCA se incorporaron como control contra la gestión diaria. "
+                "No se generaron asientos duplicados."
             )
 
     cargar_archivo_fiscal.clear()
@@ -15658,6 +15686,14 @@ def _sincronizar_asientos_comprobantes(cliente, periodo, periodo_id):
     ] if not movimientos.empty else movimientos
     if comprobantes.empty:
         return 0
+    operaciones_diarias = _contable_cargar(
+        CONTABLE_OPERACIONES_PATH, OPERACION_COLUMNAS, cliente, periodo,
+    )
+    if not operaciones_diarias.empty:
+        # Cuando el cliente lleva gestión diaria, ARCA es fuente de control y no
+        # debe duplicar los asientos ya originados por Ventas/Compras.
+        _contable_eliminar_borradores_generados(cliente, periodo, ["Comprobante fiscal"])
+        return -len(comprobantes)
     cuentas = _contable_cargar(CONTABLE_CUENTAS_PATH, CUENTA_COLUMNAS, cliente)
     if cuentas.empty:
         cuentas = plan_cuentas_inicial(cliente, st.session_state.get("username", ""))
@@ -15670,7 +15706,7 @@ def _sincronizar_asientos_comprobantes(cliente, periodo, periodo_id):
     return _contable_guardar_asientos(cabeceras, lineas)
 
 
-def _contable_guardar_archivo(cliente, periodo, categoria, archivo):
+def _contable_guardar_archivo(cliente, periodo, categoria, archivo, source_tipo="", source_id=""):
     contenido = archivo.getvalue()
     digest = hashlib.sha256(contenido).hexdigest()
     registro = {
@@ -15679,6 +15715,7 @@ def _contable_guardar_archivo(cliente, periodo, categoria, archivo):
         "nombre": archivo.name, "tipo": getattr(archivo, "type", "") or "application/octet-stream",
         "tamano": str(len(contenido)), "sha256": digest,
         "contenido_base64": base64.b64encode(contenido).decode("ascii"),
+        "source_tipo": str(source_tipo), "source_id": str(source_id),
         "fecha_carga": _fiscal_timestamp(), "cargado_por": st.session_state.get("username", ""),
     }
     return _contable_upsert_dataframe(
@@ -15699,7 +15736,8 @@ CONTABLE_CODIGO_USO_BASE = {
     "2.1.02": "IVA débito fiscal", "2.1.03": "IVA a pagar",
     "2.1.04": "IIBB a pagar", "2.1.05": "Sueldos a pagar",
     "2.1.06": "Cargas sociales a pagar", "2.1.07": "Otras obligaciones fiscales",
-    "3.1.01": "Capital y resultados", "4.1.01": "Ventas gravadas",
+    "3.1.01": "Capital y resultados", "3.1.02": "Cuenta particular socios",
+    "4.1.01": "Ventas gravadas",
     "4.1.02": "Otros ingresos", "4.1.03": "Ventas exentas",
     "5.1.01": "Compras y gastos", "5.1.02": "Gastos bancarios",
     "5.1.03": "Sueldos gasto", "5.1.04": "Cargas sociales gasto",
@@ -16067,6 +16105,350 @@ def cargar_contexto_contable_postgres_cacheado(cliente, periodo):
     return salida
 
 
+def _operacion_importe_pesos(moneda, total, tipo_cambio):
+    return decimal_ar(total) * (decimal_ar(tipo_cambio) if moneda == "USD" else Decimal("1"))
+
+
+def _asegurar_plan_cliente(cliente):
+    cuentas = _contable_cargar(CONTABLE_CUENTAS_PATH, CUENTA_COLUMNAS, cliente)
+    if cuentas.empty:
+        cuentas = plan_cuentas_inicial(cliente, st.session_state.get("username", ""))
+        _contable_upsert_dataframe(CONTABLE_CUENTAS_PATH, CUENTA_COLUMNAS, cuentas)
+    return cuentas
+
+
+def _guardar_operacion_y_asiento(operacion, cuentas):
+    _contable_eliminar_borradores_generados(
+        operacion.get("cliente", ""), operacion.get("periodo", ""),
+        ["Comprobante fiscal"],
+    )
+    cabecera, lineas = generar_asiento_operacion(
+        operacion, st.session_state.get("username", ""),
+    )
+    lineas_df = _aplicar_mapeo_contable(pd.DataFrame(lineas), cuentas)
+    _contable_guardar_asientos(pd.DataFrame([cabecera]), lineas_df)
+    operacion["asiento_id"] = cabecera["id"]
+    _contable_upsert_dataframe(
+        CONTABLE_OPERACIONES_PATH, OPERACION_COLUMNAS, pd.DataFrame([operacion]),
+    )
+    return cabecera["id"]
+
+
+def _render_configuracion_gestion(cliente):
+    configuraciones = _contable_cargar(
+        CONTABLE_CONFIG_GESTION_PATH, CONFIG_GESTION_COLUMNAS, cliente,
+    )
+    actual = configuraciones.iloc[-1].to_dict() if not configuraciones.empty else {}
+    with st.form(f"config_gestion_{cliente}"):
+        st.markdown("##### Configuración operativa del cliente")
+        c1, c2, c3 = st.columns(3)
+        fecha_inicio = c1.date_input("Inicio de registración", value=_fecha_fiscal(actual.get("fecha_inicio", "")))
+        maneja_stock = c2.selectbox("Maneja stock", ["No", "Sí"], index=1 if valor_si(actual.get("maneja_stock", "No")) else 0)
+        tiene_empleados = c3.selectbox("Tiene empleados", ["No", "Sí"], index=1 if valor_si(actual.get("tiene_empleados", "No")) else 0)
+        actividad = st.text_input("Actividad y circuito del negocio", value=str(actual.get("actividad", "")))
+        c4, c5, c6 = st.columns(3)
+        responsable = c4.text_input("Responsable de carga del cliente", value=str(actual.get("responsable_carga", "")))
+        frecuencia = c5.selectbox("Control de AM Consultora", ["Semanal", "Quincenal", "Mensual"], index=["Semanal", "Quincenal", "Mensual"].index(actual.get("frecuencia_control", "Mensual")) if actual.get("frecuencia_control") in ["Semanal", "Quincenal", "Mensual"] else 2)
+        sistema_previo = c6.text_input("Sistema previo", value=str(actual.get("sistema_previo", "")))
+        observaciones = st.text_area("Particularidades contables y administrativas", value=str(actual.get("observaciones", "")))
+        guardar = st.form_submit_button("Guardar configuración", type="primary")
+    if guardar:
+        registro = {
+            "id": actual.get("id") or f"CGES-{uuid.uuid4().hex}", "cliente": cliente,
+            "fecha_inicio": fecha_inicio.isoformat(), "actividad": actividad,
+            "maneja_stock": maneja_stock, "tiene_empleados": tiene_empleados,
+            "responsable_carga": responsable, "frecuencia_control": frecuencia,
+            "sistema_previo": sistema_previo, "observaciones": observaciones,
+            "fecha_actualizacion": _fiscal_timestamp(),
+            "actualizado_por": st.session_state.get("username", ""),
+        }
+        _contable_upsert_dataframe(CONTABLE_CONFIG_GESTION_PATH, CONFIG_GESTION_COLUMNAS, pd.DataFrame([registro]))
+        st.success("Configuración guardada.")
+        st.rerun()
+
+
+def render_gestion_contable_cliente(cliente, modo="cliente", mostrar_header=True):
+    if mostrar_header:
+        header("Gestión contable", "Operaciones diarias y documentación para la contabilidad")
+    asegurar_tablas_contables()
+    es_equipo = st.session_state.get("role") in ["admin_general", "admin", "equipo"]
+    cuentas = _asegurar_plan_cliente(cliente)
+    terceros = _contable_cargar(CONTABLE_TERCEROS_PATH, TERCERO_COLUMNAS, cliente)
+    operaciones = _contable_cargar(CONTABLE_OPERACIONES_PATH, OPERACION_COLUMNAS, cliente)
+    archivos = _contable_cargar(CONTABLE_ARCHIVOS_PATH, ARCHIVO_CONTABLE_COLUMNAS, cliente)
+
+    observadas_cliente = operaciones[operaciones["estado_revision"].astype(str).eq("Observada")] if not operaciones.empty else operaciones
+    opciones = ["Resumen", "Registrar operación", "Clientes y proveedores", "Documentación"]
+    if not observadas_cliente.empty:
+        opciones.insert(2, "Corregir observadas")
+    if es_equipo:
+        opciones += ["Revisión AM", "Configuración"]
+    seccion = st.radio(
+        "Gestión", opciones, horizontal=True, label_visibility="collapsed",
+        key=f"gestion_cliente_{cliente}_{modo}",
+    )
+
+    if seccion == "Resumen":
+        pendientes = operaciones[operaciones["estado_revision"].astype(str).eq("Pendiente de revisión")] if not operaciones.empty else operaciones
+        observadas = operaciones[operaciones["estado_revision"].astype(str).eq("Observada")] if not operaciones.empty else operaciones
+        sin_respaldo = set(operaciones["id"].astype(str)) - set(archivos.get("source_id", pd.Series(dtype=str)).astype(str)) if not operaciones.empty else set()
+        personales = operaciones[operaciones["es_personal"].astype(str).apply(valor_si)] if not operaciones.empty else operaciones
+        r1, r2, r3, r4 = st.columns(4)
+        r1.metric("Operaciones", len(operaciones))
+        r2.metric("Pendientes de AM", len(pendientes))
+        r3.metric("Sin respaldo", len(sin_respaldo))
+        r4.metric("Personales detectadas", len(personales))
+        st.caption("Las operaciones quedan en borrador contable hasta que AM Consultora las revise y autorice el mes.")
+        if not operaciones.empty:
+            vista = operaciones.sort_values(["periodo", "fecha"], ascending=False).head(50).copy()
+            st.dataframe(
+                vista[["fecha", "tipo_operacion", "tercero_nombre", "moneda", "total", "importe_pesos", "centro_costo", "estado_revision"]],
+                hide_index=True, use_container_width=True,
+            )
+        if not observadas.empty:
+            st.warning(f"Hay {len(observadas)} operación(es) observada(s) que requieren corrección del cliente.")
+
+        periodos_operados = sorted(operaciones.get("periodo", pd.Series(dtype=str)).astype(str).dropna().unique().tolist(), reverse=True) if not operaciones.empty else []
+        if periodos_operados:
+            periodo_control = st.selectbox("Período para control contra ARCA", periodos_operados, key=f"cruce_arca_{cliente}")
+            periodo_fiscal = cargar_periodo_fiscal(cliente, periodo_control)
+            movimientos_fiscales = _cargar_tabla_fiscal(
+                FISCAL_MOVIMIENTOS_PATH, MOVIMIENTO_COLUMNAS, cliente, periodo_fiscal.get("id", ""),
+            )
+            if not movimientos_fiscales.empty:
+                fiscal = resumir_movimientos(movimientos_fiscales)
+                ops_mes = operaciones[operaciones["periodo"].astype(str).eq(periodo_control)]
+                ventas_neto = sum((decimal_ar(v) for v in ops_mes.loc[ops_mes["tipo_operacion"].eq("Venta"), "neto"]), Decimal("0"))
+                ventas_iva = sum((decimal_ar(v) for v in ops_mes.loc[ops_mes["tipo_operacion"].eq("Venta"), "iva"]), Decimal("0"))
+                compras_neto = sum((decimal_ar(v) for v in ops_mes.loc[ops_mes["tipo_operacion"].isin(["Compra", "Gasto"]), "neto"]), Decimal("0"))
+                compras_iva = sum((decimal_ar(v) for v in ops_mes.loc[ops_mes["tipo_operacion"].isin(["Compra", "Gasto"]), "iva"]), Decimal("0"))
+                control_arca = pd.DataFrame([
+                    {"Concepto": "Ventas netas", "Gestión diaria": ventas_neto, "ARCA": fiscal["ventas_neto"], "Diferencia": ventas_neto - fiscal["ventas_neto"]},
+                    {"Concepto": "IVA débito", "Gestión diaria": ventas_iva, "ARCA": fiscal["iva_debito"], "Diferencia": ventas_iva - fiscal["iva_debito"]},
+                    {"Concepto": "Compras netas", "Gestión diaria": compras_neto, "ARCA": fiscal["compras_neto"], "Diferencia": compras_neto - fiscal["compras_neto"]},
+                    {"Concepto": "IVA crédito", "Gestión diaria": compras_iva, "ARCA": fiscal["iva_credito"], "Diferencia": compras_iva - fiscal["iva_credito"]},
+                ])
+                st.markdown("##### Control gestión diaria contra Portal IVA")
+                st.dataframe(control_arca, hide_index=True, use_container_width=True)
+            else:
+                st.info("Todavía no se cargaron los archivos de Portal IVA para contrastar este período.")
+
+        if not operaciones.empty:
+            resumen = operaciones.copy()
+            resumen["importe_num"] = resumen["importe_pesos"].apply(decimal_ar)
+            saldos = []
+            for nombre, grupo in resumen[resumen["tercero_nombre"].astype(str).str.strip().ne("")].groupby("tercero_nombre"):
+                ventas = sum((decimal_ar(v) for v in grupo.loc[grupo["tipo_operacion"].eq("Venta"), "importe_pesos"]), Decimal("0"))
+                cobros = sum((decimal_ar(v) for v in grupo.loc[grupo["tipo_operacion"].eq("Cobro"), "importe_pesos"]), Decimal("0"))
+                compras = sum((decimal_ar(v) for v in grupo.loc[grupo["tipo_operacion"].isin(["Compra", "Gasto"]), "importe_pesos"]), Decimal("0"))
+                pagos = sum((decimal_ar(v) for v in grupo.loc[grupo["tipo_operacion"].eq("Pago"), "importe_pesos"]), Decimal("0"))
+                if ventas or cobros or compras or pagos:
+                    saldos.append({"Tercero": nombre, "A cobrar": ventas - cobros, "A pagar": compras - pagos})
+            if saldos:
+                with st.expander("Saldos operativos por cliente y proveedor"):
+                    st.dataframe(pd.DataFrame(saldos), hide_index=True, use_container_width=True)
+
+    if seccion == "Clientes y proveedores":
+        st.markdown("#### Maestro de clientes y proveedores")
+        with st.form(f"tercero_nuevo_{cliente}"):
+            t1, t2, t3 = st.columns(3)
+            tipo = t1.selectbox("Tipo", ["Cliente", "Proveedor", "Ambos"])
+            cuit = t2.text_input("CUIT")
+            razon_social = t3.text_input("Razón social")
+            t4, t5, t6 = st.columns(3)
+            fantasia = t4.text_input("Nombre de fantasía")
+            condicion_iva = t5.text_input("Condición IVA")
+            email = t6.text_input("Email")
+            telefono = st.text_input("Teléfono")
+            guardar_tercero = st.form_submit_button("Agregar", type="primary")
+        if guardar_tercero:
+            if not razon_social.strip():
+                st.error("Ingresá la razón social.")
+            else:
+                tercero = {
+                    "id": f"TER-{uuid.uuid4().hex}", "cliente": cliente, "tipo": tipo,
+                    "cuit": cuit, "razon_social": razon_social, "nombre_fantasia": fantasia,
+                    "condicion_iva": condicion_iva, "email": email, "telefono": telefono,
+                    "activo": "Sí", "observaciones": "", "fecha_actualizacion": _fiscal_timestamp(),
+                    "actualizado_por": st.session_state.get("username", ""),
+                }
+                _contable_upsert_dataframe(CONTABLE_TERCEROS_PATH, TERCERO_COLUMNAS, pd.DataFrame([tercero]))
+                st.success("Cliente/proveedor agregado.")
+                st.rerun()
+        if not terceros.empty:
+            st.dataframe(terceros[["tipo", "cuit", "razon_social", "nombre_fantasia", "condicion_iva", "email", "activo"]], hide_index=True, use_container_width=True)
+
+    if seccion == "Registrar operación":
+        st.markdown("#### Registrar una operación diaria")
+        st.caption("Registrá la operación cuando ocurre. El comprobante de ARCA se usará luego como control, no como sustituto de esta información.")
+        terceros_activos = terceros[terceros["activo"].astype(str).apply(valor_si)] if not terceros.empty else terceros
+        ids_terceros = [""] + terceros_activos.get("id", pd.Series(dtype=str)).astype(str).tolist()
+        nombres_terceros = {str(f["id"]): str(f.get("razon_social", "")) for _, f in terceros_activos.iterrows()}
+        cuentas_activas = cuentas[cuentas["activa"].astype(str).apply(valor_si)]
+        cuentas_resultado = cuentas_activas[cuentas_activas["tipo"].astype(str).isin(["Ingresos", "Egresos", "Activo"])]
+        codigos_resultado = cuentas_resultado["codigo"].astype(str).tolist()
+        nombres_cuenta = dict(zip(cuentas["codigo"].astype(str), cuentas["nombre"].astype(str)))
+        cuentas_fondos = cuentas_activas[
+            cuentas_activas["uso_automatico"].astype(str).isin(["Banco", "Caja"])
+        ]["codigo"].astype(str).tolist()
+        with st.form(f"operacion_nueva_{cliente}"):
+            o1, o2, o3 = st.columns(3)
+            fecha_op = o1.date_input("Fecha", value=date.today())
+            tipo_op = o2.selectbox("Operación", ["Venta", "Compra", "Gasto", "Cobro", "Pago", "Aporte de socio", "Retiro de socio"])
+            tercero_id = o3.selectbox("Cliente / proveedor", ids_terceros, format_func=lambda v: nombres_terceros.get(v, "Sin tercero / socio"))
+            o4, o5, o6 = st.columns(3)
+            tipo_comp = o4.text_input("Tipo de comprobante", placeholder="Factura A, ticket, recibo")
+            punto_venta = o5.text_input("Punto de venta")
+            numero = o6.text_input("Número")
+            o7, o8, o9, o10 = st.columns(4)
+            moneda = o7.selectbox("Moneda", ["ARS", "USD"])
+            tipo_cambio = o8.number_input("Tipo de cambio", min_value=0.0001, value=1.0, step=1.0)
+            neto = o9.number_input("Neto", min_value=0.0, value=0.0, step=100.0)
+            iva = o10.number_input("IVA", min_value=0.0, value=0.0, step=100.0)
+            o11, o12 = st.columns(2)
+            otros = o11.number_input("Otros impuestos/importes", min_value=0.0, value=0.0, step=100.0)
+            total = o12.number_input("Total", min_value=0.0, value=0.0, step=100.0, help="Si queda en cero, se calcula con neto + IVA + otros.")
+            o13, o14, o15 = st.columns(3)
+            condicion = o13.selectbox("Condición", ["Cuenta corriente", "Contado", "Tarjeta", "Transferencia", "Otro"])
+            medio_pago = o14.text_input("Medio / referencia de pago")
+            centro_costo = o15.text_input("Centro de costo / unidad")
+            cuenta_origen = st.selectbox(
+                "Caja o banco involucrado",
+                [""] + cuentas_fondos,
+                format_func=lambda v: f"{v} · {nombres_cuenta.get(v, '')}" if v else "No corresponde / usar cuenta general",
+            )
+            cuenta_resultado = st.selectbox("Categoría contable sugerida", [""] + codigos_resultado, format_func=lambda v: f"{v} · {nombres_cuenta.get(v, '')}" if v else "Dejar para que AM Consultora clasifique")
+            es_personal = st.checkbox("Es un consumo o movimiento personal de socio")
+            observaciones = st.text_area("Detalle de la operación")
+            adjuntos = st.file_uploader("Respaldo", accept_multiple_files=True, type=["pdf", "png", "jpg", "jpeg", "xlsx", "xls", "csv"], key=f"adjuntos_operacion_{cliente}")
+            guardar_operacion = st.form_submit_button("Guardar operación", type="primary")
+        if guardar_operacion:
+            total_final = total or (neto + iva + otros)
+            if total_final <= 0:
+                st.error("Ingresá un importe mayor que cero.")
+            elif tipo_op in ["Venta", "Compra", "Gasto", "Cobro", "Pago"] and not tercero_id:
+                st.error("Seleccioná primero un cliente o proveedor.")
+            else:
+                tercero = terceros_activos[terceros_activos["id"].astype(str).eq(tercero_id)].iloc[0].to_dict() if tercero_id else {}
+                operacion_id = f"OPE-{uuid.uuid4().hex}"
+                periodo_op = fecha_op.strftime("%Y-%m")
+                operacion = {
+                    "id": operacion_id, "cliente": cliente, "periodo": periodo_op,
+                    "fecha": fecha_op.isoformat(), "tipo_operacion": tipo_op,
+                    "tercero_id": tercero_id, "tercero_cuit": tercero.get("cuit", ""),
+                    "tercero_nombre": tercero.get("razon_social", ""), "tipo_comprobante": tipo_comp,
+                    "punto_venta": punto_venta, "numero": numero, "moneda": moneda,
+                    "tipo_cambio": tipo_cambio, "neto": neto, "iva": iva, "otros": otros,
+                    "total": total_final, "importe_pesos": _operacion_importe_pesos(moneda, total_final, tipo_cambio),
+                    "condicion_pago": condicion, "medio_pago": medio_pago, "cuenta_origen": cuenta_origen,
+                    "cuenta_resultado": cuenta_resultado, "centro_costo": centro_costo,
+                    "es_personal": "Sí" if es_personal else "No", "estado_revision": "Pendiente de revisión",
+                    "observaciones": observaciones, "asiento_id": "", "fecha_carga": _fiscal_timestamp(),
+                    "cargado_por": st.session_state.get("username", ""), "fecha_revision": "", "revisado_por": "",
+                }
+                _guardar_operacion_y_asiento(operacion, cuentas)
+                for archivo in adjuntos or []:
+                    _contable_guardar_archivo(cliente, periodo_op, "Respaldo operación", archivo, "Operación", operacion_id)
+                registrar_actividad("crear", "gestion_contable", operacion_id, f"{tipo_op} · {periodo_op}")
+                st.success("Operación guardada y asiento generado en borrador.")
+                st.rerun()
+
+    if seccion == "Corregir observadas":
+        st.markdown("#### Corregir operaciones observadas")
+        ids_obs = observadas_cliente["id"].astype(str).tolist()
+        elegido_obs = st.selectbox("Operación observada", ids_obs, format_func=lambda oid: f"{observadas_cliente.set_index('id').loc[oid, 'fecha']} · {observadas_cliente.set_index('id').loc[oid, 'tipo_operacion']} · {observadas_cliente.set_index('id').loc[oid, 'tercero_nombre']}")
+        op_obs = observadas_cliente[observadas_cliente["id"].astype(str).eq(elegido_obs)].iloc[0].to_dict()
+        with st.form(f"corregir_observada_{elegido_obs}"):
+            st.info(f"Observación de AM: {op_obs.get('observaciones') or 'Sin detalle'}")
+            co1, co2, co3 = st.columns(3)
+            neto_obs = co1.number_input("Neto", min_value=0.0, value=float(decimal_ar(op_obs.get("neto", 0))))
+            iva_obs = co2.number_input("IVA", min_value=0.0, value=float(decimal_ar(op_obs.get("iva", 0))))
+            total_obs = co3.number_input("Total", min_value=0.0, value=float(decimal_ar(op_obs.get("total", 0))))
+            centro_obs = st.text_input("Centro de costo / unidad", value=str(op_obs.get("centro_costo", "")))
+            personal_obs = st.checkbox("Es un movimiento personal de socio", value=valor_si(op_obs.get("es_personal", "No")))
+            detalle_obs = st.text_area("Respuesta o detalle corregido")
+            respaldo_obs = st.file_uploader("Nuevo respaldo", accept_multiple_files=True, type=["pdf", "png", "jpg", "jpeg", "xlsx", "xls", "csv"], key=f"respaldo_obs_{elegido_obs}")
+            reenviar = st.form_submit_button("Reenviar a revisión", type="primary")
+        if reenviar:
+            op_obs.update({
+                "neto": neto_obs, "iva": iva_obs,
+                "total": total_obs or neto_obs + iva_obs + float(decimal_ar(op_obs.get("otros", 0))),
+                "importe_pesos": _operacion_importe_pesos(op_obs.get("moneda", "ARS"), total_obs or neto_obs + iva_obs + float(decimal_ar(op_obs.get("otros", 0))), op_obs.get("tipo_cambio", 1)),
+                "centro_costo": centro_obs, "es_personal": "Sí" if personal_obs else "No",
+                "observaciones": detalle_obs, "estado_revision": "Pendiente de revisión",
+                "fecha_revision": "", "revisado_por": "",
+            })
+            _guardar_operacion_y_asiento(op_obs, cuentas)
+            for archivo in respaldo_obs or []:
+                _contable_guardar_archivo(cliente, op_obs["periodo"], "Respaldo operación", archivo, "Operación", elegido_obs)
+            st.success("Corrección reenviada a AM Consultora.")
+            st.rerun()
+
+    if seccion == "Documentación":
+        st.markdown("#### Documentación contable")
+        with st.form(f"docs_contables_{cliente}"):
+            d1, d2 = st.columns(2)
+            periodo_doc = d1.text_input("Período", value=date.today().strftime("%Y-%m"), placeholder="AAAA-MM")
+            categoria_doc = d2.selectbox("Tipo", ["Extracto bancario", "F.931 y sueldos", "Inventario", "Bienes de uso", "Contrato", "Otro"])
+            docs = st.file_uploader("Archivos", accept_multiple_files=True, type=["pdf", "png", "jpg", "jpeg", "xlsx", "xls", "csv", "txt", "zip"], key=f"docs_gestion_{cliente}")
+            guardar_docs = st.form_submit_button("Guardar documentación", type="primary")
+        if guardar_docs:
+            if not re.fullmatch(r"20\d{2}-(0[1-9]|1[0-2])", periodo_doc):
+                st.error("El período debe tener formato AAAA-MM.")
+            elif not docs:
+                st.error("Seleccioná al menos un archivo.")
+            else:
+                for archivo in docs:
+                    _contable_guardar_archivo(cliente, periodo_doc, categoria_doc, archivo, "Documentación", "")
+                st.success(f"Se guardaron {len(docs)} archivo(s).")
+                st.rerun()
+        if not archivos.empty:
+            st.dataframe(archivos[["periodo", "categoria", "nombre", "fecha_carga", "cargado_por"]].sort_values("fecha_carga", ascending=False), hide_index=True, use_container_width=True)
+
+    if seccion == "Revisión AM" and es_equipo:
+        st.markdown("#### Bandeja de revisión de AM Consultora")
+        pendientes = operaciones[operaciones["estado_revision"].astype(str).isin(["Pendiente de revisión", "Observada"])] if not operaciones.empty else operaciones
+        if pendientes.empty:
+            st.success("No hay operaciones pendientes de revisión.")
+        else:
+            st.dataframe(pendientes[["fecha", "tipo_operacion", "tercero_nombre", "importe_pesos", "centro_costo", "es_personal", "estado_revision"]], hide_index=True, use_container_width=True)
+            ids = pendientes["id"].astype(str).tolist()
+            elegido = st.selectbox("Operación", ids, format_func=lambda oid: f"{pendientes.set_index('id').loc[oid, 'fecha']} · {pendientes.set_index('id').loc[oid, 'tipo_operacion']} · {pendientes.set_index('id').loc[oid, 'tercero_nombre']}")
+            op = pendientes[pendientes["id"].astype(str).eq(elegido)].iloc[0].to_dict()
+            cuentas_activas = cuentas[cuentas["activa"].astype(str).apply(valor_si)]
+            codigos = cuentas_activas["codigo"].astype(str).tolist()
+            nombres = dict(zip(cuentas_activas["codigo"].astype(str), cuentas_activas["nombre"].astype(str)))
+            with st.form(f"revisar_operacion_{elegido}"):
+                cuenta_revision = st.selectbox("Cuenta contable", [""] + codigos, index=([""] + codigos).index(op.get("cuenta_resultado", "")) if op.get("cuenta_resultado", "") in codigos else 0, format_func=lambda v: f"{v} · {nombres.get(v, '')}" if v else "Sin clasificar")
+                centro_revision = st.text_input("Centro de costo", value=str(op.get("centro_costo", "")))
+                personal_revision = st.checkbox("Movimiento personal del socio", value=valor_si(op.get("es_personal", "No")))
+                observacion_revision = st.text_area("Observación para el cliente", value=str(op.get("observaciones", "")))
+                c_aprobar, c_observar = st.columns(2)
+                aprobar = c_aprobar.form_submit_button("Aprobar y regenerar asiento", type="primary", use_container_width=True)
+                observar = c_observar.form_submit_button("Devolver observada", use_container_width=True)
+            if aprobar or observar:
+                op.update({
+                    "cuenta_resultado": cuenta_revision, "centro_costo": centro_revision,
+                    "es_personal": "Sí" if personal_revision else "No",
+                    "observaciones": observacion_revision,
+                    "estado_revision": "Aprobada" if aprobar else "Observada",
+                    "fecha_revision": _fiscal_timestamp(), "revisado_por": st.session_state.get("username", ""),
+                })
+                if aprobar:
+                    _contable_eliminar_borradores_generados(cliente, op["periodo"], ["Operación cliente"])
+                    todas_periodo = operaciones[operaciones["periodo"].astype(str).eq(str(op["periodo"]))].copy()
+                    todas_periodo.loc[todas_periodo["id"].astype(str).eq(elegido), list(op.keys())] = list(op.values())
+                    for _, fila in todas_periodo.iterrows():
+                        _guardar_operacion_y_asiento(fila.to_dict(), cuentas)
+                else:
+                    _contable_upsert_dataframe(CONTABLE_OPERACIONES_PATH, OPERACION_COLUMNAS, pd.DataFrame([op]))
+                st.success("Operación actualizada.")
+                st.rerun()
+
+    if seccion == "Configuración" and es_equipo:
+        _render_configuracion_gestion(cliente)
+
+
 def render_contabilidad(cliente_fijo="", modo="admin"):
     header("Contabilidad", "Asientos automáticos, bancos, sueldos y sumas y saldos")
     if st.session_state.get("role") not in ["admin_general", "admin", "equipo"]:
@@ -16139,7 +16521,7 @@ def render_contabilidad(cliente_fijo="", modo="admin"):
 
     seccion = st.radio(
         "Sección contable",
-        ["Resumen", "Ejercicio", "Generar", "Bancos", "Sueldos y F.931", "Revisar y autorizar mes", "Reportes"],
+        ["Resumen", "Operaciones cliente", "Ejercicio", "Generar", "Bancos", "Sueldos y F.931", "Revisar y autorizar mes", "Reportes"],
         horizontal=True, label_visibility="collapsed", key=f"contable_seccion_{cliente}_{periodo}",
     )
     ejercicio_cerrado = str(ejercicio_contable.get("estado", "")) == "Cerrado"
@@ -16172,6 +16554,9 @@ def render_contabilidad(cliente_fijo="", modo="admin"):
             "Circuito: las liquidaciones autorizadas generan borradores. Cuando terminaste de revisar el mes, "
             "abrí Revisar y autorizar mes para convertirlos en contabilidad definitiva."
         )
+
+    if seccion == "Operaciones cliente":
+        render_gestion_contable_cliente(cliente, modo="equipo", mostrar_header=False)
 
     if seccion == "Ejercicio":
         st.markdown(f"#### Ejercicio {ejercicio_num}")
@@ -16510,7 +16895,17 @@ def render_contabilidad(cliente_fijo="", modo="admin"):
             detalle = lineas[lineas["asiento_id"].astype(str).eq(asiento_id)]
             st.dataframe(detalle[["cuenta_codigo", "cuenta_nombre", "debe", "haber", "tercero_nombre", "comprobante"]], hide_index=True, use_container_width=True)
             borradores = asientos[asientos["estado"].astype(str).eq("Borrador")]
-            todos_balanceados = not borradores.empty and all(totales.get(aid, False) for aid in borradores["id"].astype(str))
+            operaciones_mes = _contable_cargar(CONTABLE_OPERACIONES_PATH, OPERACION_COLUMNAS, cliente, periodo)
+            operaciones_sin_revisar = operaciones_mes[
+                ~operaciones_mes["estado_revision"].astype(str).eq("Aprobada")
+            ] if not operaciones_mes.empty else operaciones_mes
+            todos_balanceados = (
+                not borradores.empty
+                and operaciones_sin_revisar.empty
+                and all(totales.get(aid, False) for aid in borradores["id"].astype(str))
+            )
+            if not operaciones_sin_revisar.empty:
+                st.warning(f"Hay {len(operaciones_sin_revisar)} operación(es) del cliente pendientes u observadas. Revisalas antes de autorizar el mes.")
             st.caption("Autorizar convierte todos los borradores balanceados del período en asientos definitivos y deja registro del usuario y fecha.")
             if st.button("Autorizar período", type="primary", disabled=not todos_balanceados):
                 ahora = _fiscal_timestamp()
@@ -17640,13 +18035,21 @@ def render_liquidaciones_fiscales(cliente_fijo="", modo="admin"):
                 not borradores_mes.empty
                 and all(bool(mapa_balance.get(aid, False)) for aid in borradores_mes["id"].astype(str))
             )
+            operaciones_mes_cierre = _contable_cargar(
+                CONTABLE_OPERACIONES_PATH, OPERACION_COLUMNAS, cliente, periodo,
+            )
+            operaciones_pendientes_cierre = operaciones_mes_cierre[
+                ~operaciones_mes_cierre["estado_revision"].astype(str).eq("Aprobada")
+            ] if not operaciones_mes_cierre.empty else operaciones_mes_cierre
             c1, c2, c3 = st.columns(3)
             c1.metric("Asientos del mes", len(asientos_mes))
             c2.metric("Borradores", len(borradores_mes))
             c3.metric("Desbalanceados", sum(not bool(mapa_balance.get(aid, False)) for aid in borradores_mes.get("id", pd.Series(dtype=str)).astype(str)))
+            if not operaciones_pendientes_cierre.empty:
+                st.warning(f"No se puede cerrar: hay {len(operaciones_pendientes_cierre)} operación(es) sin aprobación contable.")
             if st.button(
                 "Autorizar contabilidad del mes", type="primary",
-                disabled=not (papeles_listos and expediente_listo and convenio_listo and borradores_balanceados),
+                disabled=not (papeles_listos and expediente_listo and convenio_listo and borradores_balanceados and operaciones_pendientes_cierre.empty),
                 key=f"autorizar_contabilidad_cierre_{periodo_id}",
             ):
                 ahora = _fiscal_timestamp()
@@ -17764,6 +18167,8 @@ def main():
             render_indicadores(cliente, modo="cliente")
         elif menu == "Impuestos":
             render_impuestos_cliente(cliente)
+        elif menu == "Gestión contable":
+            render_gestion_contable_cliente(cliente, modo="cliente")
 
     else:
         role_actual = st.session_state.get("role", "")

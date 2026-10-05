@@ -67,7 +67,30 @@ EJERCICIO_CONTABLE_COLUMNAS = [
 
 ARCHIVO_CONTABLE_COLUMNAS = [
     "id", "cliente", "periodo", "categoria", "nombre", "tipo", "tamano",
-    "sha256", "contenido_base64", "fecha_carga", "cargado_por",
+    "sha256", "contenido_base64", "source_tipo", "source_id",
+    "fecha_carga", "cargado_por",
+]
+
+TERCERO_COLUMNAS = [
+    "id", "cliente", "tipo", "cuit", "razon_social", "nombre_fantasia",
+    "condicion_iva", "email", "telefono", "activo", "observaciones",
+    "fecha_actualizacion", "actualizado_por",
+]
+
+OPERACION_COLUMNAS = [
+    "id", "cliente", "periodo", "fecha", "tipo_operacion", "tercero_id",
+    "tercero_cuit", "tercero_nombre", "tipo_comprobante", "punto_venta",
+    "numero", "moneda", "tipo_cambio", "neto", "iva", "otros", "total",
+    "importe_pesos", "condicion_pago", "medio_pago", "cuenta_origen",
+    "cuenta_resultado", "centro_costo", "es_personal", "estado_revision",
+    "observaciones", "asiento_id", "fecha_carga", "cargado_por",
+    "fecha_revision", "revisado_por",
+]
+
+CONFIG_GESTION_COLUMNAS = [
+    "id", "cliente", "fecha_inicio", "actividad", "maneja_stock",
+    "tiene_empleados", "responsable_carga", "frecuencia_control",
+    "sistema_previo", "observaciones", "fecha_actualizacion", "actualizado_por",
 ]
 
 
@@ -92,6 +115,7 @@ PLAN_CUENTAS_BASE = [
     ("2.1.06", "Cargas sociales a pagar", "Pasivo", "Acreedora"),
     ("2.1.07", "Otras obligaciones fiscales", "Pasivo", "Acreedora"),
     ("3.1.01", "Capital y resultados acumulados", "Patrimonio neto", "Acreedora"),
+    ("3.1.02", "Cuenta particular socios", "Patrimonio neto", "Deudora"),
     ("4.1.01", "Ventas y servicios", "Ingresos", "Acreedora"),
     ("4.1.02", "Otros ingresos", "Ingresos", "Acreedora"),
     ("4.1.03", "Ventas no gravadas y exentas", "Ingresos", "Acreedora"),
@@ -116,6 +140,7 @@ USOS_AUTOMATICOS_BASE = {
     "2.1.04": "IIBB a pagar", "2.1.05": "Sueldos a pagar",
     "2.1.06": "Cargas sociales a pagar", "2.1.07": "Otras obligaciones fiscales",
     "3.1.01": "Capital y resultados", "4.1.01": "Ventas gravadas",
+    "3.1.02": "Cuenta particular socios",
     "4.1.02": "Otros ingresos", "4.1.03": "Ventas exentas",
     "5.1.01": "Compras y gastos", "5.1.02": "Gastos bancarios",
     "5.1.03": "Sueldos gasto", "5.1.04": "Cargas sociales gasto",
@@ -234,6 +259,73 @@ def crear_asiento_manual(cliente: str, periodo: str, fecha: str, descripcion: st
     return _asiento(
         cliente, periodo, fecha, tipo, "Carga manual", source_id,
         descripcion, lineas, usuario,
+    )
+
+
+def generar_asiento_operacion(operacion: dict, usuario: str = "") -> tuple[dict, list[dict]]:
+    """Genera el borrador diario de una operación cargada por el cliente.
+
+    La operación conserva importes originales y se contabiliza en pesos usando
+    el tipo de cambio informado. Las cuentas editables se remapean después con
+    el plan específico del cliente.
+    """
+    tipo = str(operacion.get("tipo_operacion", "")).strip()
+    cliente = str(operacion.get("cliente", ""))
+    periodo = str(operacion.get("periodo", ""))
+    total = dinero(operacion.get("importe_pesos", 0) or operacion.get("total", 0))
+    cambio = decimal_ar(operacion.get("tipo_cambio", 1)) or Decimal("1")
+    neto = dinero(decimal_ar(operacion.get("neto", 0)) * cambio)
+    iva = dinero(decimal_ar(operacion.get("iva", 0)) * cambio)
+    otros = dinero(decimal_ar(operacion.get("otros", 0)) * cambio)
+    if total == 0:
+        total = dinero(neto + iva + otros)
+    if total <= 0:
+        raise ValueError("La operación debe tener un importe mayor que cero.")
+    tercero = {
+        "tercero_cuit": str(operacion.get("tercero_cuit", "")),
+        "tercero_nombre": str(operacion.get("tercero_nombre", "")),
+        "comprobante": "-".join(filter(None, [
+            str(operacion.get("tipo_comprobante", "")).strip(),
+            str(operacion.get("punto_venta", "")).strip(),
+            str(operacion.get("numero", "")).strip(),
+        ])),
+    }
+    cuenta_resultado = str(operacion.get("cuenta_resultado", "")).strip()
+    cuenta_origen = str(operacion.get("cuenta_origen", "")).strip()
+    es_personal = str(operacion.get("es_personal", "")).casefold() in {"sí", "si", "true", "1"}
+    detalle = str(operacion.get("centro_costo", "")).strip()
+    extra = {**tercero, "detalle": detalle}
+
+    if tipo == "Venta":
+        lineas = [_linea("1.1.03", debe=total, **extra), _linea(cuenta_resultado or "4.1.01", haber=neto, **extra)]
+        if iva:
+            lineas.append(_linea("2.1.02", haber=iva, **extra))
+        if otros:
+            lineas.append(_linea("2.1.07", haber=otros, **extra))
+    elif tipo in {"Compra", "Gasto"}:
+        gasto = "3.1.02" if es_personal else (cuenta_resultado or "5.1.01")
+        lineas = [_linea(gasto, debe=neto + otros, **extra)]
+        if iva and not es_personal:
+            lineas.append(_linea("1.1.04", debe=iva, **extra))
+        elif iva:
+            lineas[0]["debe"] = str(dinero(decimal_ar(lineas[0]["debe"]) + iva))
+        lineas.append(_linea("2.1.01", haber=total, **extra))
+    elif tipo == "Cobro":
+        lineas = [_linea(cuenta_origen or "1.1.02", debe=total, **extra), _linea("1.1.03", haber=total, **extra)]
+    elif tipo == "Pago":
+        lineas = [_linea("2.1.01", debe=total, **extra), _linea(cuenta_origen or "1.1.02", haber=total, **extra)]
+    elif tipo == "Aporte de socio":
+        lineas = [_linea(cuenta_origen or "1.1.02", debe=total, **extra), _linea("3.1.02", haber=total, **extra)]
+    elif tipo == "Retiro de socio":
+        lineas = [_linea("3.1.02", debe=total, **extra), _linea(cuenta_origen or "1.1.02", haber=total, **extra)]
+    else:
+        raise ValueError("Seleccioná un tipo de operación válido.")
+
+    descripcion = f"{tipo} · {operacion.get('tercero_nombre') or operacion.get('observaciones') or 'operación diaria'}"
+    return _asiento(
+        cliente, periodo, operacion.get("fecha", ""), tipo,
+        "Operación cliente", operacion.get("id", ""), descripcion, lineas,
+        usuario, str(operacion.get("observaciones", "")),
     )
 
 
