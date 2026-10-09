@@ -3,11 +3,12 @@ import os
 import time
 import base64
 from PIL import Image
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 import pandas as pd
 import altair as alt
 import streamlit as st
+import extra_streamlit_components as stx
 from sqlalchemy import bindparam, create_engine, text as sql_text
 import re
 import logging
@@ -41,6 +42,7 @@ from am_hub_core import (
     validar_identificador_sql,
 )
 from am_hub_i18n import LANGUAGES, normalize_language, translate
+from am_hub_auth import crear_token_sesion, validar_token_sesion
 from am_hub_accounting import (
     ARCHIVO_CONTABLE_COLUMNAS,
     ASIENTO_COLUMNAS,
@@ -83,6 +85,11 @@ st.set_page_config(
     page_icon="AM",
     layout="wide",
 )
+
+AUTH_COOKIE_NAME = "am_hub_session_v1"
+AUTH_SESSION_DAYS = 30
+AUTH_RENEW_BEFORE_DAYS = 7
+AUTH_COOKIE_MANAGER = stx.CookieManager(key="am_hub_cookie_manager")
 
 BASE_DIR = Path(__file__).parent
 DATA_DIR = BASE_DIR / "data"
@@ -2725,6 +2732,92 @@ def load_users():
     return users
 
 
+def _auth_signing_secret() -> bytes:
+    """Clave estable para firmar sesiones sin guardar contraseñas en el navegador."""
+    secreto = os.getenv("AUTH_SESSION_SECRET", "").strip()
+    if not secreto:
+        try:
+            secreto = str(st.secrets.get("AUTH_SESSION_SECRET", "")).strip()
+        except Exception:
+            secreto = ""
+    if not secreto:
+        secreto = get_database_url() or f"am-hub-local-{BASE_DIR.resolve()}"
+    return hashlib.sha256(secreto.encode("utf-8")).digest()
+
+
+def _crear_token_sesion(username: str, password: str, ahora=None) -> str:
+    return crear_token_sesion(
+        username,
+        password,
+        _auth_signing_secret(),
+        dias=AUTH_SESSION_DAYS,
+        ahora=ahora,
+    )
+
+
+def _validar_token_sesion(token: str, users=None, ahora=None):
+    users = users if users is not None else load_users()
+    return validar_token_sesion(
+        token, users, _auth_signing_secret(), ahora=ahora,
+    )
+
+
+def _establecer_usuario_en_sesion(username, user):
+    st.session_state["logged_in"] = True
+    st.session_state["auth"] = True
+    st.session_state["username"] = str(username).strip()
+    st.session_state["role"] = str(user.get("role", "")).strip()
+    st.session_state["name"] = str(user.get("name", "")).strip()
+    st.session_state["cliente"] = str(user.get("cliente", "")).strip()
+    st.session_state["language"] = normalize_language(user.get("idioma", "es"))
+    st.session_state.pop("language_selector", None)
+
+
+def _guardar_cookie_sesion(username, user):
+    token = _crear_token_sesion(username, user.get("password", ""))
+    AUTH_COOKIE_MANAGER.set(
+        AUTH_COOKIE_NAME,
+        token,
+        key="am_hub_session_cookie",
+        path="/",
+        expires_at=datetime.now() + timedelta(days=AUTH_SESSION_DAYS),
+        max_age=AUTH_SESSION_DAYS * 24 * 60 * 60,
+        secure=True,
+        same_site="strict",
+    )
+    st.session_state["auth_cookie_exp"] = int(
+        (datetime.now(timezone.utc) + timedelta(days=AUTH_SESSION_DAYS)).timestamp()
+    )
+
+
+def restaurar_sesion_persistente():
+    if st.session_state.get("logged_in") or st.session_state.get("auth"):
+        return True
+    token = AUTH_COOKIE_MANAGER.get(AUTH_COOKIE_NAME)
+    if not token:
+        return False
+    users = load_users()
+    validado = _validar_token_sesion(token, users)
+    if not validado:
+        try:
+            AUTH_COOKIE_MANAGER.delete(
+                AUTH_COOKIE_NAME, key="am_hub_session_cookie",
+            )
+        except (KeyError, ValueError):
+            pass
+        return False
+    payload, user = validado
+    username = str(payload["u"])
+    _establecer_usuario_en_sesion(username, user)
+    st.session_state["auth_cookie_exp"] = int(payload["exp"])
+    segundos_restantes = int(payload["exp"]) - int(
+        datetime.now(timezone.utc).timestamp()
+    )
+    if segundos_restantes <= AUTH_RENEW_BEFORE_DAYS * 24 * 60 * 60:
+        _guardar_cookie_sesion(username, user)
+    return True
+
+
 
 
 
@@ -2812,16 +2905,8 @@ def login():
             user = users.get(username_clean)
 
             if user and str(user.get("password", "")).strip() == password_clean:
-                st.session_state["logged_in"] = True
-                st.session_state["auth"] = True
-                st.session_state["username"] = username_clean
-                st.session_state["role"] = str(user.get("role", "")).strip()
-                st.session_state["name"] = str(user.get("name", "")).strip()
-                st.session_state["cliente"] = str(user.get("cliente", "")).strip()
-                st.session_state["language"] = normalize_language(
-                    user.get("idioma", "es")
-                )
-                st.session_state.pop("language_selector", None)
+                _establecer_usuario_en_sesion(username_clean, user)
+                _guardar_cookie_sesion(username_clean, user)
                 st.rerun()
             else:
                 st.error("Usuario o contraseña incorrectos, o usuario inactivo.")
@@ -2830,6 +2915,13 @@ def login():
 
 def logout_button():
     if st.sidebar.button(ui("Cerrar sesión"), use_container_width=True):
+        try:
+            if AUTH_COOKIE_MANAGER.get(AUTH_COOKIE_NAME):
+                AUTH_COOKIE_MANAGER.delete(
+                    AUTH_COOKIE_NAME, key="am_hub_session_cookie",
+                )
+        except (KeyError, ValueError):
+            pass
         for k in [
             "logged_in",
             "auth",
@@ -2840,6 +2932,7 @@ def logout_button():
             "language",
             "language_selector",
             "menu",
+            "auth_cookie_exp",
         ]:
             st.session_state.pop(k, None)
 
@@ -18119,6 +18212,7 @@ def render_impuestos_cliente(cliente):
 def main():
     ensure_data_dir()
     seed_data()
+    restaurar_sesion_persistente()
 
     if "logged_in" not in st.session_state:
         st.session_state["logged_in"] = False

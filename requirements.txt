@@ -8,3 +8,4 @@ pillow==11.0.0
 SQLAlchemy==2.0.36
 psycopg[binary]==3.2.13
 pypdf==5.9.0
+extra-streamlit-components==0.1.81
