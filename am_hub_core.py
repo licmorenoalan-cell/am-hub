@@ -215,3 +215,26 @@ def escribir_csv_atomico(df: pd.DataFrame, path: Path) -> None:
         os.replace(temporal_path, destino)
     finally:
         temporal_path.unlink(missing_ok=True)
+
+
+# Clasificación compartida del Plan de trabajo (web y Pocket).
+AREAS_PLAN = {
+    "Sin área": "#64748B",
+    "Contable e impositiva": "#1D4ED8",
+    "Administrativa y financiera": "#9A3412",
+    "Gestión y tablero": "#15803D",
+    "Legal y societaria": "#7E22CE",
+    "Coordinación": "#475569",
+}
+
+
+def normalizar_area_plan(valor):
+    """Los registros anteriores o sin clasificación se muestran sin área."""
+    if valor is None or pd.isna(valor):
+        return "Sin área"
+    return str(valor).strip() or "Sin área"
+
+
+def opciones_area_plan(valor=""):
+    area = normalizar_area_plan(valor)
+    return list(AREAS_PLAN) + ([area] if area not in AREAS_PLAN else [])

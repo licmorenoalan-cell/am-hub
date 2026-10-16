@@ -1,3 +1,4 @@
+from am_hub_core import AREAS_PLAN, normalizar_area_plan, opciones_area_plan
 from pathlib import Path
 import os
 import time
@@ -306,7 +307,8 @@ def asegurar_columnas_objetivos_postgres():
                 'ADD COLUMN IF NOT EXISTS '
                 '"responsable_cliente" TEXT, '
                 'ADD COLUMN IF NOT EXISTS '
-                '"responsable_tipo" TEXT'
+                '"responsable_tipo" TEXT, '
+                'ADD COLUMN IF NOT EXISTS "area" TEXT'
             )
         )
 
@@ -6626,6 +6628,7 @@ def render_objetivos(cliente="", modo="cliente", mostrar_header=True):
         "responsable_am",
         "responsable_cliente",
         "responsable_tipo",
+        "area",
         "prioridad",
         "estado",
         "avance",
@@ -6670,6 +6673,7 @@ def render_objetivos(cliente="", modo="cliente", mostrar_header=True):
         objetivos["responsable_cliente"] = ""
 
     objetivos = objetivos[columnas].copy().fillna("")
+    objetivos["area"] = objetivos["area"].map(normalizar_area_plan)
 
     # Se restringe antes de búsquedas, filtros, métricas y edición para que
     # un perfil sin permisos globales nunca reciba tarjetas de clientes ajenos.
@@ -6774,6 +6778,7 @@ def render_objetivos(cliente="", modo="cliente", mostrar_header=True):
                         )
 
                     with c2:
+                        area = st.selectbox(ui("Área"), list(AREAS_PLAN), format_func=ui)
                         mes_ref = st.text_input("Mes", value=date.today().strftime("%Y-%m"))
                         responsable_am = st.text_input(
                             ui("Responsable AM"),
@@ -6833,6 +6838,7 @@ def render_objetivos(cliente="", modo="cliente", mostrar_header=True):
                                     responsable_cliente.strip()
                                 ),
                                 "responsable_tipo": responsable_tipo,
+                                "area": area,
                                 "prioridad": prioridad,
                                 "estado": estado,
                                 "avance": avance_auto,
@@ -7111,6 +7117,13 @@ def render_objetivos(cliente="", modo="cliente", mostrar_header=True):
         ),
     )
 
+    areas_filtro = st.multiselect(
+        ui("Área"),
+        sorted(objetivos_vista["area"].unique().tolist()),
+        format_func=ui,
+        key=f"objetivos_area_multi_{modo}_{cliente or 'admin'}",
+    )
+
     f1, f2, f3 = st.columns(3)
 
     with f1:
@@ -7268,6 +7281,9 @@ def render_objetivos(cliente="", modo="cliente", mostrar_header=True):
         ),
     )
 
+    if areas_filtro:
+        objetivos_vista = objetivos_vista[objetivos_vista["area"].isin(areas_filtro)].copy()
+
     if clientes_filtro:
         objetivos_vista = objetivos_vista[
             objetivos_vista["cliente"]
@@ -7392,6 +7408,7 @@ def render_objetivos(cliente="", modo="cliente", mostrar_header=True):
             columna
             for columna in [
                 "objetivo",
+                "area",
                 "descripcion",
                 "cliente",
                 "responsable",
@@ -7488,6 +7505,7 @@ def render_objetivos(cliente="", modo="cliente", mostrar_header=True):
     if objetivos_vista.empty:
         filtros_activos = []
         for etiqueta, valores in [
+            ("Área", areas_filtro),
             ("Cliente", clientes_filtro),
             ("Estado", estados_filtro),
             ("Prioridad", prioridades_filtro),
@@ -7517,6 +7535,7 @@ def render_objetivos(cliente="", modo="cliente", mostrar_header=True):
         sufijo_filtros = f"{modo}_{cliente or 'admin'}"
 
         def limpiar_filtros_plan():
+            st.session_state[f"objetivos_area_multi_{sufijo_filtros}"] = []
             st.session_state[f"buscar_objetivos_{sufijo_filtros}"] = ""
             st.session_state[f"objetivos_cliente_multi_{sufijo_filtros}"] = []
             st.session_state[f"objetivos_estado_multi_{sufijo_filtros}"] = [
@@ -7546,6 +7565,7 @@ def render_objetivos(cliente="", modo="cliente", mostrar_header=True):
         [
             "Estado",
             "Fecha de vencimiento",
+            "Área",
             "Cliente",
             "Prioridad",
             "Responsable AM",
@@ -7622,6 +7642,7 @@ def render_objetivos(cliente="", modo="cliente", mostrar_header=True):
 
     else:
         columna_por_criterio = {
+            "Área": "area",
             "Cliente": "cliente",
             "Prioridad": "prioridad",
             "Responsable AM": "responsable_am",
@@ -7632,6 +7653,7 @@ def render_objetivos(cliente="", modo="cliente", mostrar_header=True):
             criterio_columnas
         ]
         etiqueta_vacia = {
+            "Área": "Sin área",
             "Cliente": "Sin cliente",
             "Prioridad": "Sin prioridad",
             "Responsable AM": "Sin responsable AM",
@@ -7772,6 +7794,8 @@ def render_objetivos(cliente="", modo="cliente", mostrar_header=True):
                     ]:
                         responsable_tipo_txt = "AM Consultora"
 
+                    area_txt = normalizar_area_plan(row.get("area", ""))
+
                     prioridad_txt = str(
                         row.get(
                             "prioridad",
@@ -7832,7 +7856,7 @@ def render_objetivos(cliente="", modo="cliente", mostrar_header=True):
                                     cliente_txt
                                 )
 
-                            etiquetas_responsables = []
+                            etiquetas_responsables = [(ui(area_txt), AREAS_PLAN.get(area_txt, "#64748B"))]
                             if responsable_tipo_txt in ["AM Consultora", "Ambos"]:
                                 etiquetas_responsables.append(
                                     ("AM Consultora", "#1D4ED8")
@@ -8090,6 +8114,15 @@ def render_objetivos(cliente="", modo="cliente", mostrar_header=True):
                                     disabled=not puede_editar_estructura,
                                 )
 
+                                areas_edicion = opciones_area_plan(area_txt)
+                                nueva_area = st.selectbox(
+                                    ui("Área"), areas_edicion,
+                                    index=areas_edicion.index(area_txt),
+                                    format_func=ui,
+                                    key=f"area_objetivo_{objetivo_id}",
+                                    disabled=not puede_editar_estructura,
+                                )
+
                                 nuevo_mes = st.text_input(
                                     "Mes",
                                     value=str(row.get("mes", "")),
@@ -8312,6 +8345,7 @@ def render_objetivos(cliente="", modo="cliente", mostrar_header=True):
                                             {
                                                 "cliente": nuevo_cliente,
                                                 "mes": nuevo_mes.strip(),
+                                                "area": nueva_area if puede_editar_estructura else area_txt,
                                                 "objetivo": nuevo_objetivo.strip(),
                                                 "descripcion": (
                                                     nueva_descripcion.strip()
@@ -8466,6 +8500,7 @@ def _crear_tarjetas_desde_minuta(minuta, fecha_limite, prioridad, usuario):
             "responsable_am": usuario or "AM Consultora",
             "responsable_cliente": "",
             "responsable_tipo": "AM Consultora",
+            "area": "Sin área",
             "prioridad": prioridad,
             "estado": "Pendiente",
             "avance": "0",

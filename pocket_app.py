@@ -1,3 +1,4 @@
+from am_hub_core import AREAS_PLAN, normalizar_area_plan, opciones_area_plan
 import hmac
 import html
 import os
@@ -286,7 +287,8 @@ def asegurar_columnas():
         conn.execute(
             text(
                 'ALTER TABLE "objetivos" ADD COLUMN IF NOT EXISTS '
-                '"responsable_tipo" TEXT'
+                '"responsable_tipo" TEXT, '
+                'ADD COLUMN IF NOT EXISTS "area" TEXT'
             )
         )
         conn.execute(
@@ -377,7 +379,7 @@ def cargar_plan_trabajo():
     consulta = text(
         """
         SELECT
-            id, cliente, mes, objetivo, descripcion,
+            id, cliente, mes, objetivo, descripcion, area,
             responsable_am, responsable_cliente, responsable_tipo, prioridad,
             estado, avance, checklist, fecha_limite,
             comentarios, fecha_actualizacion
@@ -1213,6 +1215,7 @@ def actualizar_frente_pocket(
     responsable_am,
     responsable_cliente,
     responsable_tipo,
+    area,
     prioridad,
     estado,
     fecha_limite,
@@ -1257,7 +1260,7 @@ def actualizar_frente_pocket(
                     descripcion = :descripcion, responsable = :responsable_am,
                     responsable_am = :responsable_am,
                     responsable_cliente = :responsable_cliente,
-                    responsable_tipo = :responsable_tipo,
+                    responsable_tipo = :responsable_tipo, area = :area,
                     prioridad = :prioridad, estado = :estado,
                     fecha_limite = :fecha_limite, checklist = :checklist,
                     avance = :avance, comentarios = :comentarios,
@@ -1274,6 +1277,7 @@ def actualizar_frente_pocket(
                 "responsable_am": str(responsable_am).strip(),
                 "responsable_cliente": str(responsable_cliente).strip(),
                 "responsable_tipo": str(responsable_tipo).strip(),
+                "area": normalizar_area_plan(area),
                 "prioridad": str(prioridad).strip(),
                 "estado": str(estado).strip(),
                 "fecha_limite": str(fecha_limite).strip(),
@@ -2647,6 +2651,7 @@ if pagina_pocket == "🤝 Plan de trabajo":
         "responsable_am": "",
         "responsable_cliente": "",
         "responsable_tipo": "AM Consultora",
+        "area": "Sin área",
         "prioridad": "Media",
         "estado": "Pendiente",
         "avance": 0,
@@ -2665,6 +2670,8 @@ if pagina_pocket == "🤝 Plan de trabajo":
         plan["prioridad"].astype(str).str.strip().replace("", "Media")
     )
 
+    plan["area"] = plan["area"].map(normalizar_area_plan)
+
     clientes_plan = sorted(
         valor for valor in plan["cliente"].astype(str).str.strip().unique()
         if valor
@@ -2679,6 +2686,10 @@ if pagina_pocket == "🤝 Plan de trabajo":
             "Buscar",
             placeholder="Frente, cliente o responsable...",
             key="pocket_plan_buscar",
+        )
+        areas_plan_filtro = st.multiselect(
+            pocket_ui("Área"), sorted(plan["area"].unique().tolist()),
+            format_func=pocket_ui, key="pocket_plan_areas",
         )
         clientes_plan_filtro = st.multiselect(
             "Cliente",
@@ -2698,6 +2709,8 @@ if pagina_pocket == "🤝 Plan de trabajo":
         )
 
     plan_vista = plan.copy()
+    if areas_plan_filtro:
+        plan_vista = plan_vista[plan_vista["area"].isin(areas_plan_filtro)].copy()
 
     if clientes_plan_filtro:
         plan_vista = plan_vista[
@@ -2729,7 +2742,7 @@ if pagina_pocket == "🤝 Plan de trabajo":
         texto_plan = pd.Series("", index=plan_vista.index, dtype="object")
         for columna in [
             "objetivo", "descripcion", "cliente", "responsable_am",
-            "responsable_cliente", "comentarios", "mes",
+            "responsable_cliente", "comentarios", "mes", "area",
         ]:
             texto_plan = (
                 texto_plan + " "
@@ -2791,7 +2804,8 @@ if pagina_pocket == "🤝 Plan de trabajo":
         avance_frente = max(0, min(100, avance_frente))
 
         with st.container(border=True):
-            etiquetas_frente = []
+            area_frente = normalizar_area_plan(frente.get("area", ""))
+            etiquetas_frente = [(pocket_ui(area_frente), AREAS_PLAN.get(area_frente, "#64748B"))]
             if responsable_tipo_frente in ["AM Consultora", "Ambos"]:
                 etiquetas_frente.append(("AM Consultora", "#1D4ED8"))
             if responsable_tipo_frente in ["Cliente", "Ambos"]:
@@ -2899,6 +2913,12 @@ if pagina_pocket == "🤝 Plan de trabajo":
                             key=f"pocket_plan_prioridad_{frente_id}",
                         )
 
+                    areas_edicion = opciones_area_plan(area_frente)
+                    area_editada = st.selectbox(
+                        pocket_ui("Área"), areas_edicion,
+                        index=areas_edicion.index(area_frente),
+                        format_func=pocket_ui, key=f"pocket_plan_area_{frente_id}",
+                    )
                     responsable_am_editado = st.text_input(
                         "Responsable AM",
                         value=responsable_am,
@@ -3007,6 +3027,7 @@ if pagina_pocket == "🤝 Plan de trabajo":
                             responsable_am=responsable_am_editado,
                             responsable_cliente=responsable_cliente_editado,
                             responsable_tipo=responsable_tipo_editado,
+                            area=area_editada,
                             prioridad=prioridad_editada,
                             estado=estado_editado,
                             fecha_limite=(

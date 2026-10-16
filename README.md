@@ -66,3 +66,14 @@ tablas con desplazamiento horizontal controlado.
 
 `scripts/deploy_code.sh` valida sintaxis y pruebas antes de preparar el commit.
 El script no incluye archivos de datos ni secretos en el commit.
+
+## Áreas del Plan de trabajo
+
+Cada frente admite un área: Contable e impositiva, Administrativa y financiera,
+Gestión y tablero, Legal y societaria o Coordinación. Los frentes existentes
+sin clasificación se muestran como «Sin área» y no se clasifican automáticamente.
+El área se selecciona al crear o editar, aparece como etiqueta y permite filtrar;
+en la vista principal también permite organizar las columnas del tablero.
+Pocket permite verla, filtrarla y editarla. Se conservan los permisos de edición.
+La columna nullable `objetivos.area` se agrega de forma idempotente al iniciar
+el módulo en PostgreSQL; el modo CSV admite también archivos anteriores.

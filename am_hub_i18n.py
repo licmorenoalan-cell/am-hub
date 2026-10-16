@@ -3,6 +3,13 @@
 LANGUAGES = {"es": "Español", "en": "English"}
 
 EN = {
+    "Área": "Area",
+    "Sin área": "Unassigned area",
+    "Contable e impositiva": "Accounting and tax",
+    "Administrativa y financiera": "Administration and finance",
+    "Gestión y tablero": "Management and dashboard",
+    "Legal y societaria": "Legal and corporate",
+    "Coordinación": "Coordination",
     "Menú": "Menu",
     "Portal del cliente": "Client portal",
     "Portal de gestión digital": "Digital management portal",
