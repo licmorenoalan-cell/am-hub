@@ -7742,7 +7742,11 @@ def render_objetivos(cliente="", modo="cliente", mostrar_header=True):
                     continue
 
                 st.markdown("---")
-                st.markdown(f"### {grupo_tablero}")
+                grupo_tablero_visual = {
+                    "Pendiente": "Sin iniciar",
+                    "Finalizado": "Finalizado",
+                }.get(grupo_tablero, grupo_tablero)
+                st.markdown(f"### {grupo_tablero_visual}")
                 st.caption(
                     f"{len(subset)} frente(s)"
                 )
@@ -7905,6 +7909,16 @@ def render_objetivos(cliente="", modo="cliente", mostrar_header=True):
                                 etiquetas_responsables.append(
                                     (cliente_txt or "Cliente", "#15803D")
                                 )
+                            estado_visual = {
+                                "Pendiente": "Sin iniciar",
+                                "En curso": "En curso",
+                                "Finalizado": "Finalizado",
+                            }.get(estado, estado)
+                            estado_fondo, estado_color = {
+                                "Pendiente": ("#FFEDD5", "#9A3412"),
+                                "En curso": ("#FEF3C7", "#92400E"),
+                                "Finalizado": ("#DCFCE7", "#166534"),
+                            }.get(estado, ("#F1F5F9", "#475569"))
                             etiquetas_html = "".join(
                                 '<span style="display:inline-block;padding:'
                                 '3px 9px;border-radius:999px;color:white;'
@@ -7913,13 +7927,21 @@ def render_objetivos(cliente="", modo="cliente", mostrar_header=True):
                                 f'{html.escape(etiqueta)}</span>'
                                 for etiqueta, color in etiquetas_responsables
                             )
+                            estado_html = (
+                                '<span style="display:inline-block;padding:'
+                                '3px 9px;border-radius:999px;'
+                                f'color:{estado_color};background:{estado_fondo};'
+                                'font-size:0.72rem;font-weight:800;line-height:1.5;'
+                                'border:1px solid rgba(15,23,42,0.08)">'
+                                f'{html.escape(estado_visual)}</span>'
+                            )
                             st.markdown(
                                 '<div style="font-size:1.15rem;font-weight:800;'
                                 'line-height:1.3;color:#172033;margin:0 0 9px 0">'
                                 f'{html.escape(objetivo_txt)}</div>'
                                 '<div style="display:flex;align-items:center;'
                                 'gap:6px;flex-wrap:wrap;margin-bottom:4px">'
-                                f'{etiquetas_html}</div>',
+                                f'{estado_html}{etiquetas_html}</div>',
                                 unsafe_allow_html=True,
                             )
 
