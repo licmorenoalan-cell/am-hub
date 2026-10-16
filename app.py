@@ -7843,6 +7843,46 @@ def render_objetivos(cliente="", modo="cliente", mostrar_header=True):
                         )
                     )
 
+                    fecha_objetivo = pd.to_datetime(
+                        fecha_limite_txt,
+                        errors="coerce",
+                    )
+                    hoy_objetivo = pd.Timestamp(date.today())
+                    if estado == "Finalizado":
+                        vencimiento_texto = "✓ Finalizada"
+                        vencimiento_fondo = "#DCFCE7"
+                        vencimiento_color = "#166534"
+                    elif pd.isna(fecha_objetivo):
+                        vencimiento_texto = "📅 Sin fecha de vencimiento"
+                        vencimiento_fondo = "#F1F5F9"
+                        vencimiento_color = "#475569"
+                    else:
+                        fecha_legible = fecha_objetivo.strftime("%d/%m/%Y")
+                        diferencia_dias = (fecha_objetivo - hoy_objetivo).days
+                        if diferencia_dias < 0:
+                            dias_atraso = abs(diferencia_dias)
+                            vencimiento_texto = (
+                                f"⚠ Vencida hace {dias_atraso} día(s) · "
+                                f"{fecha_legible}"
+                            )
+                            vencimiento_fondo = "#FEE2E2"
+                            vencimiento_color = "#991B1B"
+                        elif diferencia_dias == 0:
+                            vencimiento_texto = f"⏰ Vence hoy · {fecha_legible}"
+                            vencimiento_fondo = "#FFEDD5"
+                            vencimiento_color = "#9A3412"
+                        elif diferencia_dias <= 7:
+                            vencimiento_texto = (
+                                f"📅 Vence en {diferencia_dias} día(s) · "
+                                f"{fecha_legible}"
+                            )
+                            vencimiento_fondo = "#FEF3C7"
+                            vencimiento_color = "#92400E"
+                        else:
+                            vencimiento_texto = f"📅 Vence {fecha_legible}"
+                            vencimiento_fondo = "#E0E7FF"
+                            vencimiento_color = "#3730A3"
+
                     with st.container(
                         border=True
                     ):
@@ -7867,16 +7907,18 @@ def render_objetivos(cliente="", modo="cliente", mostrar_header=True):
                                 )
                             etiquetas_html = "".join(
                                 '<span style="display:inline-block;padding:'
-                                '2px 8px;border-radius:999px;color:white;'
+                                '3px 9px;border-radius:999px;color:white;'
                                 f'background:{color};font-size:0.72rem;'
                                 'font-weight:700;line-height:1.5">'
                                 f'{html.escape(etiqueta)}</span>'
                                 for etiqueta, color in etiquetas_responsables
                             )
                             st.markdown(
+                                '<div style="font-size:1.15rem;font-weight:800;'
+                                'line-height:1.3;color:#172033;margin:0 0 9px 0">'
+                                f'{html.escape(objetivo_txt)}</div>'
                                 '<div style="display:flex;align-items:center;'
-                                'gap:8px;flex-wrap:wrap">'
-                                f'<strong>{html.escape(objetivo_txt)}</strong>'
+                                'gap:6px;flex-wrap:wrap;margin-bottom:4px">'
                                 f'{etiquetas_html}</div>',
                                 unsafe_allow_html=True,
                             )
@@ -7928,108 +7970,31 @@ def render_objetivos(cliente="", modo="cliente", mostrar_header=True):
                             except Exception as exc:
                                 st.error(str(exc))
 
-                        if descripcion_txt:
-                            descripcion_corta = (
-                                descripcion_txt
-                                if len(
-                                    descripcion_txt
-                                ) <= 260
-                                else (
-                                    descripcion_txt[
-                                        :257
-                                    ]
-                                    + "..."
-                                )
-                            )
-
-                            st.write(
-                                descripcion_corta
-                            )
-
-                        st.caption(
-                            "Responsable AM: "
-                            + (
-                                responsable_am_txt
-                                or "Sin asignar"
-                            )
+                        st.markdown(
+                            '<div style="display:inline-flex;align-items:center;'
+                            'padding:7px 10px;border-radius:7px;margin:8px 0;'
+                            'font-size:0.82rem;font-weight:750;line-height:1.2;'
+                            f'background:{vencimiento_fondo};'
+                            f'color:{vencimiento_color}">'
+                            f'{html.escape(vencimiento_texto)}</div>',
+                            unsafe_allow_html=True,
                         )
 
-                        st.caption(
-                            "Responsable cliente: "
-                            + (
-                                responsable_cliente_txt
-                                or "Sin asignar"
+                        if checklist_items:
+                            items_completos = sum(
+                                1 for item in checklist_items
+                                if bool(item.get("hecho", False))
                             )
-                        )
-
-                        st.caption(
-                            f"Prioridad: "
-                            f"{prioridad_txt} "
-                            f"· Límite: "
-                            f"{fecha_limite_txt or 'Sin fecha'}"
-                        )
-
-                        fecha_objetivo = pd.to_datetime(
-                            fecha_limite_txt,
-                            errors="coerce",
-                        )
-
-                        if (
-                            pd.notna(fecha_objetivo)
-                            and estado != "Finalizado"
-                        ):
-                            hoy_objetivo = pd.Timestamp(
-                                date.today()
+                            st.progress(
+                                min(max(avance_val, 0), 100) / 100
                             )
-
-                            if fecha_objetivo < hoy_objetivo:
-                                dias_atraso = (
-                                    hoy_objetivo
-                                    - fecha_objetivo
-                                ).days
-
-                                st.error(
-                                    f"Vencido hace "
-                                    f"{dias_atraso} día(s)."
-                                )
-
-                            elif fecha_objetivo == hoy_objetivo:
-                                st.warning(
-                                    "Vence hoy."
-                                )
-
-                            elif (
-                                fecha_objetivo
-                                <= hoy_objetivo
-                                + pd.Timedelta(days=7)
-                            ):
-                                dias_restantes = (
-                                    fecha_objetivo
-                                    - hoy_objetivo
-                                ).days
-
-                                st.info(
-                                    f"Vence en "
-                                    f"{dias_restantes} día(s)."
-                                )
-
-                        st.progress(
-                            min(
-                                max(
-                                    avance_val,
-                                    0,
-                                ),
-                                100,
+                            st.caption(
+                                f"Checklist · {items_completos}/"
+                                f"{len(checklist_items)} completados"
                             )
-                            / 100
-                        )
-
-                        st.caption(
-                            f"Avance: {avance_val}%"
-                        )
 
                         with st.expander(
-                            "Ver detalle y actualizar",
+                            "Abrir tarjeta",
                             expanded=False,
                         ):
                             if descripcion_txt:
@@ -8084,15 +8049,118 @@ def render_objetivos(cliente="", modo="cliente", mostrar_header=True):
                                     "Sin checklist cargado."
                                 )
 
+                            if puede_editar:
+                                if (
+                                    checklist_items
+                                    and checklist_actualizado != checklist_items
+                                ):
+                                    if st.button(
+                                        "Guardar avance del checklist",
+                                        key=f"guardar_check_objetivo_{objetivo_id}",
+                                        use_container_width=True,
+                                        type="primary",
+                                    ):
+                                        avance_checklist = (
+                                            avance_desde_checklist_objetivo(
+                                                checklist_actualizado,
+                                                avance_val,
+                                            )
+                                        )
+                                        guardar_cambios_objetivo(
+                                            objetivo_id,
+                                            {
+                                                "checklist": serializar_checklist_objetivo(
+                                                    checklist_actualizado
+                                                ),
+                                                "avance": avance_checklist,
+                                            },
+                                        )
+                                        st.rerun()
+
+                                nuevo_item_rapido = st.text_input(
+                                    "Agregar un ítem",
+                                    value="",
+                                    placeholder="Escribí el próximo paso",
+                                    key=f"item_rapido_objetivo_{objetivo_id}",
+                                )
+                                if st.button(
+                                    "+ Agregar al checklist",
+                                    key=f"agregar_item_objetivo_{objetivo_id}",
+                                    disabled=not nuevo_item_rapido.strip(),
+                                    use_container_width=True,
+                                ):
+                                    checklist_con_nuevo = checklist_actualizado + [{
+                                        "texto": nuevo_item_rapido.strip(),
+                                        "hecho": False,
+                                    }]
+                                    guardar_cambios_objetivo(
+                                        objetivo_id,
+                                        {
+                                            "checklist": serializar_checklist_objetivo(
+                                                checklist_con_nuevo
+                                            ),
+                                            "avance": avance_desde_checklist_objetivo(
+                                                checklist_con_nuevo,
+                                                avance_val,
+                                            ),
+                                        },
+                                    )
+                                    st.rerun()
+
                             if comentarios_txt:
                                 st.markdown(
-                                    "**Historial**"
+                                    "**Comentarios y actividad**"
                                 )
-                                st.text(
-                                    comentarios_txt
+                                st.markdown(
+                                    '<div style="background:#F8FAFC;'
+                                    'border-left:3px solid #CBD5E1;'
+                                    'padding:10px 12px;border-radius:6px;'
+                                    'white-space:pre-wrap;font-size:0.88rem">'
+                                    f'{html.escape(comentarios_txt)}</div>',
+                                    unsafe_allow_html=True,
                                 )
 
                             if puede_editar:
+                                comentario_rapido = st.text_area(
+                                    "Agregar comentario",
+                                    value="",
+                                    placeholder="Escribí una actualización...",
+                                    key=f"comentario_rapido_objetivo_{objetivo_id}",
+                                    height=80,
+                                )
+                                if st.button(
+                                    "Publicar comentario",
+                                    key=f"publicar_comentario_objetivo_{objetivo_id}",
+                                    disabled=not comentario_rapido.strip(),
+                                    use_container_width=True,
+                                ):
+                                    guardar_cambios_objetivo(
+                                        objetivo_id,
+                                        {},
+                                        comentario_rapido,
+                                    )
+                                    st.rerun()
+
+                            render_archivos_objetivo(
+                                objetivo_id,
+                                nombre_usuario,
+                                puede_eliminar=puede_editar,
+                                puede_cargar=puede_editar,
+                            )
+
+                            mostrar_edicion = False
+                            if puede_editar:
+                                mostrar_edicion = st.toggle(
+                                    "Editar datos de la tarjeta",
+                                    value=False,
+                                    key=f"editar_datos_objetivo_{objetivo_id}",
+                                    help=(
+                                        "Muestra título, fecha, estado, "
+                                        "responsables y demás configuración."
+                                    ),
+                                )
+
+                            if puede_editar and mostrar_edicion:
                                 nuevo_objetivo = st.text_input(
                                     "Frente de trabajo",
                                     value=objetivo_txt,
@@ -8270,38 +8338,6 @@ def render_objetivos(cliente="", modo="cliente", mostrar_header=True):
                                         responsable_cliente_txt
                                     )
 
-                                nuevos_items_txt = st.text_area(
-                                    "Agregar ítems al checklist",
-                                    value="",
-                                    placeholder=(
-                                        "Un ítem por línea"
-                                    ),
-                                    key=(
-                                        f"nuevo_checklist_objetivo_"
-                                        f"{objetivo_id}"
-                                    ),
-                                    height=90,
-                                )
-
-                                nuevo_comentario = st.text_area(
-                                    "Comentario / actualización",
-                                    value="",
-                                    placeholder=(
-                                        "Agregar una actualización..."
-                                    ),
-                                    key=(
-                                        f"comentario_objetivo_"
-                                        f"{objetivo_id}"
-                                    ),
-                                    height=90,
-                                )
-
-                                render_archivos_objetivo(
-                                    objetivo_id,
-                                    nombre_usuario,
-                                    puede_eliminar=puede_editar,
-                                )
-
                                 if st.button(
                                     "Guardar cambios",
                                     key=(
@@ -8316,16 +8352,7 @@ def render_objetivos(cliente="", modo="cliente", mostrar_header=True):
                                                 "El frente de trabajo no puede quedar vacío."
                                             )
 
-                                        nuevos_items = (
-                                            checklist_desde_textarea_objetivo(
-                                                nuevos_items_txt
-                                            )
-                                        )
-
-                                        checklist_final = (
-                                            checklist_actualizado
-                                            + nuevos_items
-                                        )
+                                        checklist_final = checklist_actualizado
 
                                         avance_final = (
                                             avance_desde_checklist_objetivo(
@@ -8378,7 +8405,7 @@ def render_objetivos(cliente="", modo="cliente", mostrar_header=True):
                                                     )
                                                 ),
                                             },
-                                            nuevo_comentario,
+                                            "",
                                         )
 
                                         st.success(
