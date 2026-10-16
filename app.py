@@ -3020,6 +3020,8 @@ def menu_cliente_por_servicios(cliente_nombre):
     servicios = servicios_activos_cliente(cliente_nombre)
 
     opciones = ["Inicio"]
+    if cliente_nombre == "SMPA / KM146":
+        opciones.append("Tablero gerencial")
 
     if servicios["digital"]:
         opciones += [
@@ -3198,6 +3200,8 @@ def menu_por_servicios_cliente_para_equipo(cliente_nombre):
     servicios = servicios_activos_cliente(cliente_nombre)
 
     opciones = ["Portal cliente"]
+    if cliente_nombre == "SMPA / KM146":
+        opciones.append("Tablero gerencial")
 
     if servicios.get("digital"):
         opciones += ["Contenidos", "Materiales", "Campañas", "Reportes"]
@@ -3326,7 +3330,7 @@ def sidebar():
     elif role in ["admin_general", "admin"]:
         opciones_admin = [
             "Dashboard AM", "Edición rápida", "Usuarios", "Onboarding", "Clientes",
-            "Ficha cliente", "Plan de trabajo", "Cash Flow", "Cuenta corriente",
+            "Ficha cliente", "Plan de trabajo", "Tablero gerencial", "Cash Flow", "Cuenta corriente",
             "Liquidaciones", "Contabilidad", "Contenidos", "Materiales", "Campañas",
             "Reportes", "Tareas", "Actividad", "Vista cliente",
         ]
@@ -18321,6 +18325,11 @@ def main():
 
     role = st.session_state.get("role")
     cliente_user = st.session_state.get("cliente")
+
+    if menu == "Tablero gerencial":
+        from am_hub_fleet import render_fleet
+        render_fleet(get_postgres_engine() if usar_postgres() else None, st.session_state, clientes_visibles_para_usuario())
+        return
 
     if role == "cliente":
         cliente = cliente_user
