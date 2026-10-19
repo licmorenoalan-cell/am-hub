@@ -88,7 +88,8 @@ st.set_page_config(
     layout="wide",
 )
 
-AUTH_COOKIE_NAME = "am_hub_session_v1"
+AUTH_COOKIE_NAME = "am_hub_session_v2"
+AUTH_LEGACY_COOKIE_NAMES = ("am_hub_session_v1",)
 AUTH_SESSION_DAYS = 30
 AUTH_RENEW_BEFORE_DAYS = 7
 AUTH_COOKIE_MANAGER = stx.CookieManager(key="am_hub_cookie_manager")
@@ -2793,6 +2794,19 @@ def _guardar_cookie_sesion(username, user):
     )
 
 
+def _borrar_cookies_sesion():
+    nombres = (AUTH_COOKIE_NAME, *AUTH_LEGACY_COOKIE_NAMES)
+    for indice, nombre_cookie in enumerate(dict.fromkeys(nombres)):
+        try:
+            if AUTH_COOKIE_MANAGER.get(nombre_cookie):
+                AUTH_COOKIE_MANAGER.delete(
+                    nombre_cookie,
+                    key=f"am_hub_session_cookie_delete_{indice}",
+                )
+        except (KeyError, ValueError):
+            continue
+
+
 def restaurar_sesion_persistente():
     if st.session_state.get("logged_in") or st.session_state.get("auth"):
         return True
@@ -2812,6 +2826,7 @@ def restaurar_sesion_persistente():
     payload, user = validado
     username = str(payload["u"])
     _establecer_usuario_en_sesion(username, user)
+    st.session_state["auth_persistent"] = True
     st.session_state["auth_cookie_exp"] = int(payload["exp"])
     segundos_restantes = int(payload["exp"]) - int(
         datetime.now(timezone.utc).timestamp()
@@ -2898,6 +2913,15 @@ def login():
 
         username = st.text_input("Usuario", key="login_username")
         password = st.text_input("Contraseña", type="password", key="login_password")
+        mantener_sesion = st.checkbox(
+            "Mantener sesión iniciada en este dispositivo",
+            value=False,
+            help=(
+                "Es opcional. Si no lo activás, al abrir AM HUB en una nueva "
+                "sesión podrás ingresar con otro usuario."
+            ),
+            key="login_remember_me",
+        )
 
         if st.button("Ingresar", key="login_button", use_container_width=True):
             users = load_users() if "load_users" in globals() else USERS
@@ -2909,7 +2933,11 @@ def login():
 
             if user and str(user.get("password", "")).strip() == password_clean:
                 _establecer_usuario_en_sesion(username_clean, user)
-                _guardar_cookie_sesion(username_clean, user)
+                st.session_state["auth_persistent"] = bool(mantener_sesion)
+                if mantener_sesion:
+                    _guardar_cookie_sesion(username_clean, user)
+                else:
+                    _borrar_cookies_sesion()
                 st.rerun()
             else:
                 st.error("Usuario o contraseña incorrectos, o usuario inactivo.")
@@ -2918,13 +2946,7 @@ def login():
 
 def logout_button():
     if st.sidebar.button(ui("Cerrar sesión"), use_container_width=True):
-        try:
-            if AUTH_COOKIE_MANAGER.get(AUTH_COOKIE_NAME):
-                AUTH_COOKIE_MANAGER.delete(
-                    AUTH_COOKIE_NAME, key="am_hub_session_cookie",
-                )
-        except (KeyError, ValueError):
-            pass
+        _borrar_cookies_sesion()
         for k in [
             "logged_in",
             "auth",
@@ -2936,6 +2958,10 @@ def logout_button():
             "language_selector",
             "menu",
             "auth_cookie_exp",
+            "auth_persistent",
+            "login_username",
+            "login_password",
+            "login_remember_me",
         ]:
             st.session_state.pop(k, None)
 
