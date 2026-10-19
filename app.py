@@ -44,6 +44,7 @@ from am_hub_core import (
 )
 from am_hub_i18n import LANGUAGES, normalize_language, translate
 from am_hub_auth import crear_token_sesion, validar_token_sesion
+from am_hub_tasks import actualizar_estado_tarea_postgres
 from am_hub_accounting import (
     ARCHIVO_CONTABLE_COLUMNAS,
     ASIENTO_COLUMNAS,
@@ -5903,6 +5904,11 @@ def render_edicion_rapida(clientes, contenidos, materiales, campanias, reportes,
         )
 
         if st.button("Guardar tareas", use_container_width=True, key="guardar_rapido_tareas"):
+            generar_recurrencias_desde_edicion(
+                tareas,
+                edited,
+                st.session_state.get("name", "Sistema"),
+            )
             save_csv(edited, TAREAS_PATH)
             st.success("Tareas guardadas.")
             st.rerun()
@@ -11306,6 +11312,12 @@ def render_crud_table(title, path, df=None, cliente_preview=""):
         )
 
         if st.button(f"Guardar {title}", use_container_width=True, key=f"guardar_{title}_{cliente_preview}"):
+            if path == TAREAS_PATH:
+                generar_recurrencias_desde_edicion(
+                    full,
+                    edited,
+                    st.session_state.get("name", "Sistema"),
+                )
             if cliente_preview and "cliente" in edited.columns:
                 edited = edited.copy().fillna("")
                 edited["cliente"] = cliente_preview
@@ -11622,6 +11634,42 @@ def siguiente_fecha_tarea(fecha_actual, frecuencia, intervalo=1):
         siguiente = fecha
 
     return siguiente.strftime("%Y-%m-%d")
+
+
+def generar_recurrencias_desde_edicion(tareas_antes, tareas_despues, usuario):
+    """Conserva la recurrencia cuando se finaliza desde una grilla editable."""
+    if not usar_postgres():
+        return
+    if tareas_antes is None or tareas_despues is None:
+        return
+    if tareas_antes.empty or tareas_despues.empty:
+        return
+    if "id" not in tareas_antes.columns or "id" not in tareas_despues.columns:
+        return
+
+    estados_anteriores = {
+        str(row.get("id", "")): str(row.get("estado", ""))
+        for _, row in tareas_antes.iterrows()
+    }
+    hubo_cambios = False
+    for _, row in tareas_despues.iterrows():
+        tarea_id = str(row.get("id", ""))
+        estado_nuevo = str(row.get("estado", ""))
+        if (
+            tarea_id
+            and estado_nuevo == "Finalizada"
+            and estados_anteriores.get(tarea_id, "") != "Finalizada"
+        ):
+            actualizar_estado_tarea_postgres(
+                get_postgres_engine(),
+                tarea_id,
+                estado_nuevo,
+                usuario,
+            )
+            hubo_cambios = True
+
+    if hubo_cambios:
+        _limpiar_cache_postgres()
 
 
 def cargar_tareas_internas(cliente=""):
@@ -12371,23 +12419,15 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
             row_tarea.get("id", "")
         )
 
-        requiere_generar_recurrencia = (
-            str(row_tarea.get("recurrente", "No")) == "Sí"
-            and nuevo_estado == "Finalizada"
-            and str(row_tarea.get("estado", "")) != "Finalizada"
-        )
-
-        if usar_postgres() and not requiere_generar_recurrencia:
+        if usar_postgres():
             try:
-                actualizar_postgres_por_id(
-                    "tareas",
+                actualizar_estado_tarea_postgres(
+                    get_postgres_engine(),
                     tarea_id_rapido,
-                    {
-                        "estado": nuevo_estado,
-                        "fecha_actualizacion": date.today().strftime("%Y-%m-%d"),
-                        "actualizado_por": nombre_usuario,
-                    },
+                    nuevo_estado,
+                    nombre_usuario,
                 )
+                _limpiar_cache_postgres()
                 return True, ""
             except Exception as exc:
                 return False, str(exc)

@@ -13,6 +13,7 @@ import pandas as pd
 import streamlit as st
 from sqlalchemy import create_engine, text
 from am_hub_i18n import LANGUAGES, normalize_language, translate
+from am_hub_tasks import actualizar_estado_tarea_postgres
 
 
 st.set_page_config(
@@ -968,31 +969,17 @@ def actualizar_estado(
     nuevo_estado: str,
 ):
     engine = get_engine()
-    hoy = date.today().strftime("%Y-%m-%d")
     usuario = get_secret(
         "POCKET_USERNAME",
         "alan",
     )
 
-    with engine.begin() as conn:
-        conn.execute(
-            text(
-                """
-                UPDATE tareas
-                SET
-                    estado = :estado,
-                    fecha_actualizacion = :fecha,
-                    actualizado_por = :usuario
-                WHERE id = :id
-                """
-            ),
-            {
-                "estado": nuevo_estado,
-                "fecha": hoy,
-                "usuario": usuario,
-                "id": tarea_id,
-            },
-        )
+    actualizar_estado_tarea_postgres(
+        engine,
+        tarea_id,
+        nuevo_estado,
+        usuario,
+    )
 
     limpiar_cache()
 
