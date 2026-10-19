@@ -45,6 +45,11 @@ from am_hub_core import (
 from am_hub_i18n import LANGUAGES, normalize_language, translate
 from am_hub_auth import crear_token_sesion, validar_token_sesion
 from am_hub_tasks import actualizar_estado_tarea_postgres
+from am_hub_personal_finance import (
+    CUENTA_PERSONAL_COLUMNAS,
+    TARJETA_PERSONAL_COLUMNAS,
+    resumen_finanzas_personales,
+)
 from am_hub_accounting import (
     ARCHIVO_CONTABLE_COLUMNAS,
     ASIENTO_COLUMNAS,
@@ -111,6 +116,8 @@ MINUTAS_PATH = DATA_DIR / "minutas.csv"
 DOCUMENTOS_PATH = DATA_DIR / "documentos.csv"
 INDICADORES_PATH = DATA_DIR / "indicadores.csv"
 INDICADORES_MOVIMIENTOS_PATH = DATA_DIR / "indicadores_movimientos.csv"
+FINANZAS_CUENTAS_PATH = DATA_DIR / "finanzas_personales_cuentas.csv"
+FINANZAS_TARJETAS_PATH = DATA_DIR / "finanzas_personales_tarjetas.csv"
 CUENTA_CORRIENTE_PATH = DATA_DIR / "cuenta_corriente.csv"
 ACTIVIDAD_PATH = DATA_DIR / "actividad.csv"
 TAREA_ARCHIVOS_PATH = DATA_DIR / "tarea_archivos.csv"
@@ -167,6 +174,8 @@ POSTGRES_TABLE_MAP = {
     "documentos.csv": "documentos",
     "indicadores.csv": "indicadores",
     "indicadores_movimientos.csv": "indicadores_movimientos",
+    "finanzas_personales_cuentas.csv": "finanzas_personales_cuentas",
+    "finanzas_personales_tarjetas.csv": "finanzas_personales_tarjetas",
     "cuenta_corriente.csv": "cuenta_corriente",
     "fiscal_clientes.csv": "fiscal_clientes",
     "fiscal_periodos.csv": "fiscal_periodos",
@@ -200,6 +209,8 @@ POSTGRES_KEY_MAP = {
     "documentos": "id",
     "indicadores": "id",
     "indicadores_movimientos": "id",
+    "finanzas_personales_cuentas": "id",
+    "finanzas_personales_tarjetas": "id",
     "cuenta_corriente": "id",
     "fiscal_clientes": "id",
     "fiscal_periodos": "id",
@@ -374,6 +385,85 @@ def asegurar_columnas_cuenta_corriente_postgres():
             )
         )
     return True
+
+
+@st.cache_resource(show_spinner=False)
+def asegurar_tablas_finanzas_personales():
+    """Crea el módulo sólo al abrirlo para no afectar la carga general."""
+    if not usar_postgres():
+        return True
+    definiciones = {
+        "finanzas_personales_cuentas": CUENTA_PERSONAL_COLUMNAS,
+        "finanzas_personales_tarjetas": TARJETA_PERSONAL_COLUMNAS,
+    }
+    with get_postgres_engine().begin() as conn:
+        for tabla, columnas in definiciones.items():
+            partes = [
+                f'"{columna}" TEXT{" PRIMARY KEY" if columna == "id" else ""}'
+                for columna in columnas
+            ]
+            conn.execute(sql_text(
+                f'CREATE TABLE IF NOT EXISTS "{tabla}" ({", ".join(partes)})'
+            ))
+            conn.execute(sql_text(
+                f'CREATE INDEX IF NOT EXISTS "idx_{tabla}_cliente_periodo" '
+                f'ON "{tabla}" ("cliente", "periodo")'
+            ))
+    return True
+
+
+def guardar_finanzas_personales_cliente(
+    path: Path,
+    columnas: list[str],
+    cliente: str,
+    datos_cliente: pd.DataFrame,
+):
+    """Reemplaza únicamente los registros del cliente activo."""
+    cliente = str(cliente or "").strip()
+    if not cliente:
+        raise ValueError("No se pudo identificar el cliente.")
+    limpio = normalizar_dataframe(datos_cliente, columnas).fillna("")
+    limpio["cliente"] = cliente
+    limpio = limpio[limpio["id"].astype(str).str.strip().ne("")].copy()
+
+    tabla = tabla_postgres_para_path(path)
+    if usar_postgres() and tabla:
+        asegurar_tablas_finanzas_personales()
+        cols_sql = _sql_cols(columnas)
+        values_sql = ", ".join(f":{col}" for col in columnas)
+        with get_postgres_engine().begin() as conn:
+            conn.execute(
+                sql_text(f'DELETE FROM "{tabla}" WHERE "cliente" = :cliente'),
+                {"cliente": cliente},
+            )
+            if not limpio.empty:
+                conn.execute(
+                    sql_text(
+                        f'INSERT INTO "{tabla}" ({cols_sql}) VALUES ({values_sql})'
+                    ),
+                    [
+                        {
+                            col: _normalizar_valor_postgres(row.get(col, ""))
+                            for col in columnas
+                        }
+                        for _, row in limpio.iterrows()
+                    ],
+                )
+        _limpiar_cache_postgres()
+    else:
+        todos = read_csv(path, columnas)
+        otros = todos[
+            todos["cliente"].fillna("").astype(str).str.strip().ne(cliente)
+        ].copy()
+        escribir_csv_atomico(
+            pd.concat([otros, limpio], ignore_index=True),
+            path,
+        )
+    registrar_actividad(
+        "guardar",
+        tabla or Path(path).stem,
+        detalle=f"Finanzas personales: {len(limpio)} fila(s)",
+    )
 
 
 def tabla_postgres_para_path(path):
@@ -8880,6 +8970,333 @@ def render_documentos(cliente="", modo="cliente"):
             st.success("Documentos guardados.")
             st.rerun()
 
+def _formato_dinero_personal(valor, moneda="ARS"):
+    simbolo = "US$" if str(moneda).upper() == "USD" else "$"
+    try:
+        return f"{simbolo} {float(valor):,.0f}".replace(",", ".")
+    except (TypeError, ValueError):
+        return f"{simbolo} 0"
+
+
+def _leer_finanzas_personales(cliente: str):
+    asegurar_tablas_finanzas_personales()
+    return (
+        read_csv_cliente(
+            FINANZAS_CUENTAS_PATH, CUENTA_PERSONAL_COLUMNAS, cliente
+        ),
+        read_csv_cliente(
+            FINANZAS_TARJETAS_PATH, TARJETA_PERSONAL_COLUMNAS, cliente
+        ),
+    )
+
+
+def render_finanzas_personales(cliente="", modo="cliente"):
+    clientes = clientes_visibles_para_usuario()
+    if modo == "cliente":
+        cliente_activo = str(cliente or "").strip()
+    else:
+        if not clientes:
+            st.warning("Primero cargá un cliente para usar Finanzas personales.")
+            return
+        cliente_activo = st.selectbox(
+            "Persona o grupo familiar",
+            clientes,
+            key="finanzas_personales_cliente_admin",
+        )
+    if not cliente_activo:
+        st.warning("No se pudo identificar el cliente.")
+        return
+
+    cuentas, tarjetas = _leer_finanzas_personales(cliente_activo)
+    usuario = st.session_state.get("username", "")
+    ahora = pd.Timestamp.now(tz="America/Argentina/Buenos_Aires").isoformat()
+    periodo_actual = date.today().strftime("%Y-%m")
+
+    st.markdown("### Finanzas personales")
+    st.caption(
+        "Ordená ingresos, gastos, ahorros y tarjetas. Cada período conserva una "
+        "foto para seguir la evolución sin mezclar información de otros clientes."
+    )
+
+    periodos = {periodo_actual}
+    for base in [cuentas, tarjetas]:
+        if base is not None and not base.empty and "periodo" in base.columns:
+            periodos.update(
+                p for p in base["periodo"].fillna("").astype(str) if p
+            )
+    movimientos_cliente = read_csv_cliente(
+        INDICADORES_MOVIMIENTOS_PATH,
+        [
+            "id", "cliente", "mes", "tipo", "categoria", "importe",
+            "observacion", "fecha_carga", "cargado_por",
+        ],
+        cliente_activo,
+    )
+    if not movimientos_cliente.empty:
+        periodos.update(
+            p for p in movimientos_cliente["mes"].fillna("").astype(str) if p
+        )
+    filtro1, filtro2 = st.columns(2)
+    periodo = filtro1.selectbox(
+        "Período a analizar",
+        sorted(periodos, reverse=True),
+        key=f"fin_personal_periodo_{cliente_activo}",
+    )
+    moneda_analisis = filtro2.selectbox(
+        "Moneda del tablero",
+        ["ARS", "USD"],
+        key=f"fin_personal_moneda_{cliente_activo}",
+    )
+
+    flujo_periodo = movimientos_cliente[
+        movimientos_cliente["mes"].astype(str).eq(periodo)
+    ].copy() if not movimientos_cliente.empty else pd.DataFrame()
+    if not flujo_periodo.empty:
+        flujo_periodo["importe"] = pd.to_numeric(
+            flujo_periodo["importe"], errors="coerce"
+        ).fillna(0)
+        ingresos = flujo_periodo.loc[
+            flujo_periodo["tipo"].eq("Ingreso"), "importe"
+        ].sum()
+        gastos = flujo_periodo.loc[
+            flujo_periodo["tipo"].eq("Gasto"), "importe"
+        ].sum()
+    else:
+        ingresos = gastos = 0.0
+    resultado = float(ingresos - gastos) if moneda_analisis == "ARS" else 0.0
+
+    cuentas_moneda = cuentas[
+        cuentas["moneda"].fillna("ARS").astype(str).str.upper().eq(moneda_analisis)
+    ].copy() if not cuentas.empty else cuentas
+    tarjetas_moneda = tarjetas[
+        tarjetas["moneda"].fillna("ARS").astype(str).str.upper().eq(moneda_analisis)
+    ].copy() if not tarjetas.empty else tarjetas
+
+    cuentas_hasta = cuentas_moneda[
+        cuentas_moneda["periodo"].astype(str).le(periodo)
+    ].copy() if not cuentas_moneda.empty else cuentas_moneda
+    tarjetas_hasta = tarjetas_moneda[
+        tarjetas_moneda["periodo"].astype(str).le(periodo)
+    ].copy() if not tarjetas_moneda.empty else tarjetas_moneda
+
+    reserva = st.number_input(
+        "Reserva mínima que no querés utilizar",
+        min_value=0.0,
+        step=10000.0,
+        key=f"fin_reserva_{cliente_activo}",
+        help="Se usa únicamente para simular un escenario; no mueve dinero ni genera pagos.",
+    )
+    resumen = resumen_finanzas_personales(
+        cuentas_hasta, tarjetas_hasta, resultado, reserva
+    )
+
+    k1, k2, k3, k4 = st.columns(4)
+    k1.metric("Dinero disponible", _formato_dinero_personal(resumen["liquidez"], moneda_analisis))
+    k2.metric("Deuda de tarjetas", _formato_dinero_personal(resumen["deuda_tarjetas"], moneda_analisis))
+    k3.metric("Resultado del mes", _formato_dinero_personal(resultado, moneda_analisis))
+    k4.metric("Posición neta", _formato_dinero_personal(resumen["patrimonio_liquido"], moneda_analisis))
+
+    if resumen["deuda_tarjetas"] > 0:
+        if resumen["cancelacion_posible"] > 0:
+            st.info(
+                "Escenario orientativo: preservando la reserva indicada y sumando "
+                f"el resultado positivo del mes, habría hasta "
+                f"{_formato_dinero_personal(resumen['cancelacion_posible'], moneda_analisis)} "
+                "disponibles para reducir deuda. Revisá tasas, vencimientos y gastos "
+                "próximos antes de decidir."
+            )
+        else:
+            st.warning(
+                "La liquidez cargada no supera la reserva indicada. Conviene completar "
+                "el flujo mensual y los resúmenes antes de definir un pago extraordinario."
+            )
+    elif not tarjetas_moneda.empty:
+        st.success("No queda deuda pendiente en los últimos resúmenes cargados.")
+
+    vencimientos = tarjetas_hasta.copy()
+    if not vencimientos.empty:
+        vencimientos["fecha_vencimiento_dt"] = pd.to_datetime(
+            vencimientos["fecha_vencimiento"], errors="coerce"
+        )
+        vencimientos = vencimientos[
+            vencimientos["fecha_vencimiento_dt"].notna()
+            & vencimientos["fecha_vencimiento_dt"].dt.date.ge(date.today())
+        ].sort_values("fecha_vencimiento_dt").head(5)
+        if not vencimientos.empty:
+            st.markdown("#### Próximos vencimientos")
+            st.dataframe(
+                vencimientos[[
+                    "tarjeta", "titular", "fecha_vencimiento",
+                    "total_resumen", "pago_minimo", "estado",
+                ]],
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    "tarjeta": "Tarjeta",
+                    "titular": "Titular",
+                    "fecha_vencimiento": "Vencimiento",
+                    "total_resumen": "Total",
+                    "pago_minimo": "Mínimo",
+                    "estado": "Estado",
+                },
+            )
+
+    if not cuentas_moneda.empty or not tarjetas_moneda.empty:
+        evolucion = []
+        for p in sorted(periodos):
+            if p > periodo:
+                continue
+            r = resumen_finanzas_personales(
+                cuentas_moneda[cuentas_moneda["periodo"].astype(str).le(p)] if not cuentas_moneda.empty else cuentas_moneda,
+                tarjetas_moneda[tarjetas_moneda["periodo"].astype(str).le(p)] if not tarjetas_moneda.empty else tarjetas_moneda,
+            )
+            evolucion.extend([
+                {"Período": p, "Concepto": "Dinero disponible", "Importe": r["liquidez"]},
+                {"Período": p, "Concepto": "Deuda de tarjetas", "Importe": r["deuda_tarjetas"]},
+            ])
+        if evolucion:
+            st.markdown("#### Evolución")
+            grafico = (
+                alt.Chart(pd.DataFrame(evolucion))
+                .mark_line(point=True)
+                .encode(
+                    x=alt.X("Período:N", title="Período"),
+                    y=alt.Y("Importe:Q", title="Importe"),
+                    color=alt.Color("Concepto:N", title=""),
+                    tooltip=["Período", "Concepto", alt.Tooltip("Importe:Q", format=",.0f")],
+                )
+                .properties(height=280)
+            )
+            st.altair_chart(grafico, use_container_width=True)
+
+    carga_cuentas, carga_tarjetas, detalle = st.tabs([
+        "Cuentas y ahorros", "Tarjetas", "Revisar datos",
+    ])
+
+    with carga_cuentas:
+        with st.form(f"fin_cuenta_form_{cliente_activo}", clear_on_submit=True):
+            c1, c2, c3 = st.columns(3)
+            cuenta_periodo = c1.text_input("Período", value=periodo_actual, help="Formato AAAA-MM")
+            cuenta_nombre = c2.text_input("Cuenta", placeholder="Ej.: Banco Nación o Ahorro")
+            cuenta_tipo = c3.selectbox("Tipo", ["Banco", "Efectivo", "Ahorro", "Billetera", "Otro"])
+            c4, c5 = st.columns(2)
+            cuenta_moneda = c4.selectbox("Moneda", ["ARS", "USD"], key=f"cuenta_moneda_{cliente_activo}")
+            cuenta_saldo = c5.number_input("Saldo disponible", min_value=0.0, step=10000.0)
+            cuenta_obs = st.text_input("Observaciones", placeholder="Opcional")
+            guardar_cuenta = st.form_submit_button("Guardar o actualizar saldo", use_container_width=True)
+        if guardar_cuenta:
+            if not re.fullmatch(r"\d{4}-\d{2}", str(cuenta_periodo)):
+                st.error("El período debe tener formato AAAA-MM.")
+            elif not cuenta_nombre.strip():
+                st.error("Indicá el nombre de la cuenta.")
+            else:
+                mascara_existente = (
+                    cuentas["periodo"].astype(str).eq(str(cuenta_periodo))
+                    & cuentas["cuenta"].fillna("").astype(str).str.strip().str.casefold().eq(cuenta_nombre.strip().casefold())
+                    & cuentas["moneda"].fillna("ARS").astype(str).str.upper().eq(cuenta_moneda)
+                ) if not cuentas.empty else pd.Series(False, index=cuentas.index)
+                id_existente = (
+                    str(cuentas.loc[mascara_existente, "id"].iloc[-1])
+                    if mascara_existente.any() else f"FPC-{uuid.uuid4().hex}"
+                )
+                nuevo = {
+                    "id": id_existente, "cliente": cliente_activo,
+                    "periodo": cuenta_periodo, "cuenta": cuenta_nombre.strip(),
+                    "tipo": cuenta_tipo, "moneda": cuenta_moneda,
+                    "saldo": cuenta_saldo, "observaciones": cuenta_obs,
+                    "fecha_actualizacion": ahora, "actualizado_por": usuario,
+                }
+                guardar_finanzas_personales_cliente(
+                    FINANZAS_CUENTAS_PATH, CUENTA_PERSONAL_COLUMNAS,
+                    cliente_activo,
+                    pd.concat([cuentas.loc[~mascara_existente], pd.DataFrame([nuevo])], ignore_index=True),
+                )
+                st.success("Saldo guardado.")
+                st.rerun()
+
+    with carga_tarjetas:
+        with st.form(f"fin_tarjeta_form_{cliente_activo}", clear_on_submit=True):
+            c1, c2, c3 = st.columns(3)
+            tarjeta_periodo = c1.text_input("Período", value=periodo_actual, key=f"tar_periodo_{cliente_activo}")
+            tarjeta_nombre = c2.text_input("Tarjeta", placeholder="Ej.: Visa Banco Nación")
+            titular = c3.text_input("Titular")
+            c4, c5, c6 = st.columns(3)
+            fecha_cierre = c4.date_input("Cierre", value=date.today())
+            fecha_vencimiento = c5.date_input("Vencimiento", value=date.today())
+            tarjeta_moneda = c6.selectbox("Moneda", ["ARS", "USD"], key=f"tar_moneda_{cliente_activo}")
+            c7, c8, c9 = st.columns(3)
+            total_resumen = c7.number_input("Total del resumen", min_value=0.0, step=10000.0)
+            pago_minimo = c8.number_input("Pago mínimo", min_value=0.0, step=10000.0)
+            pago_realizado = c9.number_input("Pago realizado", min_value=0.0, step=10000.0)
+            c10, c11 = st.columns(2)
+            tasa = c10.number_input("Tasa mensual estimada (%)", min_value=0.0, step=0.1)
+            estado = c11.selectbox("Estado", ["Pendiente", "Pago parcial", "Pagada"])
+            tarjeta_obs = st.text_input("Observaciones", key=f"tar_obs_{cliente_activo}")
+            guardar_tarjeta = st.form_submit_button("Guardar o actualizar resumen", use_container_width=True)
+        if guardar_tarjeta:
+            if not re.fullmatch(r"\d{4}-\d{2}", str(tarjeta_periodo)):
+                st.error("El período debe tener formato AAAA-MM.")
+            elif not tarjeta_nombre.strip():
+                st.error("Indicá la tarjeta.")
+            elif pago_minimo > total_resumen or pago_realizado > total_resumen:
+                st.error("El pago mínimo y el realizado no pueden superar el total del resumen.")
+            else:
+                mascara_existente = (
+                    tarjetas["periodo"].astype(str).eq(str(tarjeta_periodo))
+                    & tarjetas["tarjeta"].fillna("").astype(str).str.strip().str.casefold().eq(tarjeta_nombre.strip().casefold())
+                    & tarjetas["moneda"].fillna("ARS").astype(str).str.upper().eq(tarjeta_moneda)
+                ) if not tarjetas.empty else pd.Series(False, index=tarjetas.index)
+                id_existente = (
+                    str(tarjetas.loc[mascara_existente, "id"].iloc[-1])
+                    if mascara_existente.any() else f"FPT-{uuid.uuid4().hex}"
+                )
+                nuevo = {
+                    "id": id_existente, "cliente": cliente_activo,
+                    "periodo": tarjeta_periodo, "tarjeta": tarjeta_nombre.strip(),
+                    "titular": titular.strip(), "moneda": tarjeta_moneda,
+                    "fecha_cierre": fecha_cierre.isoformat(),
+                    "fecha_vencimiento": fecha_vencimiento.isoformat(),
+                    "total_resumen": total_resumen, "pago_minimo": pago_minimo,
+                    "pago_realizado": pago_realizado, "tasa_mensual": tasa,
+                    "estado": estado, "observaciones": tarjeta_obs,
+                    "fecha_actualizacion": ahora, "actualizado_por": usuario,
+                }
+                guardar_finanzas_personales_cliente(
+                    FINANZAS_TARJETAS_PATH, TARJETA_PERSONAL_COLUMNAS,
+                    cliente_activo,
+                    pd.concat([tarjetas.loc[~mascara_existente], pd.DataFrame([nuevo])], ignore_index=True),
+                )
+                st.success("Resumen guardado.")
+                st.rerun()
+
+    with detalle:
+        st.caption("Podés corregir o eliminar filas. Los cambios afectan únicamente a este cliente.")
+        st.markdown("##### Cuentas y ahorros")
+        cuentas_editadas = st.data_editor(
+            cuentas, use_container_width=True, hide_index=True, num_rows="dynamic",
+            disabled=["id", "cliente", "fecha_actualizacion", "actualizado_por"],
+            key=f"fin_cuentas_editor_{cliente_activo}",
+        )
+        if st.button("Guardar cuentas", key=f"fin_guardar_cuentas_{cliente_activo}"):
+            guardar_finanzas_personales_cliente(
+                FINANZAS_CUENTAS_PATH, CUENTA_PERSONAL_COLUMNAS,
+                cliente_activo, cuentas_editadas,
+            )
+            st.success("Cuentas actualizadas.")
+            st.rerun()
+        st.markdown("##### Tarjetas")
+        tarjetas_editadas = st.data_editor(
+            tarjetas, use_container_width=True, hide_index=True, num_rows="dynamic",
+            disabled=["id", "cliente", "fecha_actualizacion", "actualizado_por"],
+            key=f"fin_tarjetas_editor_{cliente_activo}",
+        )
+        if st.button("Guardar tarjetas", key=f"fin_guardar_tarjetas_{cliente_activo}"):
+            guardar_finanzas_personales_cliente(
+                FINANZAS_TARJETAS_PATH, TARJETA_PERSONAL_COLUMNAS,
+                cliente_activo, tarjetas_editadas,
+            )
+            st.success("Tarjetas actualizadas.")
+            st.rerun()
 
 
 def render_indicadores(cliente="", modo="cliente"):
@@ -8973,6 +9390,17 @@ def render_indicadores(cliente="", modo="cliente"):
         "Registrá movimientos y entendé la evolución financiera con indicadores y gráficos en una misma vista.",
         ["Ingresos", "Gastos", "Resultado", "Evolución mensual"],
     )
+
+    vista_financiera = st.radio(
+        "Vista",
+        ["Flujo mensual", "Finanzas personales"],
+        horizontal=True,
+        key=f"vista_cash_flow_{modo}_{cliente_fijo}",
+        label_visibility="collapsed",
+    )
+    if vista_financiera == "Finanzas personales":
+        render_finanzas_personales(cliente_fijo, modo=modo)
+        return
 
     clientes_lista = clientes_visibles_para_usuario()
 
