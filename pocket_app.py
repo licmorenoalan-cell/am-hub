@@ -1,6 +1,7 @@
 from am_hub_core import AREAS_PLAN, normalizar_area_plan, opciones_area_plan
 import hmac
 import html
+import logging
 import os
 import secrets
 import base64
@@ -14,6 +15,9 @@ import streamlit as st
 from sqlalchemy import create_engine, text
 from am_hub_i18n import LANGUAGES, normalize_language, translate
 from am_hub_tasks import actualizar_estado_tarea_postgres
+
+
+logger = logging.getLogger(__name__)
 
 
 st.set_page_config(
@@ -967,21 +971,34 @@ def insertar_tareas(
 def actualizar_estado(
     tarea_id: str,
     nuevo_estado: str,
-):
+) -> bool:
     engine = get_engine()
     usuario = get_secret(
         "POCKET_USERNAME",
         "alan",
     )
 
-    actualizar_estado_tarea_postgres(
-        engine,
-        tarea_id,
-        nuevo_estado,
-        usuario,
-    )
+    try:
+        actualizar_estado_tarea_postgres(
+            engine,
+            tarea_id,
+            nuevo_estado,
+            usuario,
+        )
+    except Exception:
+        logger.exception(
+            "No se pudo actualizar la tarea %s a %s",
+            tarea_id,
+            nuevo_estado,
+        )
+        st.error(
+            "No pudimos actualizar la tarjeta. No se perdió ningún dato; "
+            "recargá la pantalla e intentá nuevamente."
+        )
+        return False
 
     limpiar_cache()
+    return True
 
 
 def eliminar_tarea(tarea_id: str) -> bool:
@@ -2089,11 +2106,11 @@ if pagina_pocket == "📋 Mi tablero":
                         help="Finalizar",
                         use_container_width=True,
                     ):
-                        actualizar_estado(
+                        if actualizar_estado(
                             tarea_id,
                             "Finalizada",
-                        )
-                        st.rerun()
+                        ):
+                            st.rerun()
 
             st.caption(
                 f"{texto_prioridad(prioridad)}"
@@ -2120,11 +2137,11 @@ if pagina_pocket == "📋 Mi tablero":
             )
 
             if nuevo_estado != estado:
-                actualizar_estado(
+                if actualizar_estado(
                     tarea_id,
                     nuevo_estado,
-                )
-                st.rerun()
+                ):
+                    st.rerun()
 
             detalle_abierto = (
                 st.session_state.get(

@@ -161,8 +161,7 @@ def actualizar_estado_tarea_postgres(
                 text(
                     'SELECT 1 FROM "tareas" '
                     'WHERE "serie_id" = :serie_id '
-                    'AND CAST(COALESCE(NULLIF("ocurrencia", \'\'), \'1\') AS INTEGER) '
-                    '= :ocurrencia LIMIT 1'
+                    'AND COALESCE("ocurrencia", 1) = :ocurrencia LIMIT 1'
                 ),
                 {
                     "serie_id": nueva["serie_id"],
