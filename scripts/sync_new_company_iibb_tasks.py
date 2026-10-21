@@ -121,6 +121,22 @@ def pending_validation(
 def build_tasks() -> list[dict]:
     rows = [
         pending_validation(
+            "Matías Ojeda",
+            "20-35656955-6",
+            "el CUIT fue confirmado por Alan; el régimen y la jurisdicción de IIBB no están cargados en la ficha fiscal.",
+            "confirmar Local o Convenio Multilateral con la constancia de inscripción antes de fijar el vencimiento recurrente.",
+            period="09/2026",
+            due="2026-10-23",
+        ),
+        pending_validation(
+            "Verónica Martínez",
+            "27-36806250-8",
+            "el CUIT fue confirmado por Alan; el régimen y la jurisdicción de IIBB no están cargados en la ficha fiscal.",
+            "confirmar Local o Convenio Multilateral con la constancia de inscripción antes de fijar el vencimiento recurrente.",
+            period="09/2026",
+            due="2026-10-23",
+        ),
+        pending_validation(
             "SOLUCIONES GEM SAS",
             "33-71960172-9",
             "no figura en SIRCREB 09/2026 ni 10/2026; domicilio societario CABA y antecedentes operativos en Mendoza.",

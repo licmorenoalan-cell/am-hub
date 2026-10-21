@@ -166,13 +166,21 @@ def build_tasks() -> list[dict]:
 
     iva = [
         ("CASA DESER SRL", "30-71893522-5", "2026-10-21"),
+        ("Matías Ojeda", "20-35656955-6", "2026-10-22"),
+        ("Verónica Martínez", "27-36806250-8", "2026-10-23"),
         ("SOLUCIONES GEM SAS", "33-71960172-9", "2026-10-23"),
         ("EXPRESO RDA SAS", "30-71961601-8", "2026-11-25"),
         ("PP&L GROUP SAS", "30-71962593-9", "2026-10-23"),
         ("RED MANOS UNIDAS 77 SAS", "33-71960169-9", "2026-10-23"),
     ]
     for client, cuit, due in iva:
-        if client == "EXPRESO RDA SAS":
+        if client in {"Matías Ojeda", "Verónica Martínez"}:
+            iva_description = (
+                f"Liquidación mensual de IVA. CUIT: {cuit}. Período: "
+                "septiembre 2026. Vencimiento oficial de octubre 2026 "
+                "calculado por terminación de CUIT."
+            )
+        elif client == "EXPRESO RDA SAS":
             iva_description = (
                 f"Liquidación mensual de IVA. CUIT: {cuit}. Primer período: "
                 "octubre 2026. Vencimiento oficial para CUIT terminado en 8: "
