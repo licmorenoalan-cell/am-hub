@@ -162,6 +162,18 @@ def build_tasks() -> list[dict]:
             "existe instrumento constitutivo local, pero no se encontró publicación ni CUIT societario verificable al 20/10/2026.",
             "evaluar Convenio si comercializa u opera fuera de CABA; requiere inscripción y constancia.",
         ),
+        pending_validation(
+            "HYDROTEK SRL",
+            "",
+            "cliente activo con servicio contable en AM HUB, sin constancia de IIBB ni CUIT cargados en la ficha fiscal.",
+            "definir Local o Convenio según domicilio fiscal y jurisdicciones donde vende e instala sistemas hidropónicos.",
+        ),
+        pending_validation(
+            "Cooperativa de Trabajo Villa Adelina",
+            "",
+            "cliente activo con servicio contable en AM HUB, sin constancia de IIBB ni CUIT cargados en la ficha fiscal.",
+            "definir Local o Convenio según domicilio fiscal y jurisdicciones efectivas de actividad.",
+        ),
         task(
             key="cerrado:smpa:2026-09",
             client="SMPA / KM146",
