@@ -98,11 +98,17 @@ def build_tasks() -> list[dict]:
         ("Nico SAS", "Nico SAS"),
         ("HYDROTEK SRL", "Jhony Hydrotek"),
         ("Matías Ojeda", "Matías Ojeda"),
-        ("Vero Martínez", "Vero Martínez"),
+        ("Verónica Martínez", "Verónica Martínez"),
         ("Socios SAS", "Socios SAS"),
         ("SMPA / KM146", "Marcos — SMPA SAS"),
     ]
+    autonomos_cuits = {
+        "Matías Ojeda": "20-35656955-6",
+        "Verónica Martínez": "27-36806250-8",
+    }
     for client, taxpayer in autonomos:
+        cuit = autonomos_cuits.get(taxpayer, "")
+        cuit_note = f" CUIT: {cuit}." if cuit else ""
         rows.append(
             task(
                 key=f"autonomos:{taxpayer.lower()}",
@@ -114,6 +120,7 @@ def build_tasks() -> list[dict]:
                     "Control mensual del pago de Autónomos. La fecha reconstruye "
                     "el período octubre de la serie anterior. Completar el CUIT en "
                     "la ficha fiscal para ajustar automáticamente el día exacto."
+                    + cuit_note
                 ),
                 checklist_value=checklist(
                     "Verificar deuda y vencimiento según terminación de CUIT",
