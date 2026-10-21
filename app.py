@@ -303,7 +303,11 @@ def get_postgres_engine():
         pool_recycle=1800,
         pool_size=5,
         max_overflow=5,
-        connect_args={"connect_timeout": 10},
+        # El pooler de PostgreSQL reutiliza conexiones de servidor entre
+        # sesiones. Los prepared statements automáticos de psycopg pueden
+        # colisionar allí (DuplicatePreparedStatement), especialmente en
+        # cargas por lote como la creación inicial del plan de cuentas.
+        connect_args={"connect_timeout": 10, "prepare_threshold": None},
     )
 
 

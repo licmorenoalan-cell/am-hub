@@ -40,6 +40,16 @@ class StreamlitCompatibilityTests(unittest.TestCase):
 
         self.assertEqual(source[inicio:fin].count("st.columns("), 1)
 
+    def test_conexiones_postgres_desactivan_prepared_statements_del_pooler(self):
+        raiz = self.app_path.parent
+        for archivo in ("app.py", "pocket_app.py"):
+            source = raiz.joinpath(archivo).read_text(encoding="utf-8")
+            self.assertIn(
+                '"prepare_threshold": None',
+                source,
+                f"{archivo} debe ser compatible con el pooler PostgreSQL",
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

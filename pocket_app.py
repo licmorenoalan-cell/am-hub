@@ -175,6 +175,9 @@ def get_engine():
         max_overflow=2,
         connect_args={
             "connect_timeout": 10,
+            # Compatible con poolers en modo transacción: evita que dos
+            # sesiones reutilicen el mismo nombre de prepared statement.
+            "prepare_threshold": None,
         },
     )
 
