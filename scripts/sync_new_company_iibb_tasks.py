@@ -91,28 +91,28 @@ def pending_validation(
     cuit: str,
     evidence: str,
     recommendation: str,
+    period: str = "09/2026",
+    due: str = "2026-10-20",
 ) -> dict:
     cuit_text = cuit or "pendiente"
     return task(
         key=f"validar-regimen:{client.casefold()}",
         client=client,
         title=f"Ingresos Brutos — validar alta y régimen — {client}",
-        due="2026-10-20",
+        due=due,
         description=(
-            f"Control urgente del anticipo 09/2026. CUIT: {cuit_text}. "
+            f"Control del anticipo {period}. CUIT: {cuit_text}. "
             f"Evidencia revisada: {evidence} "
             f"Criterio preliminar: {recommendation} "
             "No liquidar como Local ni Convenio hasta adjuntar la constancia "
-            "de IIBB o confirmar el alta en Padrón Federal/AGIP. Si el alta ya "
-            "estaba vigente en septiembre, presentar fuera de término y revisar "
-            "intereses; si no estaba vigente, completar la inscripción desde la "
-            "fecha real de inicio de actividad."
+            "de IIBB o confirmar el alta en Padrón Federal/AGIP. Liquidar desde "
+            "la fecha real de inicio de actividad."
         ),
         checklist_value=checklist(
             "Descargar y adjuntar constancia de IIBB vigente",
             "Confirmar fecha de alta, jurisdicción sede y actividades",
             "Definir Local CABA o Convenio Multilateral",
-            "Revisar anticipo 09/2026 y deuda/intereses si corresponde",
+            f"Revisar anticipo {period} y deuda/intereses si corresponde",
             "Convertir este control en recurrencia mensual con vencimiento correcto",
         ),
     )
@@ -129,8 +129,10 @@ def build_tasks() -> list[dict]:
         pending_validation(
             "EXPRESO RDA SAS",
             "30-71961601-8",
-            "no figura en SIRCREB 09/2026 ni 10/2026; constitución publicada el 25/09/2026, sede CABA y operación vinculada con PBA.",
+            "alta impositiva confirmada desde 10/2026; no corresponde anticipo 09/2026. No figura en SIRCREB 10/2026; constitución publicada el 25/09/2026, sede CABA y operación vinculada con PBA.",
             "Convenio es probable por la actividad de transporte interjurisdiccional, pero requiere alta/constancia.",
+            period="10/2026",
+            due="2026-10-23",
         ),
         pending_validation(
             "PP&L GROUP SAS",
