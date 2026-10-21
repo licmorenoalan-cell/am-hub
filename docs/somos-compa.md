@@ -1,3 +1,15 @@
+# Tablero independiente de Somos Compa
+
+Desde octubre de 2026, el tablero se encuentra en https://somos-compa-tablero.lic-moreno-alan.chatgpt.site y fue retirado del menú y del enrutamiento de AMHub. Acceso con usuario SMPA; la clave se administra en el alojamiento independiente.
+
+La base compartida fue copiada a D1. Las tablas fleet_sandbox y fleet_sandbox_history de AMHub se conservan como respaldo de la migración; no se eliminan ni se mezclan con la contabilidad. El cliente y su Plan de trabajo permanecen en AMHub.
+
+El código histórico del componente queda disponible como referencia. El nuevo sitio conserva filtros, formularios, CSV, respaldo JSON y control de versiones.
+
+---
+
+## Referencia de la implementación anterior
+
 # Somos Compa shared sandbox
 
 Access: AMHub → Tablero gerencial. Enabled only for SMPA / KM146, administrators and team members assigned to that client. Data access is checked on the server. The existing portal authentication is reused.
