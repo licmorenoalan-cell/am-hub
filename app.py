@@ -44,7 +44,12 @@ from am_hub_core import (
 )
 from am_hub_i18n import LANGUAGES, normalize_language, translate
 from am_hub_auth import crear_token_sesion, validar_token_sesion
-from am_hub_tasks import actualizar_estado_tarea_postgres
+from am_hub_tasks import (
+    actualizar_estado_tarea_postgres,
+    categoria_visual_tarea,
+    es_categoria_impositiva,
+    titulo_visual_tarea,
+)
 from am_hub_personal_finance import (
     CUENTA_PERSONAL_COLUMNAS,
     TARJETA_PERSONAL_COLUMNAS,
@@ -12309,6 +12314,13 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
     tareas_full = normalizar_tareas_internas(
         cargar_tareas_internas()
     )
+    tareas_full["_categoria_visual"] = [
+        categoria_visual_tarea(categoria, titulo)
+        for categoria, titulo in zip(
+            tareas_full["categoria"].fillna(""),
+            tareas_full["tarea"].fillna(""),
+        )
+    ]
 
     if "unidad" not in tareas_full.columns:
         tareas_full["unidad"] = ""
@@ -13539,7 +13551,7 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
     )
 
     # Los multiselect vacíos equivalen a mostrar todos.
-    f1, f2, f3 = st.columns(3)
+    f1, f2, f3, f4 = st.columns(4)
 
     with f1:
         estados_filtro = st.multiselect(
@@ -13559,6 +13571,25 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
         )
 
     with f2:
+        categorias_disponibles = sorted(
+            valor
+            for valor in tareas_vista_base["_categoria_visual"]
+            .fillna("")
+            .astype(str)
+            .str.strip()
+            .unique()
+            .tolist()
+            if valor
+        )
+        categorias_filtro = st.multiselect(
+            "Impuesto / categoría",
+            categorias_disponibles,
+            default=[],
+            key=f"filtro_categoria_tareas_multi_{modo}",
+            help="Filtrá IVA, Ingresos Brutos, Autónomos, Monotributo u otra categoría.",
+        )
+
+    with f3:
         unidades_filtro = st.multiselect(
             ui("Unidad"),
             unidades_opciones,
@@ -13588,7 +13619,7 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
         ]
     )
 
-    with f3:
+    with f4:
         clientes_filtro = st.multiselect(
             ui("Cliente"),
             ["Sin cliente"] + clientes_en_tareas,
@@ -13652,6 +13683,7 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
             "prioridad",
             "estado",
             "categoria",
+            "_categoria_visual",
             "comentarios",
             "origen",
         ],
@@ -13683,6 +13715,18 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
     else:
         # Las finalizadas sólo se muestran con selección explícita.
         tareas_vista = tareas_vista[estado_serie.ne("Finalizada")].copy()
+
+    # --------------------------------------------------------
+    # Impuesto / categoría
+    # --------------------------------------------------------
+
+    if categorias_filtro:
+        tareas_vista = tareas_vista[
+            tareas_vista["_categoria_visual"]
+            .fillna("")
+            .astype(str)
+            .isin(categorias_filtro)
+        ].copy()
 
     # --------------------------------------------------------
     # Unidad
@@ -13804,6 +13848,7 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
         [
             "Estado",
             "Fecha de vencimiento",
+            "Impuesto / categoría",
             "Unidad",
             "Cliente",
         ],
@@ -13896,6 +13941,11 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
             mask_grupo = vista_orden["fecha_limite"].apply(
                 grupo_vencimiento
             ).eq(grupo_destino)
+        elif criterio_columnas == "Impuesto / categoría":
+            grupo_destino = str(fila_tarea.get("_categoria_visual", "")).strip()
+            mask_grupo = vista_orden["_categoria_visual"].astype(str).eq(
+                grupo_destino
+            )
         elif criterio_columnas == "Unidad":
             grupo_destino = str(fila_tarea.get("unidad", "AM Consultora"))
             mask_grupo = vista_orden["unidad"].astype(str).eq(grupo_destino)
@@ -13952,6 +14002,43 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
             f"⚪ {prioridad}",
         )
 
+    def colores_categoria_tarea(valor):
+        return {
+            "IVA": ("#DBEAFE", "#1D4ED8"),
+            "Ingresos Brutos": ("#CCFBF1", "#0F766E"),
+            "Monotributo": ("#FEF3C7", "#A16207"),
+            "Autónomos": ("#EDE9FE", "#6D28D9"),
+            "Anticipos": ("#FFEDD5", "#C2410C"),
+            "Ganancias": ("#FCE7F3", "#BE185D"),
+            "Tasas municipales": ("#E2E8F0", "#475569"),
+        }.get(str(valor or ""), ("#E2E8F0", "#334155"))
+
+    def colores_estado_tarea(valor):
+        return {
+            "A priorizar": ("#FEE2E2", "#B91C1C"),
+            "Pendiente": ("#FFEDD5", "#9A3412"),
+            "En curso": ("#FEF3C7", "#92400E"),
+            "En revisión": ("#DBEAFE", "#1D4ED8"),
+            "Finalizada": ("#DCFCE7", "#166534"),
+            "Pausada": ("#F1F5F9", "#475569"),
+        }.get(str(valor or ""), ("#F1F5F9", "#475569"))
+
+    def vencimiento_tarjeta(valor, estado):
+        fecha = pd.to_datetime(str(valor or "").strip(), errors="coerce")
+        if estado == "Finalizada":
+            return "✓ Finalizada", "#DCFCE7", "#166534"
+        if pd.isna(fecha):
+            return "Sin vencimiento", "#F1F5F9", "#475569"
+        fecha_legible = fecha.strftime("%d/%m/%Y")
+        diferencia = (fecha.date() - date.today()).days
+        if diferencia < 0:
+            return f"Vencida · {fecha_legible}", "#FEE2E2", "#991B1B"
+        if diferencia == 0:
+            return f"Vence hoy · {fecha_legible}", "#FFEDD5", "#9A3412"
+        if diferencia <= 7:
+            return f"Vence en {diferencia} días · {fecha_legible}", "#FEF3C7", "#92400E"
+        return f"Vence {fecha_legible}", "#E0E7FF", "#3730A3"
+
     if criterio_columnas == "Estado":
         grupos = estados_kanban
 
@@ -13962,6 +14049,17 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
             "Futuras",
             "Sin fecha",
         ]
+
+    elif criterio_columnas == "Impuesto / categoría":
+        grupos = sorted(
+            tareas_vista["_categoria_visual"]
+            .fillna("")
+            .astype(str)
+            .str.strip()
+            .replace("", "Sin categoría")
+            .unique()
+            .tolist()
+        )
 
     elif criterio_columnas == "Unidad":
         grupos = sorted(
@@ -14029,6 +14127,16 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
                     .apply(grupo_vencimiento)
                     == grupo
                 ].copy()
+
+            elif criterio_columnas == "Impuesto / categoría":
+                categorias_normalizadas = (
+                    tareas_vista["_categoria_visual"]
+                    .fillna("")
+                    .astype(str)
+                    .str.strip()
+                    .replace("", "Sin categoría")
+                )
+                subset = tareas_vista[categorias_normalizadas == grupo].copy()
 
             elif criterio_columnas == "Unidad":
                 subset = tareas_vista[
@@ -14139,6 +14247,15 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
                     categoria_txt = str(
                         row.get("categoria", "") or ""
                     )
+                    categoria_visual_txt = categoria_visual_tarea(
+                        categoria_txt,
+                        tarea_titulo,
+                    )
+                    titulo_tarjeta = titulo_visual_tarea(
+                        tarea_titulo,
+                        cliente_txt,
+                        categoria_visual_txt,
+                    )
 
                     responsable_txt = str(
                         row.get(
@@ -14161,6 +14278,9 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
                             "Pendiente",
                         )
                     )
+                    recurrente_actual = str(
+                        row.get("recurrente", "No") or "No"
+                    ).strip()
 
                     fecha_txt = str(
                         row.get(
@@ -14226,25 +14346,51 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
                     )
 
                     with st.container(border=True):
-                        unidad_linea = (
-                            f"{color_unidad} {unidad_txt}"
-                        )
-
-                        if cliente_txt:
-                            unidad_linea += (
-                                f" · {cliente_txt}"
-                            )
-
-                        st.caption(unidad_linea)
-
                         titulo_col, check_col = st.columns(
                             [6, 1],
                             vertical_alignment="center",
                         )
 
                         with titulo_col:
+                            etiquetas_html = []
+                            if categoria_visual_txt:
+                                fondo_categoria, color_categoria = (
+                                    colores_categoria_tarea(categoria_visual_txt)
+                                )
+                                etiquetas_html.append(
+                                    '<span style="display:inline-block;padding:3px 8px;'
+                                    'border-radius:5px;font-size:0.70rem;font-weight:800;'
+                                    f'background:{fondo_categoria};color:{color_categoria}">'
+                                    f'{html.escape(categoria_visual_txt)}</span>'
+                                )
+                            fondo_estado, color_estado = colores_estado_tarea(
+                                estado_actual
+                            )
+                            estado_visual = {
+                                "Pendiente": "Sin iniciar",
+                                "Finalizada": "Finalizada",
+                            }.get(estado_actual, estado_actual)
+                            etiquetas_html.append(
+                                '<span style="display:inline-block;padding:3px 8px;'
+                                'border-radius:5px;font-size:0.70rem;font-weight:750;'
+                                f'background:{fondo_estado};color:{color_estado}">'
+                                f'{html.escape(estado_visual)}</span>'
+                            )
+                            if recurrente_actual == "Sí":
+                                etiquetas_html.append(
+                                    '<span style="display:inline-block;padding:3px 8px;'
+                                    'border-radius:5px;font-size:0.70rem;font-weight:750;'
+                                    'background:#F1F5F9;color:#475569">↻ Recurrente</span>'
+                                )
                             st.markdown(
-                                f"**{tarea_titulo}**"
+                                '<div style="display:flex;gap:5px;flex-wrap:wrap;'
+                                'margin-bottom:8px">'
+                                + "".join(etiquetas_html)
+                                + '</div><div style="font-size:1.05rem;font-weight:800;'
+                                'line-height:1.28;color:#172033">'
+                                + html.escape(titulo_tarjeta)
+                                + "</div>",
+                                unsafe_allow_html=True,
                             )
 
                         with check_col:
@@ -14274,30 +14420,36 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
                             else:
                                 st.caption("✓")
 
-                        datos_linea = (
-                            f"{etiqueta_prioridad(prioridad_txt)}"
-                            f" · {texto_vencimiento(fecha_txt)}"
+                        contexto_tarjeta = []
+                        if not es_categoria_impositiva(categoria_visual_txt):
+                            contexto_tarjeta.append(f"{color_unidad} {unidad_txt}")
+                        if cliente_txt and titulo_tarjeta != cliente_txt:
+                            contexto_tarjeta.append(cliente_txt)
+                        if proyecto_txt and proyecto_txt not in {unidad_txt, cliente_txt}:
+                            contexto_tarjeta.append(proyecto_txt)
+                        if contexto_tarjeta:
+                            st.caption(" · ".join(contexto_tarjeta))
+
+                        vencimiento_texto, vencimiento_fondo, vencimiento_color = (
+                            vencimiento_tarjeta(fecha_txt, estado_actual)
+                        )
+                        st.markdown(
+                            '<div style="display:inline-flex;align-items:center;'
+                            'padding:6px 9px;border-radius:6px;margin:8px 0 6px;'
+                            'font-size:0.79rem;font-weight:800;line-height:1.2;'
+                            f'background:{vencimiento_fondo};color:{vencimiento_color}">'
+                            f'◷ {html.escape(vencimiento_texto)}</div>',
+                            unsafe_allow_html=True,
                         )
 
-                        st.caption(datos_linea)
-
-                        resumen_linea = (
-                            f"👤 {responsable_txt}"
-                        )
-
+                        resumen_partes = [f"👤 {responsable_txt}"]
                         if total_checklist:
-                            resumen_linea += (
-                                f" · ☑ "
-                                f"{completos_checklist}/"
-                                f"{total_checklist}"
+                            resumen_partes.append(
+                                f"☑ {completos_checklist}/{total_checklist}"
                             )
-
-                        if categoria_txt:
-                            resumen_linea += (
-                                f" · {categoria_txt}"
-                            )
-
-                        st.caption(resumen_linea)
+                        if prioridad_txt == "Alta":
+                            resumen_partes.append("↑ Prioridad alta")
+                        st.caption(" · ".join(resumen_partes))
 
                         texto_boton = (
                             ("Close" if current_language() == "en" else "Cerrar")

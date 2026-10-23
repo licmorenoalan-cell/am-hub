@@ -14,7 +14,12 @@ import pandas as pd
 import streamlit as st
 from sqlalchemy import create_engine, text
 from am_hub_i18n import LANGUAGES, normalize_language, translate
-from am_hub_tasks import actualizar_estado_tarea_postgres
+from am_hub_tasks import (
+    actualizar_estado_tarea_postgres,
+    categoria_visual_tarea,
+    es_categoria_impositiva,
+    titulo_visual_tarea,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -1496,6 +1501,14 @@ if pagina_pocket == "📋 Mi tablero":
         st.info(pocket_ui("Todavía no hay tareas."))
         st.stop()
 
+    tareas["_categoria_visual"] = [
+        categoria_visual_tarea(categoria, titulo)
+        for categoria, titulo in zip(
+            tareas["categoria"].fillna(""),
+            tareas["tarea"].fillna(""),
+        )
+    ]
+
     unidades_existentes = (
         tareas["unidad"]
         .replace("", "AM Consultora")
@@ -1584,7 +1597,7 @@ if pagina_pocket == "📋 Mi tablero":
     categorias_disponibles = sorted([
         valor
         for valor in (
-            tareas["categoria"]
+            tareas["_categoria_visual"]
             .fillna("")
             .astype(str)
             .str.strip()
@@ -1715,6 +1728,7 @@ if pagina_pocket == "📋 Mi tablero":
                 "prioridad",
                 "estado",
                 "categoria",
+                "_categoria_visual",
                 "comentarios",
                 "origen",
             ]
@@ -1937,7 +1951,7 @@ if pagina_pocket == "📋 Mi tablero":
 
     if categorias_filtro:
         categoria_serie = (
-            vista["categoria"]
+            vista["_categoria_visual"]
             .fillna("")
             .astype(str)
             .str.strip()
@@ -2076,30 +2090,62 @@ if pagina_pocket == "📋 Mi tablero":
         categoria = str(
             row.get("categoria", "") or ""
         )
+        categoria_visual = categoria_visual_tarea(categoria, titulo)
+        titulo_visual = titulo_visual_tarea(
+            titulo,
+            cliente,
+            categoria_visual,
+        )
         archivos_habilitados = (
             str(row.get("archivos_habilitados", "")).strip() == "Sí"
         )
 
         with st.container(border=True):
-            etiqueta_unidad = (
-                f"{COLORES_UNIDAD.get(unidad, '⬜')} "
-                f"{unidad}"
-            )
-
-            if cliente:
-                etiqueta_unidad += (
-                    f" · {cliente}"
-                )
-
-            st.caption(etiqueta_unidad)
-
             titulo_col, check_col = st.columns(
                 [6, 1],
                 vertical_alignment="center",
             )
 
             with titulo_col:
-                st.markdown(f"**{titulo}**")
+                colores_categoria = {
+                    "IVA": ("#DBEAFE", "#1D4ED8"),
+                    "Ingresos Brutos": ("#CCFBF1", "#0F766E"),
+                    "Monotributo": ("#FEF3C7", "#A16207"),
+                    "Autónomos": ("#EDE9FE", "#6D28D9"),
+                    "Anticipos": ("#FFEDD5", "#C2410C"),
+                    "Ganancias": ("#FCE7F3", "#BE185D"),
+                }
+                fondo, color = colores_categoria.get(
+                    categoria_visual,
+                    ("#E2E8F0", "#334155"),
+                )
+                estado_fondo, estado_color = {
+                    "Pendiente": ("#FFEDD5", "#9A3412"),
+                    "En curso": ("#FEF3C7", "#92400E"),
+                    "En revisión": ("#DBEAFE", "#1D4ED8"),
+                    "Finalizada": ("#DCFCE7", "#166534"),
+                }.get(estado, ("#F1F5F9", "#475569"))
+                etiquetas = ""
+                if categoria_visual:
+                    etiquetas += (
+                        '<span style="display:inline-block;padding:3px 8px;'
+                        'border-radius:5px;font-size:0.70rem;font-weight:800;'
+                        f'background:{fondo};color:{color};margin-right:5px">'
+                        f'{html.escape(categoria_visual)}</span>'
+                    )
+                etiquetas += (
+                    '<span style="display:inline-block;padding:3px 8px;'
+                    'border-radius:5px;font-size:0.70rem;font-weight:750;'
+                    f'background:{estado_fondo};color:{estado_color}">'
+                    f'{html.escape(estado)}</span>'
+                )
+                st.markdown(
+                    f'<div style="margin-bottom:7px">{etiquetas}</div>'
+                    '<div style="font-size:1.05rem;font-weight:800;'
+                    'line-height:1.28;color:#172033">'
+                    f'{html.escape(titulo_visual)}</div>',
+                    unsafe_allow_html=True,
+                )
 
             with check_col:
                 if estado != "Finalizada":
@@ -2115,15 +2161,22 @@ if pagina_pocket == "📋 Mi tablero":
                         ):
                             st.rerun()
 
+            contexto = []
+            if not es_categoria_impositiva(categoria_visual):
+                contexto.append(f"{COLORES_UNIDAD.get(unidad, '⬜')} {unidad}")
+            if cliente and titulo_visual != cliente:
+                contexto.append(cliente)
+            if proyecto and proyecto not in {unidad, cliente}:
+                contexto.append(proyecto)
+            if contexto:
+                st.caption(" · ".join(contexto))
+
             st.caption(
                 f"{texto_prioridad(prioridad)}"
                 f" · {texto_fecha(row.get('fecha_limite', ''))}"
             )
 
             detalle = f"👤 {responsable}"
-
-            if categoria:
-                detalle += f" · {categoria}"
 
             st.caption(detalle)
 

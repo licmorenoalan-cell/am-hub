@@ -4,10 +4,56 @@ from __future__ import annotations
 
 from datetime import date
 import json
+import re
 import uuid
 
 import pandas as pd
 from sqlalchemy import text
+
+
+CATEGORIAS_IMPOSITIVAS = (
+    "IVA",
+    "Ingresos Brutos",
+    "Monotributo",
+    "Autónomos",
+    "Anticipos",
+    "Ganancias",
+    "Tasas municipales",
+)
+
+
+def categoria_visual_tarea(categoria, titulo="") -> str:
+    """Normaliza la etiqueta fiscal sin modificar el dato guardado."""
+    categoria_limpia = str(categoria or "").strip()
+    texto = f"{categoria_limpia} {titulo or ''}".casefold()
+
+    reglas = (
+        ((r"\bingresos brutos\b", r"\biibb\b", r"\bconvenio multilateral\b"), "Ingresos Brutos"),
+        ((r"\bmonotributo\b",), "Monotributo"),
+        ((r"\bautónomos?\b", r"\bautonomos?\b"), "Autónomos"),
+        ((r"\banticipos?\b",), "Anticipos"),
+        ((r"\bganancias\b",), "Ganancias"),
+        ((r"\btasas? municipales?\b", r"\bmunicipal\b"), "Tasas municipales"),
+        ((r"\biva\b",), "IVA"),
+    )
+    for patrones, nombre in reglas:
+        if any(re.search(patron, texto) for patron in patrones):
+            return nombre
+    return categoria_limpia
+
+
+def es_categoria_impositiva(categoria) -> bool:
+    return str(categoria or "").strip() in CATEGORIAS_IMPOSITIVAS
+
+
+def titulo_visual_tarea(titulo, cliente="", categoria="") -> str:
+    """Evita repetir `IVA — Cliente` cuando ambos ya son etiquetas visibles."""
+    titulo_limpio = str(titulo or "").strip() or "Sin título"
+    cliente_limpio = str(cliente or "").strip()
+    categoria_limpia = categoria_visual_tarea(categoria, titulo_limpio)
+    if cliente_limpio and es_categoria_impositiva(categoria_limpia):
+        return cliente_limpio
+    return titulo_limpio
 
 
 def siguiente_fecha_recurrente(fecha_actual, frecuencia, intervalo=1) -> str:
