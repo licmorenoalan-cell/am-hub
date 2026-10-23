@@ -51,6 +51,7 @@ def task(
     checklist_value: str,
     recurring: bool = True,
     project: str = "Obligaciones fiscales",
+    frequency: str = "Mensual",
 ) -> dict:
     series_id = stable_code("SER-FISC", key) if recurring else ""
     return {
@@ -70,7 +71,7 @@ def task(
         "checklist": checklist_value,
         "avance": 0,
         "recurrente": "Sí" if recurring else "No",
-        "frecuencia": "Mensual" if recurring else "",
+        "frecuencia": frequency if recurring else "",
         "intervalo": 1,
         "serie_id": series_id,
         "ocurrencia": 1,
@@ -131,20 +132,18 @@ def build_tasks() -> list[dict]:
         )
 
     monotributo = [
-        ("Marlitt Elisa Ordoñez Arteaga", "Marlitt Elisa Ordoñez Arteaga", "27-96043123-0"),
         ("Joaquín Mengide", "Joaquín Mengide", "23-34037156-9"),
         ("Juan Mallo", "Juan Mallo", "20-41824832-8"),
-        ("Naomi Kraus Studio", "Nancy", "27-22497248-8"),
+        ("Nancy", "Nancy", "27-22497248-8"),
         ("Natalia Gena", "Natalia Gena", ""),
-        ("Atlantis Cars", "Martín — Atlantis Cars", "20-38201991-2"),
-        ("Jose Jaure", "Jose Jaure", "27-42659064-1"),
-        ("Atlantis Cars", "Franco — Atlantis Cars", "20-38996614-3"),
         ("Martina Peirano", "Martina Peirano", "27-38992790-8"),
         ("Abril Larreta", "Abril Larreta", "27-44998850-2"),
         ("Leslie Vera", "Leslie Vera", "27-38157776-1"),
         ("Adriana Dominguez", "Adriana Dominguez", "23-14271037-4"),
         ("Mica Verta", "Mica Verta", "27-38657949-6"),
         ("Micaela Alegre", "Micaela Alegre", "27-42315458-1"),
+        ("Santiago Rios", "Santiago Rios", "20-40676310-3"),
+        ("Leyla Djanikian", "Leyla Djanikian", "27-34555265-6"),
     ]
     for client, taxpayer, cuit in monotributo:
         cuit_note = f" CUIT: {cuit}." if cuit else " CUIT pendiente en ficha fiscal."
@@ -161,6 +160,30 @@ def build_tasks() -> list[dict]:
                     "Preparar o confirmar el pago",
                     "Registrar comprobante y observaciones",
                 ),
+            )
+        )
+
+    for client, taxpayer, cuit in monotributo:
+        cuit_note = f" CUIT: {cuit}." if cuit else " CUIT pendiente en ficha fiscal."
+        rows.append(
+            task(
+                key=f"recategorizacion-monotributo:{taxpayer.lower()}",
+                client=client,
+                title=f"Recategorización Monotributo — {taxpayer}",
+                category="Monotributo",
+                due="2027-02-05",
+                description=(
+                    "Control semestral de recategorización de Monotributo. "
+                    "Vencimientos generales: 5 de febrero y 5 de agosto."
+                    + cuit_note
+                ),
+                checklist_value=checklist(
+                    "Revisar facturación e ingresos de los últimos 12 meses",
+                    "Controlar alquileres y restantes parámetros aplicables",
+                    "Determinar si mantiene o modifica la categoría",
+                    "Realizar o documentar el control y guardar la constancia",
+                ),
+                frequency="Semestral",
             )
         )
 
