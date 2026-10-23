@@ -5,6 +5,7 @@ from datetime import date
 from am_hub_tasks import (
     categoria_visual_tarea,
     construir_siguiente_ocurrencia,
+    siguiente_fecha_fiscal,
     titulo_visual_tarea,
     siguiente_fecha_recurrente,
 )
@@ -65,6 +66,7 @@ class RecurrenciasTareasTests(unittest.TestCase):
             ),
             "comentarios": "Presentado",
             "categoria": "IVA",
+            "descripcion": "Régimen fiscal: IVA. CUIT: 30-71893522-5.",
         }
 
         nueva = construir_siguiente_ocurrencia(
@@ -76,7 +78,7 @@ class RecurrenciasTareasTests(unittest.TestCase):
 
         self.assertEqual(nueva["id"], "TAR-2")
         self.assertEqual(nueva["estado"], "Pendiente")
-        self.assertEqual(nueva["fecha_limite"], "2026-11-21")
+        self.assertEqual(nueva["fecha_limite"], "2026-11-20")
         self.assertEqual(nueva["ocurrencia"], "5")
         self.assertEqual(nueva["comentarios"], "")
         self.assertEqual(
@@ -86,6 +88,17 @@ class RecurrenciasTareasTests(unittest.TestCase):
                 {"texto": "Presentar", "hecho": False},
             ],
         )
+
+    def test_recurrencia_iibb_respeta_regimen_y_cuit(self):
+        tarea = {
+            "tarea": "Ingresos Brutos — Matías Ojeda",
+            "categoria": "Ingresos Brutos",
+            "fecha_limite": "2026-10-28",
+            "descripcion": (
+                "Régimen fiscal: IIBB ARBA Local. CUIT: 20-35656955-6."
+            ),
+        }
+        self.assertEqual(siguiente_fecha_fiscal(tarea), "2026-11-27")
 
 
 if __name__ == "__main__":

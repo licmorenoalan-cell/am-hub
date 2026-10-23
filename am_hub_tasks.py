@@ -22,6 +22,82 @@ CATEGORIAS_IMPOSITIVAS = (
 )
 
 
+# Vencimientos mensuales oficiales publicados para el cierre de 2026.  Las
+# recurrencias fiscales no pueden limitarse a sumar un mes: feriados y grupos
+# de CUIT cambian el día efectivo de cada obligación.
+_VENCIMIENTOS_FISCALES_2026 = {
+    "IVA": {
+        "2026-11": ((0, 1, 18), (2, 3, 19), (4, 5, 20), (6, 7, 24), (8, 9, 25)),
+        "2026-12": ((0, 1, 18), (2, 3, 21), (4, 5, 22), (6, 7, 23), (8, 9, 24)),
+    },
+    "AGIP LOCAL": {
+        "2026-11": ((0, 1, 11), (2, 3, 12), (4, 5, 13), (6, 7, 16), (8, 9, 17)),
+        "2026-12": ((0, 1, 11), (2, 3, 14), (4, 5, 15), (6, 7, 16), (8, 9, 17)),
+        "2027-01": ((0, 1, 11), (2, 3, 12), (4, 5, 13), (6, 7, 14), (8, 9, 15)),
+    },
+    "ARBA LOCAL": {
+        "2026-11": ((0, 1, 24), (2, 3, 25), (4, 5, 26), (6, 7, 27), (8, 9, 30)),
+        "2026-12": ((0, 1, 21), (2, 3, 22), (4, 5, 23), (6, 7, 28), (8, 9, 29)),
+        "2027-01": ((0, 1, 18), (2, 3, 19), (4, 5, 20), (6, 7, 21), (8, 9, 22)),
+    },
+    "CONVENIO MULTILATERAL": {
+        "2026-11": ((0, 2, 17), (3, 5, 18), (6, 7, 19), (8, 9, 20)),
+        "2026-12": ((0, 2, 15), (3, 5, 16), (6, 7, 17), (8, 9, 18)),
+        "2027-01": ((0, 2, 15), (3, 5, 18), (6, 7, 19), (8, 9, 20)),
+    },
+}
+
+
+def _cuit_desde_tarea(tarea: dict) -> str:
+    texto_tarea = " ".join(
+        str(tarea.get(campo, "") or "")
+        for campo in ("descripcion", "comentarios", "tarea")
+    )
+    coincidencia = re.search(r"\b(?:20|23|24|27|30|33)-?\d{8}-?\d\b", texto_tarea)
+    return re.sub(r"\D", "", coincidencia.group(0)) if coincidencia else ""
+
+
+def _regimen_fiscal_desde_tarea(tarea: dict) -> str:
+    categoria = categoria_visual_tarea(tarea.get("categoria", ""), tarea.get("tarea", ""))
+    if categoria == "IVA":
+        return "IVA"
+    texto_tarea = " ".join(
+        str(tarea.get(campo, "") or "")
+        for campo in ("descripcion", "comentarios", "tarea")
+    ).casefold()
+    if "arba local" in texto_tarea:
+        return "ARBA LOCAL"
+    if "agip local" in texto_tarea:
+        return "AGIP LOCAL"
+    if "convenio multilateral" in texto_tarea or re.search(r"\bcm\b", texto_tarea):
+        return "CONVENIO MULTILATERAL"
+    return ""
+
+
+def siguiente_fecha_fiscal(tarea: dict, intervalo=1) -> str:
+    """Devuelve el próximo vencimiento oficial conocido para una serie fiscal."""
+    cuit = _cuit_desde_tarea(tarea)
+    regimen = _regimen_fiscal_desde_tarea(tarea)
+    if len(cuit) != 11 or regimen not in _VENCIMIENTOS_FISCALES_2026:
+        return ""
+    try:
+        fecha_actual = pd.Timestamp(tarea.get("fecha_limite", ""))
+        intervalo = max(1, int(float(intervalo or 1)))
+    except (TypeError, ValueError):
+        return ""
+    mes_objetivo = fecha_actual + pd.DateOffset(months=intervalo)
+    clave_mes = mes_objetivo.strftime("%Y-%m")
+    digito = int(cuit[-1])
+    for desde, hasta, dia in _VENCIMIENTOS_FISCALES_2026[regimen].get(clave_mes, ()):
+        if desde <= digito <= hasta:
+            return pd.Timestamp(
+                year=mes_objetivo.year,
+                month=mes_objetivo.month,
+                day=dia,
+            ).strftime("%Y-%m-%d")
+    return ""
+
+
 def categoria_visual_tarea(categoria, titulo="") -> str:
     """Normaliza la etiqueta fiscal sin modificar el dato guardado."""
     categoria_limpia = str(categoria or "").strip()
@@ -138,6 +214,7 @@ def construir_siguiente_ocurrencia(
 
     tarea_id = str(tarea.get("id", "")).strip()
     serie_id = str(tarea.get("serie_id", "")).strip() or f"SER-{tarea_id}"
+    fecha_fiscal = siguiente_fecha_fiscal(tarea, intervalo)
     return {
         "id": nueva_id or f"TAR-{uuid.uuid4().hex}",
         "cliente": str(tarea.get("cliente", "") or ""),
@@ -147,7 +224,8 @@ def construir_siguiente_ocurrencia(
         ),
         "prioridad": str(tarea.get("prioridad", "Media") or "Media"),
         "estado": "Pendiente",
-        "fecha_limite": siguiente_fecha_recurrente(
+        "fecha_limite": fecha_fiscal
+        or siguiente_fecha_recurrente(
             tarea.get("fecha_limite", ""),
             str(tarea.get("frecuencia", "") or ""),
             intervalo,
