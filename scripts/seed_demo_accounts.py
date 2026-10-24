@@ -66,10 +66,13 @@ CLIENT_TABLES = (
     "materiales",
     "campanias",
     "reportes",
+    "objetivos",
     "tareas",
     "cuenta_corriente",
     "indicadores_movimientos",
     "fiscal_clientes",
+    "fiscal_periodos",
+    "contable_terceros",
     "contable_operaciones",
 )
 
@@ -86,6 +89,12 @@ def database_url() -> str:
 
 def due(days: int) -> str:
     return (TODAY + timedelta(days=days)).isoformat()
+
+
+def shifted_period(months_back: int) -> str:
+    month_index = TODAY.year * 12 + (TODAY.month - 1) - months_back
+    year, month_zero = divmod(month_index, 12)
+    return f"{year:04d}-{month_zero + 1:02d}"
 
 
 def checklist(*items: str, completed: int = 0) -> str:
@@ -256,9 +265,52 @@ def digital_rows(client: str, prefix: str) -> dict[str, list[dict]]:
     }
 
 
+def objective_row(
+    *,
+    row_id: str,
+    client: str,
+    title: str,
+    status: str,
+    deadline: str,
+    description: str,
+    items: tuple[str, ...],
+    area: str,
+    responsible_type: str,
+    completed: int = 0,
+    comments: str = "",
+) -> dict:
+    progress = round(completed / len(items) * 100) if items else 0
+    responsible_am = "AM Consultora"
+    responsible_client = "Responsable Demo"
+    return {
+        "id": row_id,
+        "cliente": client,
+        "servicio": "Consultoría",
+        "mes": PERIOD,
+        "objetivo": title,
+        "descripcion": description,
+        "responsable_am": responsible_am,
+        "responsable_cliente": responsible_client,
+        "prioridad": "Alta" if status != "Finalizado" else "Media",
+        "estado": status,
+        "avance": str(progress),
+        "proxima_accion": items[completed] if completed < len(items) else "",
+        "fecha_limite": deadline,
+        "comentarios": comments,
+        "responsable": responsible_am,
+        "checklist": checklist(*items, completed=completed),
+        "fecha_carga": TODAY_ISO,
+        "creado_por": "AM Consultora",
+        "fecha_actualizacion": TODAY_ISO,
+        "actualizado_por": "AM Consultora",
+        "responsable_tipo": responsible_type,
+        "area": area,
+    }
+
+
 def consulting_rows(client: str, prefix: str) -> list[dict]:
     return [
-        task_row(
+        objective_row(
             row_id=f"{prefix}-TAR-01",
             client=client,
             title="Definir prioridades comerciales del próximo trimestre",
@@ -271,9 +323,14 @@ def consulting_rows(client: str, prefix: str) -> list[dict]:
                 "Validar responsables y fechas",
             ),
             completed=1,
-            category="Estrategia",
+            area="Gestión y tablero",
+            responsible_type="Ambos",
+            comments=(
+                f"{TODAY_ISO} - AM Consultora: Se completó el diagnóstico inicial. "
+                "Queda validar el orden de prioridades con el cliente."
+            ),
         ),
-        task_row(
+        objective_row(
             row_id=f"{prefix}-TAR-02",
             client=client,
             title="Revisar estructura de costos y rentabilidad",
@@ -285,13 +342,34 @@ def consulting_rows(client: str, prefix: str) -> list[dict]:
                 "Relevar costos variables",
                 "Identificar productos o servicios más rentables",
             ),
-            category="Finanzas",
+            area="Administrativa y financiera",
+            responsible_type="Cliente",
         ),
-        task_row(
+        objective_row(
             row_id=f"{prefix}-TAR-03",
             client=client,
+            title="Validar tablero de indicadores de gestión",
+            status="En revisión",
+            deadline=due(13),
+            description="Revisar el tablero propuesto y acordar qué indicadores se seguirán mensualmente.",
+            items=(
+                "Revisar indicadores sugeridos",
+                "Confirmar fuentes de información",
+                "Aprobar frecuencia de seguimiento",
+            ),
+            completed=2,
+            area="Gestión y tablero",
+            responsible_type="Cliente",
+            comments=(
+                f"{TODAY_ISO} - AM Consultora: El tablero preliminar quedó listo "
+                "para comentarios y aprobación."
+            ),
+        ),
+        objective_row(
+            row_id=f"{prefix}-TAR-04",
+            client=client,
             title="Actualizar propuesta de valor",
-            status="Finalizada",
+            status="Finalizado",
             deadline=due(-4),
             description="Ejemplo de una tarjeta completada con seguimiento y entregable.",
             items=(
@@ -300,7 +378,11 @@ def consulting_rows(client: str, prefix: str) -> list[dict]:
                 "Aprobar versión final",
             ),
             completed=3,
-            category="Posicionamiento",
+            area="Coordinación",
+            responsible_type="AM Consultora",
+            comments=(
+                f"{due(-4)} - AM Consultora: Versión final aprobada y entregada."
+            ),
         ),
     ]
 
@@ -338,13 +420,61 @@ def accounting_rows(client: str, prefix: str) -> dict[str, list[dict]]:
             category="Ingresos Brutos",
         ),
     ]
-    movements = [
-        ("01", "Ingreso", "Ventas", "1250000", "Cobros por servicios del mes"),
-        ("02", "Ingreso", "Otros ingresos", "180000", "Ingreso extraordinario"),
-        ("03", "Gasto", "Alquiler", "320000", "Alquiler de oficina"),
-        ("04", "Gasto", "Sueldos", "410000", "Pago mensual"),
-        ("05", "Gasto", "Marketing", "95000", "Campañas y producción"),
-        ("06", "Gasto", "Servicios", "87000", "Servicios operativos"),
+    movement_templates = [
+        ("01", "Ingreso", "Ventas", 1_250_000, "Cobros por servicios del mes"),
+        ("02", "Ingreso", "Otros ingresos", 180_000, "Ingreso extraordinario"),
+        ("03", "Gasto", "Alquiler", 320_000, "Alquiler de oficina"),
+        ("04", "Gasto", "Sueldos", 410_000, "Pago mensual"),
+        ("05", "Gasto", "Marketing", 95_000, "Campañas y producción"),
+        ("06", "Gasto", "Servicios", 87_000, "Servicios operativos"),
+    ]
+    movement_multipliers = (1.0, 0.92, 0.84)
+    movements = []
+    for months_back, multiplier in enumerate(movement_multipliers):
+        period = shifted_period(months_back)
+        for code, movement_type, category, amount, observation in movement_templates:
+            movements.append(
+                (
+                    f"{period.replace('-', '')}-{code}",
+                    period,
+                    movement_type,
+                    category,
+                    str(round(amount * multiplier)),
+                    observation,
+                )
+            )
+
+    third_parties = [
+        {
+            "id": f"{prefix}-TER-CLI",
+            "cliente": client,
+            "tipo": "Cliente",
+            "cuit": "30-00000001-9",
+            "razon_social": "CLIENTE DEMOSTRATIVO A S.R.L.",
+            "nombre_fantasia": "Cliente Demo A",
+            "condicion_iva": "Responsable inscripto",
+            "email": "",
+            "telefono": "",
+            "activo": "Sí",
+            "observaciones": "Registro ficticio para recorrer el maestro.",
+            "fecha_actualizacion": TODAY_ISO,
+            "actualizado_por": "AM Consultora",
+        },
+        {
+            "id": f"{prefix}-TER-PRV",
+            "cliente": client,
+            "tipo": "Proveedor",
+            "cuit": "30-00000002-7",
+            "razon_social": "PROVEEDOR DEMOSTRATIVO B S.A.",
+            "nombre_fantasia": "Proveedor Demo B",
+            "condicion_iva": "Responsable inscripto",
+            "email": "",
+            "telefono": "",
+            "activo": "Sí",
+            "observaciones": "Registro ficticio para recorrer el maestro.",
+            "fecha_actualizacion": TODAY_ISO,
+            "actualizado_por": "AM Consultora",
+        },
     ]
     operations = [
         {
@@ -352,8 +482,8 @@ def accounting_rows(client: str, prefix: str) -> dict[str, list[dict]]:
             "cliente": client,
             "periodo": PERIOD,
             "fecha": TODAY.replace(day=3).isoformat(),
-            "tipo_operacion": "Ingreso",
-            "tercero_id": "",
+            "tipo_operacion": "Venta",
+            "tercero_id": f"{prefix}-TER-CLI",
             "tercero_cuit": "30-00000001-9",
             "tercero_nombre": "Cliente demostrativo A",
             "tipo_comprobante": "Factura A",
@@ -385,8 +515,8 @@ def accounting_rows(client: str, prefix: str) -> dict[str, list[dict]]:
             "cliente": client,
             "periodo": PERIOD,
             "fecha": TODAY.replace(day=8).isoformat(),
-            "tipo_operacion": "Egreso",
-            "tercero_id": "",
+            "tipo_operacion": "Compra",
+            "tercero_id": f"{prefix}-TER-PRV",
             "tercero_cuit": "30-00000002-7",
             "tercero_nombre": "Proveedor demostrativo B",
             "tipo_comprobante": "Factura A",
@@ -414,13 +544,104 @@ def accounting_rows(client: str, prefix: str) -> dict[str, list[dict]]:
             "revisado_por": "",
         },
     ]
+    fiscal_periods = [
+        {
+            "id": f"{prefix}-FPER-{shifted_period(1)}",
+            "cliente": client,
+            "periodo": shifted_period(1),
+            "estado": "Presentada",
+            "responsable": "AM Consultora",
+            "fecha_vencimiento_iva": due(-4),
+            "fecha_vencimiento_iibb": due(-3),
+            "ventas_neto": "1250000",
+            "iva_debito": "262500",
+            "compras_neto": "420000",
+            "iva_credito": "88200",
+            "iva_saldo_tecnico_anterior": "0",
+            "iva_saldo_libre_anterior": "0",
+            "iva_deducciones": "15900",
+            "iva_ajustes": "0",
+            "iva_uso_libre": "0",
+            "iva_saldo_tecnico_favor": "0",
+            "iva_saldo_libre_favor": "0",
+            "iva_saldo_pagar": "158400",
+            "iibb_base": "1250000",
+            "iibb_alicuota": "3.5",
+            "iibb_determinado": "43750",
+            "iibb_retenciones": "4200",
+            "iibb_percepciones": "1750",
+            "iibb_saldo_favor_anterior": "0",
+            "iibb_otros_creditos": "0",
+            "iibb_ajustes": "0",
+            "iibb_saldo_favor": "0",
+            "iibb_saldo_pagar": "37800",
+            "observaciones": "Liquidación ficticia visible para demostrar el seguimiento al cliente.",
+            "fecha_actualizacion": TODAY_ISO,
+            "actualizado_por": "AM Consultora",
+            "fecha_confirmacion": TODAY_ISO,
+            "confirmado_por": "AM Consultora",
+            "sin_ventas": "No",
+            "sin_compras": "No",
+            "sin_deducciones_iva": "No",
+            "sin_deducciones_iibb": "No",
+            "iva_estado_presentacion": "Presentada",
+            "iva_fecha_presentacion": due(-6),
+            "iibb_estado_presentacion": "Presentada",
+            "iibb_fecha_presentacion": due(-5),
+        },
+        {
+            "id": f"{prefix}-FPER-{shifted_period(2)}",
+            "cliente": client,
+            "periodo": shifted_period(2),
+            "estado": "Pagada",
+            "responsable": "AM Consultora",
+            "fecha_vencimiento_iva": due(-34),
+            "fecha_vencimiento_iibb": due(-33),
+            "ventas_neto": "1080000",
+            "iva_debito": "226800",
+            "compras_neto": "390000",
+            "iva_credito": "81900",
+            "iva_saldo_tecnico_anterior": "0",
+            "iva_saldo_libre_anterior": "0",
+            "iva_deducciones": "12300",
+            "iva_ajustes": "0",
+            "iva_uso_libre": "0",
+            "iva_saldo_tecnico_favor": "0",
+            "iva_saldo_libre_favor": "0",
+            "iva_saldo_pagar": "132600",
+            "iibb_base": "1080000",
+            "iibb_alicuota": "3.5",
+            "iibb_determinado": "37800",
+            "iibb_retenciones": "3600",
+            "iibb_percepciones": "1200",
+            "iibb_saldo_favor_anterior": "0",
+            "iibb_otros_creditos": "0",
+            "iibb_ajustes": "0",
+            "iibb_saldo_favor": "0",
+            "iibb_saldo_pagar": "33000",
+            "observaciones": "Período ficticio pagado para mostrar el historial.",
+            "fecha_actualizacion": TODAY_ISO,
+            "actualizado_por": "AM Consultora",
+            "fecha_confirmacion": due(-36),
+            "confirmado_por": "AM Consultora",
+            "sin_ventas": "No",
+            "sin_compras": "No",
+            "sin_deducciones_iva": "No",
+            "sin_deducciones_iibb": "No",
+            "iva_estado_presentacion": "Presentada",
+            "iva_fecha_presentacion": due(-36),
+            "iibb_estado_presentacion": "Presentada",
+            "iibb_fecha_presentacion": due(-35),
+        },
+    ]
+
     return {
         "tareas": fiscal_tasks,
         "indicadores_movimientos": [
             {
                 "id": f"{prefix}-MOV-{code}",
                 "cliente": client,
-                "mes": PERIOD,
+                "mes": period,
                 "tipo": movement_type,
                 "categoria": category,
                 "importe": amount,
@@ -428,7 +649,7 @@ def accounting_rows(client: str, prefix: str) -> dict[str, list[dict]]:
                 "fecha_carga": TODAY_ISO,
                 "cargado_por": "Cliente Demo",
             }
-            for code, movement_type, category, amount, observation in movements
+            for code, period, movement_type, category, amount, observation in movements
         ],
         "fiscal_clientes": [
             {
@@ -450,6 +671,8 @@ def accounting_rows(client: str, prefix: str) -> dict[str, list[dict]]:
                 "mes_cierre_ejercicio": "12",
             }
         ],
+        "fiscal_periodos": fiscal_periods,
+        "contable_terceros": third_parties,
         "contable_operaciones": operations,
     }
 
@@ -459,12 +682,12 @@ def common_account_rows(client: str, prefix: str) -> list[dict]:
         {
             "id": f"{prefix}-CC-01",
             "cliente": client,
-            "mes": PERIOD,
-            "concepto": "Honorarios mensuales — ejemplo",
-            "importe": 99000.0,
+            "mes": shifted_period(1),
+            "concepto": "Honorarios del mes anterior — ejemplo",
+            "importe": 90000.0,
             "estado": "Pagado",
-            "fecha_factura": TODAY.replace(day=1).isoformat(),
-            "fecha_pago": TODAY.replace(day=min(10, TODAY.day)).isoformat(),
+            "fecha_factura": due(-35),
+            "fecha_pago": due(-28),
             "observacion": "Movimiento ficticio para visualizar la cuenta corriente.",
             "fecha_carga": TODAY_ISO,
             "cargado_por": "AM Consultora",
@@ -473,7 +696,25 @@ def common_account_rows(client: str, prefix: str) -> list[dict]:
             "comprobante_base64": "",
             "servicio": "Demostración",
             "moneda": "ARS",
-        }
+        },
+        {
+            "id": f"{prefix}-CC-02",
+            "cliente": client,
+            "mes": PERIOD,
+            "concepto": "Honorarios mensuales — ejemplo",
+            "importe": 99000.0,
+            "estado": "Facturado",
+            "fecha_factura": TODAY.replace(day=1).isoformat(),
+            "fecha_pago": "",
+            "observacion": "Registro ficticio pendiente para mostrar el detalle y la carga de pagos.",
+            "fecha_carga": TODAY_ISO,
+            "cargado_por": "AM Consultora",
+            "comprobante_nombre": "",
+            "comprobante_tipo": "",
+            "comprobante_base64": "",
+            "servicio": "Demostración",
+            "moneda": "ARS",
+        },
     ]
 
 
@@ -492,7 +733,7 @@ def build_rows() -> dict[str, list[dict]]:
             for table, values in digital_rows(client, prefix).items():
                 rows[table].extend(values)
         if account["consultoria"] == "Sí":
-            rows["tareas"].extend(consulting_rows(client, prefix))
+            rows["objetivos"].extend(consulting_rows(client, prefix))
         if account["contabilidad"] == "Sí":
             for table, values in accounting_rows(client, prefix).items():
                 rows[table].extend(values)
