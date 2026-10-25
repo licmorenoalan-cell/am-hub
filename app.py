@@ -864,6 +864,15 @@ def asegurar_tablas_contables():
     """Crea las tablas del piloto sólo al abrir Contabilidad."""
     if not usar_postgres():
         return True
+    columnas_archivo_extra = [
+        "source_tipo", "source_id", "estado_procesamiento", "tipo_detectado",
+        "periodo_detectado", "confianza", "accion_sugerida", "resumen_json",
+        "error_procesamiento",
+    ]
+    columnas_banco_extra = [
+        "estado_conciliacion", "match_operacion_id", "match_confianza",
+        "match_motivo",
+    ]
     definiciones = {
         "contable_cuentas": CUENTA_COLUMNAS,
         "contable_asientos": ASIENTO_COLUMNAS,
@@ -892,11 +901,11 @@ def asegurar_tablas_contables():
             conn.execute(sql_text(
                 'ALTER TABLE "contable_cuentas" ADD COLUMN IF NOT EXISTS "clave_origen" TEXT'
             ))
-            for columna in ARCHIVO_CONTABLE_COLUMNAS:
+            for columna in columnas_archivo_extra:
                 conn.execute(sql_text(
                     f'ALTER TABLE "contable_archivos" ADD COLUMN IF NOT EXISTS "{columna}" TEXT'
                 ))
-            for columna in BANCO_MOVIMIENTO_COLUMNAS:
+            for columna in columnas_banco_extra:
                 conn.execute(sql_text(
                     f'ALTER TABLE "contable_banco_movimientos" ADD COLUMN IF NOT EXISTS "{columna}" TEXT'
                 ))
@@ -910,11 +919,11 @@ def asegurar_tablas_contables():
             conn.execute(sql_text(
                 f'CREATE TABLE IF NOT EXISTS "{tabla}" ({", ".join(partes)})'
             ))
-        for columna in ARCHIVO_CONTABLE_COLUMNAS:
+        for columna in columnas_archivo_extra:
             conn.execute(sql_text(
                 f'ALTER TABLE "contable_archivos" ADD COLUMN IF NOT EXISTS "{columna}" TEXT'
             ))
-        for columna in BANCO_MOVIMIENTO_COLUMNAS:
+        for columna in columnas_banco_extra:
             conn.execute(sql_text(
                 f'ALTER TABLE "contable_banco_movimientos" ADD COLUMN IF NOT EXISTS "{columna}" TEXT'
             ))
