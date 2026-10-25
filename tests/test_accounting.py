@@ -13,6 +13,7 @@ from am_hub_accounting import (
     libro_mayor,
     parsear_extracto_bancario,
     plan_cuentas_inicial,
+    proponer_conciliacion_bancaria,
     validar_asientos,
 )
 
@@ -66,6 +67,22 @@ class AccountingTests(unittest.TestCase):
             movimientos.iloc[0].to_dict(), "2.1.03", cuenta_banco="1.1.02.001",
         )
         self.assertIn("1.1.02.001", {linea["cuenta_codigo"] for linea in lineas_especificas})
+
+    def test_conciliacion_propone_cobro_existente_sin_duplicarlo(self):
+        movimientos = pd.DataFrame([{
+            "id": "B1", "fecha": "2026-07-05", "debito": "0", "credito": "1210",
+            "descripcion": "TRANSFERENCIA CLIENTE ACME", "referencia": "",
+            "conciliado": "No", "estado_conciliacion": "Pendiente",
+        }])
+        operaciones = pd.DataFrame([{
+            "id": "O1", "fecha": "2026-07-04", "tipo_operacion": "Cobro",
+            "importe_pesos": "1210", "tercero_nombre": "Cliente Acme",
+            "asiento_id": "A1",
+        }])
+        propuestas = proponer_conciliacion_bancaria(movimientos, operaciones)
+        self.assertEqual(propuestas.iloc[0]["match_operacion_id"], "O1")
+        self.assertEqual(propuestas.iloc[0]["estado_conciliacion"], "Coincidencia propuesta")
+        self.assertGreaterEqual(int(propuestas.iloc[0]["match_confianza"]), 95)
 
     def test_sueldos_balancean_y_alimentan_sumas_saldos(self):
         registro = {

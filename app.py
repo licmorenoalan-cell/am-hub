@@ -78,6 +78,7 @@ from am_hub_accounting import (
     extraer_totales_f931,
     parsear_extracto_bancario,
     plan_cuentas_inicial,
+    proponer_conciliacion_bancaria,
     validar_asientos,
 )
 
@@ -891,12 +892,14 @@ def asegurar_tablas_contables():
             conn.execute(sql_text(
                 'ALTER TABLE "contable_cuentas" ADD COLUMN IF NOT EXISTS "clave_origen" TEXT'
             ))
-            conn.execute(sql_text(
-                'ALTER TABLE "contable_archivos" ADD COLUMN IF NOT EXISTS "source_tipo" TEXT'
-            ))
-            conn.execute(sql_text(
-                'ALTER TABLE "contable_archivos" ADD COLUMN IF NOT EXISTS "source_id" TEXT'
-            ))
+            for columna in ARCHIVO_CONTABLE_COLUMNAS:
+                conn.execute(sql_text(
+                    f'ALTER TABLE "contable_archivos" ADD COLUMN IF NOT EXISTS "{columna}" TEXT'
+                ))
+            for columna in BANCO_MOVIMIENTO_COLUMNAS:
+                conn.execute(sql_text(
+                    f'ALTER TABLE "contable_banco_movimientos" ADD COLUMN IF NOT EXISTS "{columna}" TEXT'
+                ))
         return True
     with get_postgres_engine().begin() as conn:
         for tabla, columnas in definiciones.items():
@@ -907,9 +910,13 @@ def asegurar_tablas_contables():
             conn.execute(sql_text(
                 f'CREATE TABLE IF NOT EXISTS "{tabla}" ({", ".join(partes)})'
             ))
-        for columna in ["source_tipo", "source_id"]:
+        for columna in ARCHIVO_CONTABLE_COLUMNAS:
             conn.execute(sql_text(
                 f'ALTER TABLE "contable_archivos" ADD COLUMN IF NOT EXISTS "{columna}" TEXT'
+            ))
+        for columna in BANCO_MOVIMIENTO_COLUMNAS:
+            conn.execute(sql_text(
+                f'ALTER TABLE "contable_banco_movimientos" ADD COLUMN IF NOT EXISTS "{columna}" TEXT'
             ))
         for tabla, columnas in {
             "contable_cuentas": '("cliente", "codigo")',
@@ -3185,7 +3192,7 @@ def usuarios_equipo_disponibles():
         return []
 
     equipos = usuarios_df[
-        usuarios_df["role"].astype(str).isin(["equipo", "admin", "admin_general"])
+        usuarios_df["role"].astype(str).isin(["contador", "equipo", "admin", "admin_general"])
     ].copy()
 
     if "activo" in equipos.columns:
@@ -3232,6 +3239,12 @@ def clientes_visibles_para_usuario():
 
     if role in ["admin_general", "admin"]:
         return sorted(clientes_df["cliente"].dropna().astype(str).unique().tolist())
+
+    if role == "contador":
+        contables = clientes_df[
+            clientes_df.get("servicio_contabilidad", pd.Series("No", index=clientes_df.index)).apply(valor_si)
+        ]
+        return sorted(contables["cliente"].dropna().astype(str).unique().tolist())
 
     if role == "cliente":
         cliente_actual = st.session_state.get("cliente", "")
@@ -3401,7 +3414,7 @@ def sidebar():
 
     role = st.session_state.get("role")
 
-    if role in ["admin_general", "admin", "equipo"]:
+    if role in ["admin_general", "admin", "equipo", "contador"]:
         idioma_actual = current_language()
         if "language_selector" not in st.session_state:
             st.session_state["language_selector"] = idioma_actual
@@ -3466,6 +3479,23 @@ def sidebar():
             format_func=ui,
             key="menu_admin",
         )
+    elif role == "contador":
+        clientes_contables = clientes_visibles_para_usuario()
+        if not clientes_contables:
+            st.sidebar.warning("No hay clientes con servicio contable activo.")
+            menu = "Sin clientes asignados"
+        else:
+            cliente_contador = st.sidebar.selectbox(
+                "Cliente contable", clientes_contables, key="cliente_equipo_activo",
+            )
+            st.session_state["cliente_equipo_visible"] = cliente_contador
+            st.sidebar.markdown(
+                f"**Cliente activo:** {html.escape(str(cliente_contador))}"
+            )
+            menu = st.sidebar.radio(
+                "Contabilidad", ["Ficha cliente", "Liquidaciones", "Contabilidad"],
+                key="menu_contador",
+            )
     else:
         clientes_asignados = clientes_visibles_para_usuario()
 
@@ -5631,7 +5661,7 @@ def render_usuarios(clientes):
     c1, c2, c3 = st.columns(3)
     c1.metric("Usuarios activos", len(df[df["activo"].astype(str).str.lower().isin(["sí", "si", "activo", "true", "1"])]))
     c2.metric("Clientes", len(df[df["role"] == "cliente"]))
-    c3.metric("Equipo AM", len(df[df["role"].isin(["admin_general", "admin", "equipo"])]))
+    c3.metric("Equipo AM", len(df[df["role"].isin(["admin_general", "admin", "equipo", "contador"])]))
 
     st.markdown("### Crear nuevo usuario")
 
@@ -5648,7 +5678,7 @@ def render_usuarios(clientes):
 
         with col2:
             password = st.text_input("Contraseña")
-            role = st.selectbox("Rol", ["cliente", "equipo", "admin", "admin_general"])
+            role = st.selectbox("Rol", ["cliente", "equipo", "contador", "admin", "admin_general"])
 
         with col3:
             cliente = st.selectbox("Cliente asociado solo si el rol es cliente", clientes_lista)
@@ -5760,7 +5790,7 @@ def render_usuarios(clientes):
         column_config={
             "username": st.column_config.TextColumn("Usuario", required=True),
             "password": st.column_config.TextColumn("Contraseña"),
-            "role": st.column_config.SelectboxColumn("Rol", options=["admin_general", "admin", "equipo", "cliente"], required=True),
+            "role": st.column_config.SelectboxColumn("Rol", options=["admin_general", "admin", "contador", "equipo", "cliente"], required=True),
             "name": st.column_config.TextColumn("Nombre visible"),
             "cliente": st.column_config.SelectboxColumn("Cliente asociado solo para rol cliente", options=clientes_lista),
             "activo": st.column_config.SelectboxColumn("Activo", options=["Sí", "No"], required=True),
@@ -5925,7 +5955,7 @@ def render_edicion_rapida(clientes, contenidos, materiales, campanias, reportes,
                 "password": st.column_config.TextColumn("Contraseña"),
                 "role": st.column_config.SelectboxColumn(
                     "Rol",
-                    options=["admin_general", "admin", "equipo", "cliente"],
+                    options=["admin_general", "admin", "contador", "equipo", "cliente"],
                     required=True,
                 ),
                 "name": st.column_config.TextColumn("Nombre visible"),
@@ -16534,9 +16564,98 @@ def _sincronizar_asientos_comprobantes(cliente, periodo, periodo_id):
     return _contable_guardar_asientos(cabeceras, lineas)
 
 
-def _contable_guardar_archivo(cliente, periodo, categoria, archivo, source_tipo="", source_id=""):
+def _analizar_documento_contable(nombre, contenido, cliente, cuenta_bancaria=""):
+    """Clasifica una carga y prepara su procesamiento sin confirmar asientos."""
+    nombre_limpio = str(nombre or "")
+    nombre_bajo = nombre_limpio.casefold()
+    resultado = {
+        "tipo_detectado": "Otro",
+        "periodo_detectado": "",
+        "confianza": 40,
+        "accion_sugerida": "Revisar manualmente",
+        "estado_procesamiento": "Requiere revisión",
+        "resumen": {},
+        "movimientos_banco": pd.DataFrame(columns=BANCO_MOVIMIENTO_COLUMNAS),
+        "fiscal": {},
+        "error": "",
+    }
+    try:
+        fiscal = analizar_archivo_fiscal(nombre_limpio, contenido)
+        resultado["fiscal"] = fiscal
+        categoria_fiscal = str(fiscal.get("categoria", "respaldo"))
+        if categoria_fiscal != "respaldo":
+            movimientos = fiscal.get("movimientos", pd.DataFrame())
+            periodos = []
+            if isinstance(movimientos, pd.DataFrame) and not movimientos.empty:
+                periodos = sorted({
+                    str(valor)[:7] for valor in movimientos.get("fecha", pd.Series(dtype=str))
+                    if re.match(r"^20\d{2}-(0[1-9]|1[0-2])", str(valor))
+                })
+            resultado.update({
+                "tipo_detectado": _fiscal_categoria_visible(categoria_fiscal),
+                "periodo_detectado": ", ".join(periodos),
+                "confianza": max(80, int(fiscal.get("prioridad", 0) or 0)),
+                "accion_sugerida": "Incorporar a Liquidaciones y generar borradores",
+                "estado_procesamiento": "Identificado",
+                "resumen": {
+                    "categoria_fiscal": categoria_fiscal,
+                    "movimientos": len(movimientos) if isinstance(movimientos, pd.DataFrame) else 0,
+                    "advertencias": fiscal.get("advertencias", []),
+                },
+            })
+            return resultado
+    except Exception as exc:
+        resultado["error"] = str(exc)
+
+    if nombre_bajo.endswith((".csv", ".xlsx", ".xls")):
+        try:
+            movimientos_banco = parsear_extracto_bancario(
+                contenido, nombre_limpio, cliente, cuenta_bancaria or "Cuenta bancaria sin vincular",
+                st.session_state.get("username", ""),
+            )
+            if not movimientos_banco.empty:
+                periodos = sorted(movimientos_banco["periodo"].astype(str).unique().tolist())
+                resultado.update({
+                    "tipo_detectado": "Extracto bancario",
+                    "periodo_detectado": ", ".join(periodos),
+                    "confianza": 95,
+                    "accion_sugerida": "Importar, buscar coincidencias y conciliar",
+                    "estado_procesamiento": "Identificado",
+                    "resumen": {"movimientos": len(movimientos_banco), "periodos": periodos},
+                    "movimientos_banco": movimientos_banco,
+                    "error": "",
+                })
+                return resultado
+        except Exception as exc:
+            resultado["error"] = str(exc)
+
+    reglas_nombre = [
+        (("inventario", "stock", "existencia"), "Inventario", "Importar inventario para valuación"),
+        (("bien de uso", "maquinaria", "vehiculo", "vehículo", "equipamiento"), "Bienes de uso", "Revisar alta y amortización"),
+        (("tarjeta", "resumen visa", "resumen master"), "Resumen de tarjeta", "Separar consumos, impuestos y pagos"),
+        (("prestamo", "préstamo", "cuota"), "Préstamo", "Separar capital e intereses"),
+        (("contrato",), "Contrato", "Extraer datos y revisar manualmente"),
+    ]
+    for palabras, tipo, accion in reglas_nombre:
+        if any(palabra in nombre_bajo for palabra in palabras):
+            resultado.update({
+                "tipo_detectado": tipo, "confianza": 70,
+                "accion_sugerida": accion, "estado_procesamiento": "Identificado",
+                "error": "",
+            })
+            break
+    periodo_nombre = re.search(r"(20\d{2})[-_. ](0[1-9]|1[0-2])", nombre_bajo)
+    if periodo_nombre:
+        resultado["periodo_detectado"] = f"{periodo_nombre.group(1)}-{periodo_nombre.group(2)}"
+    return resultado
+
+
+def _contable_guardar_archivo(
+    cliente, periodo, categoria, archivo, source_tipo="", source_id="", analisis=None,
+):
     contenido = archivo.getvalue()
     digest = hashlib.sha256(contenido).hexdigest()
+    analisis = analisis or {}
     registro = {
         "id": f"CARC-{hashlib.sha256(f'{cliente}|{periodo}|{categoria}|{digest}'.encode()).hexdigest()[:28]}",
         "cliente": cliente, "periodo": periodo, "categoria": categoria,
@@ -16544,6 +16663,13 @@ def _contable_guardar_archivo(cliente, periodo, categoria, archivo, source_tipo=
         "tamano": str(len(contenido)), "sha256": digest,
         "contenido_base64": base64.b64encode(contenido).decode("ascii"),
         "source_tipo": str(source_tipo), "source_id": str(source_id),
+        "estado_procesamiento": str(analisis.get("estado_procesamiento", "Guardado")),
+        "tipo_detectado": str(analisis.get("tipo_detectado", categoria)),
+        "periodo_detectado": str(analisis.get("periodo_detectado", "")),
+        "confianza": str(analisis.get("confianza", "")),
+        "accion_sugerida": str(analisis.get("accion_sugerida", "")),
+        "resumen_json": json.dumps(analisis.get("resumen", {}), ensure_ascii=False, default=str),
+        "error_procesamiento": str(analisis.get("error", "")),
         "fecha_carga": _fiscal_timestamp(), "cargado_por": st.session_state.get("username", ""),
     }
     return _contable_upsert_dataframe(
@@ -16740,7 +16866,7 @@ def _render_editor_plan_cuentas(cliente, key_prefix="ficha"):
 
 def render_ficha_maestra_cliente(cliente_fijo="", modo="admin"):
     header("Ficha del cliente", "Datos permanentes, documentación inicial y configuración contable")
-    if st.session_state.get("role") not in ["admin_general", "admin", "equipo"]:
+    if st.session_state.get("role") not in ["admin_general", "admin", "equipo", "contador"]:
         st.error("Acceso restringido al equipo de AM Consultora.")
         return
     clientes = [cliente_fijo] if cliente_fijo else clientes_visibles_para_usuario()
@@ -17003,7 +17129,7 @@ def render_gestion_contable_cliente(cliente, modo="cliente", mostrar_header=True
     if mostrar_header:
         header("Gestión contable", "Operaciones diarias y documentación para la contabilidad")
     asegurar_tablas_contables()
-    es_equipo = st.session_state.get("role") in ["admin_general", "admin", "equipo"]
+    es_equipo = st.session_state.get("role") in ["admin_general", "admin", "equipo", "contador"]
     cuentas = _asegurar_plan_cliente(cliente)
     terceros = _contable_cargar(CONTABLE_TERCEROS_PATH, TERCERO_COLUMNAS, cliente)
     operaciones = _contable_cargar(CONTABLE_OPERACIONES_PATH, OPERACION_COLUMNAS, cliente)
@@ -17228,13 +17354,26 @@ def render_gestion_contable_cliente(cliente, modo="cliente", mostrar_header=True
             st.rerun()
 
     if seccion == "Documentación":
-        st.markdown("#### Documentación contable")
+        st.markdown("#### Bandeja inteligente de documentación")
+        st.caption(
+            "AM HUB identifica cada archivo, extrae la información disponible y prepara borradores. "
+            "Nada se contabiliza definitivamente sin revisión."
+        )
+        bancos_cliente = cuentas[
+            cuentas["activa"].astype(str).apply(valor_si)
+            & cuentas["uso_automatico"].astype(str).eq("Banco")
+            & cuentas["clave_origen"].astype(str).str.strip().ne("")
+        ]["clave_origen"].astype(str).tolist() if not cuentas.empty else []
         with st.form(f"docs_contables_{cliente}"):
-            d1, d2 = st.columns(2)
+            d1, d2, d3 = st.columns(3)
             periodo_doc = d1.text_input("Período", value=date.today().strftime("%Y-%m"), placeholder="AAAA-MM")
-            categoria_doc = d2.selectbox("Tipo", ["Extracto bancario", "Inventario", "Bienes de uso", "Apertura y ajustes", "Contrato", "Otro"])
+            categoria_doc = d2.selectbox("Tipo esperado", ["Detección automática", "Extracto bancario", "Inventario", "Bienes de uso", "Apertura y ajustes", "Contrato", "Otro"])
+            cuenta_banco_doc = d3.selectbox(
+                "Cuenta bancaria (si corresponde)", [""] + bancos_cliente,
+                help="Se usa solamente cuando el archivo es un extracto.",
+            )
             docs = st.file_uploader("Archivos", accept_multiple_files=True, type=["pdf", "png", "jpg", "jpeg", "xlsx", "xls", "csv", "txt", "zip"], key=f"docs_gestion_{cliente}")
-            guardar_docs = st.form_submit_button("Guardar documentación", type="primary")
+            guardar_docs = st.form_submit_button("Guardar y procesar", type="primary")
         if guardar_docs:
             if not re.fullmatch(r"20\d{2}-(0[1-9]|1[0-2])", periodo_doc):
                 st.error("El período debe tener formato AAAA-MM.")
@@ -17245,12 +17384,100 @@ def render_gestion_contable_cliente(cliente, modo="cliente", mostrar_header=True
             elif not docs:
                 st.error("Seleccioná al menos un archivo.")
             else:
+                resultados = []
                 for archivo in docs:
-                    _contable_guardar_archivo(cliente, periodo_doc, categoria_doc, archivo, "Documentación", "")
-                st.success(f"Se guardaron {len(docs)} archivo(s).")
+                    analisis = _analizar_documento_contable(
+                        archivo.name, archivo.getvalue(), cliente, cuenta_banco_doc,
+                    )
+                    tipo_detectado = str(analisis.get("tipo_detectado", "Otro"))
+                    categoria_guardada = tipo_detectado if categoria_doc == "Detección automática" else categoria_doc
+                    fiscal = analisis.get("fiscal", {})
+                    categoria_fiscal = str(fiscal.get("categoria", "respaldo")) if isinstance(fiscal, dict) else "respaldo"
+                    if categoria_fiscal != "respaldo":
+                        try:
+                            periodo_fiscal = cargar_periodo_fiscal(cliente, periodo_doc)
+                            cantidad, movimientos, omitidos, avisos = guardar_lote_fiscal(
+                                cliente, periodo_doc, periodo_fiscal["id"], [(archivo, "")],
+                            )
+                            analisis["estado_procesamiento"] = "Procesado"
+                            analisis["resumen"].update({
+                                "archivos_fiscales": cantidad, "movimientos_fiscales": movimientos,
+                                "omitidos": omitidos, "avisos": avisos,
+                            })
+                        except Exception as exc:
+                            analisis["estado_procesamiento"] = "Requiere revisión"
+                            analisis["error"] = str(exc)
+                    movimientos_banco = analisis.get("movimientos_banco")
+                    if isinstance(movimientos_banco, pd.DataFrame) and not movimientos_banco.empty:
+                        movimientos_periodo = movimientos_banco[
+                            movimientos_banco["periodo"].astype(str).eq(periodo_doc)
+                        ].copy()
+                        if movimientos_periodo.empty:
+                            analisis["estado_procesamiento"] = "Requiere revisión"
+                            analisis["error"] = (
+                                f"El extracto no contiene movimientos de {periodo_doc}. "
+                                f"Períodos detectados: {analisis.get('periodo_detectado') or '—'}."
+                            )
+                        elif not cuenta_banco_doc:
+                            analisis["estado_procesamiento"] = "Requiere revisión"
+                            analisis["error"] = "Seleccioná la cuenta bancaria antes de importar el extracto."
+                        else:
+                            operaciones_periodo = operaciones[
+                                operaciones["periodo"].astype(str).eq(periodo_doc)
+                            ] if not operaciones.empty else operaciones
+                            existentes_banco = _contable_cargar(
+                                CONTABLE_BANCOS_PATH, BANCO_MOVIMIENTO_COLUMNAS, cliente, periodo_doc,
+                            )
+                            operaciones_usadas = set(
+                                existentes_banco.loc[
+                                    existentes_banco["conciliado"].astype(str).apply(valor_si),
+                                    "match_operacion_id",
+                                ].astype(str)
+                            ) if not existentes_banco.empty else set()
+                            if not operaciones_periodo.empty:
+                                operaciones_periodo = operaciones_periodo[
+                                    ~operaciones_periodo["id"].astype(str).isin(operaciones_usadas)
+                                ]
+                            propuestas = proponer_conciliacion_bancaria(
+                                movimientos_periodo, operaciones_periodo,
+                            )
+                            ids_existentes = set(existentes_banco["id"].astype(str)) if not existentes_banco.empty else set()
+                            nuevas = propuestas[~propuestas["id"].astype(str).isin(ids_existentes)]
+                            _contable_upsert_dataframe(
+                                CONTABLE_BANCOS_PATH, BANCO_MOVIMIENTO_COLUMNAS, nuevas,
+                            )
+                            analisis["estado_procesamiento"] = "Procesado"
+                            analisis["resumen"].update({
+                                "movimientos_importados": len(nuevas),
+                                "coincidencias_propuestas": int(
+                                    nuevas["match_operacion_id"].astype(str).str.strip().ne("").sum()
+                                ) if not nuevas.empty else 0,
+                            })
+                    _contable_guardar_archivo(
+                        cliente, periodo_doc, categoria_guardada, archivo,
+                        "Documentación", "", analisis,
+                    )
+                    resultados.append({
+                        "Archivo": archivo.name,
+                        "Detectado": tipo_detectado,
+                        "Confianza": f"{analisis.get('confianza', 0)}%",
+                        "Estado": analisis.get("estado_procesamiento", "Guardado"),
+                        "Acción": analisis.get("accion_sugerida", ""),
+                        "Observación": analisis.get("error", ""),
+                    })
+                st.dataframe(pd.DataFrame(resultados), hide_index=True, use_container_width=True)
+                st.success(f"Se procesaron {len(docs)} archivo(s). Revisá las propuestas antes de cerrar el mes.")
                 st.rerun()
         if not archivos.empty:
-            st.dataframe(archivos[["periodo", "categoria", "nombre", "fecha_carga", "cargado_por"]].sort_values("fecha_carga", ascending=False), hide_index=True, use_container_width=True)
+            columnas_bandeja = [
+                "periodo", "nombre", "tipo_detectado", "confianza",
+                "estado_procesamiento", "accion_sugerida", "error_procesamiento",
+                "fecha_carga", "cargado_por",
+            ]
+            st.dataframe(
+                archivos.reindex(columns=columnas_bandeja).sort_values("fecha_carga", ascending=False),
+                hide_index=True, use_container_width=True,
+            )
 
     if seccion == "Revisión AM" and es_equipo:
         st.markdown("#### Bandeja de revisión de AM Consultora")
@@ -17303,7 +17530,7 @@ def render_gestion_contable_cliente(cliente, modo="cliente", mostrar_header=True
 
 def render_contabilidad(cliente_fijo="", modo="admin"):
     header("Contabilidad", "Operaciones, conciliación, cierre mensual y estados contables")
-    if st.session_state.get("role") not in ["admin_general", "admin", "equipo"]:
+    if st.session_state.get("role") not in ["admin_general", "admin", "equipo", "contador"]:
         st.error("Acceso restringido al equipo de AM Consultora.")
         return
     asegurar_tablas_contables()
@@ -17612,44 +17839,119 @@ def render_contabilidad(cliente_fijo="", modo="admin"):
                 if st.button("Importar movimientos", type="primary", disabled=vista.empty):
                     existentes = set(bancos["id"].astype(str)) if not bancos.empty else set()
                     nuevos = vista[~vista["id"].astype(str).isin(existentes)]
+                    operaciones_periodo = _contable_cargar(
+                        CONTABLE_OPERACIONES_PATH, OPERACION_COLUMNAS, cliente, periodo,
+                    )
+                    usadas = set(
+                        bancos.loc[
+                            bancos["conciliado"].astype(str).apply(valor_si),
+                            "match_operacion_id",
+                        ].astype(str)
+                    ) if not bancos.empty else set()
+                    if not operaciones_periodo.empty:
+                        operaciones_periodo = operaciones_periodo[
+                            ~operaciones_periodo["id"].astype(str).isin(usadas)
+                        ]
+                    nuevos = proponer_conciliacion_bancaria(nuevos, operaciones_periodo)
                     _contable_upsert_dataframe(CONTABLE_BANCOS_PATH, BANCO_MOVIMIENTO_COLUMNAS, nuevos)
-                    _contable_guardar_archivo(cliente, periodo, "Extracto bancario", archivo_banco)
-                    st.success(f"Se importaron {len(nuevos)} movimientos nuevos.")
+                    analisis_banco = {
+                        "tipo_detectado": "Extracto bancario", "periodo_detectado": periodo,
+                        "confianza": 95, "accion_sugerida": "Revisar propuestas de conciliación",
+                        "estado_procesamiento": "Procesado",
+                        "resumen": {
+                            "movimientos_importados": len(nuevos),
+                            "coincidencias_propuestas": int(nuevos["match_operacion_id"].astype(str).str.strip().ne("").sum()),
+                        },
+                    }
+                    _contable_guardar_archivo(
+                        cliente, periodo, "Extracto bancario", archivo_banco,
+                        "Extracto bancario", "", analisis_banco,
+                    )
+                    st.success(
+                        f"Se importaron {len(nuevos)} movimientos y se propusieron "
+                        f"{analisis_banco['resumen']['coincidencias_propuestas']} coincidencias."
+                    )
                     st.rerun()
             except Exception as exc:
                 st.error(str(exc))
         pendientes = bancos[~bancos["conciliado"].astype(str).str.casefold().isin(["sí", "si", "true", "1"])].copy() if not bancos.empty else bancos
         if not pendientes.empty and not cuentas.empty:
             st.markdown("##### Movimientos pendientes")
+            operaciones_periodo = _contable_cargar(
+                CONTABLE_OPERACIONES_PATH, OPERACION_COLUMNAS, cliente, periodo,
+            )
+            if st.button("Buscar o actualizar coincidencias", key=f"buscar_matches_{cliente}_{periodo}"):
+                usadas = set(
+                    bancos.loc[
+                        bancos["conciliado"].astype(str).apply(valor_si),
+                        "match_operacion_id",
+                    ].astype(str)
+                )
+                disponibles = operaciones_periodo[
+                    ~operaciones_periodo["id"].astype(str).isin(usadas)
+                ] if not operaciones_periodo.empty else operaciones_periodo
+                propuestas = proponer_conciliacion_bancaria(pendientes, disponibles)
+                _contable_upsert_dataframe(
+                    CONTABLE_BANCOS_PATH, BANCO_MOVIMIENTO_COLUMNAS, propuestas,
+                )
+                st.success(
+                    f"Se encontraron {int(propuestas['match_operacion_id'].astype(str).str.strip().ne('').sum())} coincidencias posibles."
+                )
+                st.rerun()
             codigos = cuentas[cuentas["activa"].astype(str).str.casefold().isin(["sí", "si", "true", "1"])]["codigo"].astype(str).tolist()
-            pendientes.insert(0, "contabilizar", False)
+            pendientes.insert(0, "procesar", False)
+            pendientes["accion"] = pendientes["match_operacion_id"].astype(str).apply(
+                lambda valor: "Vincular operación existente" if valor.strip() else "Generar asiento nuevo"
+            )
             editor_banco = st.data_editor(
-                pendientes[["contabilizar", "id", "fecha", "descripcion", "debito", "credito", "cuenta_sugerida"]],
-                hide_index=True, use_container_width=True, disabled=["id", "fecha", "descripcion", "debito", "credito"],
+                pendientes[["procesar", "id", "fecha", "descripcion", "debito", "credito", "accion", "match_confianza", "match_motivo", "cuenta_sugerida"]],
+                hide_index=True, use_container_width=True,
+                disabled=["id", "fecha", "descripcion", "debito", "credito", "match_confianza", "match_motivo"],
                 column_config={
-                    "contabilizar": st.column_config.CheckboxColumn("Generar"),
+                    "procesar": st.column_config.CheckboxColumn("Aplicar"),
+                    "accion": st.column_config.SelectboxColumn(
+                        "Acción", options=["Vincular operación existente", "Generar asiento nuevo"],
+                    ),
                     "cuenta_sugerida": st.column_config.SelectboxColumn("Contrapartida", options=codigos),
                 }, key=f"editor_bancos_{cliente}_{periodo}",
             )
-            if st.button("Generar asientos bancarios seleccionados", type="primary"):
-                seleccion = editor_banco[editor_banco["contabilizar"] == True]
+            if st.button("Aplicar conciliación seleccionada", type="primary"):
+                seleccion = editor_banco[editor_banco["procesar"] == True]
                 cabeceras, detalles, actualizados = [], [], []
                 mapa = bancos.set_index("id").to_dict("index")
+                mapa_operaciones = operaciones_periodo.set_index("id").to_dict("index") if not operaciones_periodo.empty else {}
+                vinculados = 0
                 for _, fila in seleccion.iterrows():
                     mov = mapa.get(str(fila["id"]), {})
-                    cuenta_banco = _cuenta_banco_para_origen(cuentas, mov.get("cuenta_bancaria", ""))
-                    cab, det = generar_asiento_banco(
-                        mov, str(fila["cuenta_sugerida"]), st.session_state.get("username", ""),
-                        cuenta_banco=cuenta_banco,
-                    )
-                    det = _aplicar_mapeo_contable(pd.DataFrame(det), cuentas).to_dict("records")
-                    cabeceras.append(cab); detalles.extend(det)
-                    mov.update({"conciliado": "Sí", "asiento_id": cab["id"], "cuenta_sugerida": str(fila["cuenta_sugerida"])})
+                    if str(fila["accion"]) == "Vincular operación existente":
+                        operacion_id = str(mov.get("match_operacion_id", ""))
+                        operacion = mapa_operaciones.get(operacion_id)
+                        if not operacion or not str(operacion.get("asiento_id", "")).strip():
+                            continue
+                        mov.update({
+                            "conciliado": "Sí", "asiento_id": str(operacion.get("asiento_id", "")),
+                            "estado_conciliacion": "Conciliado con operación", "match_operacion_id": operacion_id,
+                        })
+                        vinculados += 1
+                    else:
+                        cuenta_banco = _cuenta_banco_para_origen(cuentas, mov.get("cuenta_bancaria", ""))
+                        cab, det = generar_asiento_banco(
+                            mov, str(fila["cuenta_sugerida"]), st.session_state.get("username", ""),
+                            cuenta_banco=cuenta_banco,
+                        )
+                        det = _aplicar_mapeo_contable(pd.DataFrame(det), cuentas).to_dict("records")
+                        cabeceras.append(cab); detalles.extend(det)
+                        mov.update({
+                            "conciliado": "Sí", "asiento_id": cab["id"],
+                            "cuenta_sugerida": str(fila["cuenta_sugerida"]),
+                            "estado_conciliacion": "Contabilizado desde banco",
+                        })
                     actualizados.append(mov)
                 if cabeceras:
                     _contable_guardar_asientos(pd.DataFrame(cabeceras), pd.DataFrame(detalles))
+                if actualizados:
                     _contable_upsert_dataframe(CONTABLE_BANCOS_PATH, BANCO_MOVIMIENTO_COLUMNAS, pd.DataFrame(actualizados))
-                st.success(f"Se generaron {len(cabeceras)} asientos bancarios.")
+                st.success(f"Se vincularon {vinculados} operaciones y se generaron {len(cabeceras)} asientos nuevos.")
                 st.rerun()
 
     if seccion == "Cierre mensual":
@@ -18196,7 +18498,7 @@ def _render_papeles_guardados(cliente, periodo, periodo_id):
         file_name=f"papel_{fila.get('impuesto')}_{cliente}_{periodo}_v{fila.get('version')}.csv".replace(" ", "_"),
         mime="text/csv", use_container_width=True,
     )
-    puede_autorizar = st.session_state.get("role") in ["admin_general", "admin"]
+    puede_autorizar = st.session_state.get("role") in ["admin_general", "admin", "contador"]
     if c2.button(
         "Autorizar esta versión", type="primary", use_container_width=True,
         disabled=not puede_autorizar or fila.get("estado") == "Autorizado",
@@ -18235,7 +18537,7 @@ def _render_papeles_guardados(cliente, periodo, periodo_id):
 
 def render_liquidaciones_fiscales(cliente_fijo="", modo="admin"):
     header("Liquidaciones", "Papeles de trabajo de IVA e Ingresos Brutos")
-    if st.session_state.get("role") not in ["admin_general", "admin", "equipo"]:
+    if st.session_state.get("role") not in ["admin_general", "admin", "equipo", "contador"]:
         st.error("Acceso restringido al equipo de AM Consultora.")
         return
 
@@ -19067,7 +19369,7 @@ def main():
     else:
         role_actual = st.session_state.get("role", "")
 
-        if role_actual == "equipo":
+        if role_actual in ["equipo", "contador"]:
             cliente_equipo = st.session_state.get("cliente_equipo_activo", "")
 
             if menu == "Sin clientes asignados":

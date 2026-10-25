@@ -45,7 +45,8 @@ BANCO_MOVIMIENTO_COLUMNAS = [
     "id", "cliente", "periodo", "cuenta_bancaria", "fecha", "descripcion",
     "referencia", "debito", "credito", "saldo", "source_hash",
     "cuenta_sugerida", "conciliado", "asiento_id", "archivo_nombre",
-    "fecha_carga", "cargado_por",
+    "estado_conciliacion", "match_operacion_id", "match_confianza",
+    "match_motivo", "fecha_carga", "cargado_por",
 ]
 
 SUELDO_COLUMNAS = [
@@ -69,6 +70,8 @@ EJERCICIO_CONTABLE_COLUMNAS = [
 ARCHIVO_CONTABLE_COLUMNAS = [
     "id", "cliente", "periodo", "categoria", "nombre", "tipo", "tamano",
     "sha256", "contenido_base64", "source_tipo", "source_id",
+    "estado_procesamiento", "tipo_detectado", "periodo_detectado",
+    "confianza", "accion_sugerida", "resumen_json", "error_procesamiento",
     "fecha_carga", "cargado_por",
 ]
 
@@ -552,10 +555,89 @@ def parsear_extracto_bancario(contenido: bytes, nombre: str, cliente: str,
             "conciliado": "No",
             "asiento_id": "",
             "archivo_nombre": nombre,
+            "estado_conciliacion": "Pendiente",
+            "match_operacion_id": "",
+            "match_confianza": "0",
+            "match_motivo": "",
             "fecha_carga": pd.Timestamp.now(tz="America/Argentina/Buenos_Aires").isoformat(),
             "cargado_por": usuario,
         })
     return pd.DataFrame(filas, columns=BANCO_MOVIMIENTO_COLUMNAS)
+
+
+def proponer_conciliacion_bancaria(
+    movimientos: pd.DataFrame,
+    operaciones: pd.DataFrame | None,
+) -> pd.DataFrame:
+    """Propone vínculos banco-operación sin contabilizar ni aprobar nada.
+
+    Prioriza cobros y pagos, exige coincidencia de importe y admite hasta siete
+    días de diferencia. Cada operación se propone una sola vez por lote.
+    """
+    if movimientos is None or movimientos.empty:
+        return pd.DataFrame(columns=BANCO_MOVIMIENTO_COLUMNAS)
+    salida = movimientos.copy()
+    for columna in BANCO_MOVIMIENTO_COLUMNAS:
+        if columna not in salida.columns:
+            salida[columna] = ""
+    if operaciones is None or operaciones.empty:
+        salida.loc[:, "estado_conciliacion"] = salida["estado_conciliacion"].replace("", "Sin coincidencia")
+        return salida[BANCO_MOVIMIENTO_COLUMNAS]
+
+    ops = operaciones.copy()
+    ops["fecha_dt"] = pd.to_datetime(ops.get("fecha", ""), errors="coerce")
+    ops["importe_num"] = ops.get("importe_pesos", pd.Series(dtype=str)).apply(dinero)
+    usados: set[str] = set()
+    for indice, movimiento in salida.iterrows():
+        if str(movimiento.get("conciliado", "")).casefold() in {"sí", "si", "true", "1"}:
+            continue
+        importe = dinero(movimiento.get("debito", 0)) or dinero(movimiento.get("credito", 0))
+        fecha = pd.to_datetime(movimiento.get("fecha", ""), errors="coerce")
+        if not importe or pd.isna(fecha):
+            continue
+        tipos_preferidos = (
+            ["Pago", "Retiro de socio"] if dinero(movimiento.get("debito", 0))
+            else ["Cobro", "Aporte de socio"]
+        )
+        candidatos = ops[
+            ops["importe_num"].eq(importe)
+            & ops["tipo_operacion"].astype(str).isin(tipos_preferidos)
+            & ~ops["id"].astype(str).isin(usados)
+        ].copy()
+        if candidatos.empty:
+            continue
+        candidatos["dias"] = (candidatos["fecha_dt"] - fecha).abs().dt.days
+        candidatos = candidatos[candidatos["dias"].le(7)].copy()
+        if candidatos.empty:
+            continue
+        descripcion = texto_simple(
+            f"{movimiento.get('descripcion', '')} {movimiento.get('referencia', '')}"
+        )
+        candidatos["nombre_coincide"] = candidatos.get(
+            "tercero_nombre", pd.Series("", index=candidatos.index),
+        ).apply(lambda nombre: bool(texto_simple(nombre)) and texto_simple(nombre) in descripcion)
+        candidatos["puntaje"] = (
+            100 - candidatos["dias"].clip(upper=7) * 5
+            + candidatos["nombre_coincide"].astype(int) * 5
+        ).clip(upper=100)
+        candidatos = candidatos.sort_values(
+            ["puntaje", "fecha_dt"], ascending=[False, True], kind="stable",
+        )
+        elegido = candidatos.iloc[0]
+        operacion_id = str(elegido.get("id", ""))
+        usados.add(operacion_id)
+        salida.at[indice, "estado_conciliacion"] = "Coincidencia propuesta"
+        salida.at[indice, "match_operacion_id"] = operacion_id
+        salida.at[indice, "match_confianza"] = str(int(elegido["puntaje"]))
+        salida.at[indice, "match_motivo"] = (
+            f"Mismo importe · {int(elegido['dias'])} día(s) de diferencia"
+            + (" · tercero identificado" if bool(elegido["nombre_coincide"]) else "")
+        )
+    salida.loc[
+        salida["estado_conciliacion"].astype(str).str.strip().eq(""),
+        "estado_conciliacion",
+    ] = "Sin coincidencia"
+    return salida[BANCO_MOVIMIENTO_COLUMNAS]
 
 
 def sugerir_cuenta_bancaria(descripcion: str, debito=0, credito=0) -> str:
