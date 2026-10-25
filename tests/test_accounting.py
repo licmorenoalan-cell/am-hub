@@ -10,6 +10,7 @@ from am_hub_accounting import (
     generar_asiento_operacion,
     generar_asiento_sueldos,
     generar_asientos_comprobantes,
+    libro_mayor,
     parsear_extracto_bancario,
     plan_cuentas_inicial,
     validar_asientos,
@@ -86,6 +87,19 @@ class AccountingTests(unittest.TestCase):
                 "Cliente", "2026-07", "2026-07-01", "Apertura",
                 [{"cuenta_codigo": "1.1.02", "debe": 100, "haber": 0}],
             )
+
+    def test_libro_mayor_acumula_saldo_por_cuenta(self):
+        asientos = pd.DataFrame([
+            {"id": "A1", "fecha": "2026-07-01", "descripcion": "Apertura"},
+            {"id": "A2", "fecha": "2026-07-02", "descripcion": "Pago"},
+        ])
+        lineas = pd.DataFrame([
+            {"asiento_id": "A1", "orden": "1", "cuenta_codigo": "1.1.01", "cuenta_nombre": "Caja", "debe": "100", "haber": "0", "detalle": ""},
+            {"asiento_id": "A2", "orden": "1", "cuenta_codigo": "1.1.01", "cuenta_nombre": "Caja", "debe": "0", "haber": "30", "detalle": ""},
+        ])
+        mayor = libro_mayor(lineas, asientos)
+        self.assertEqual(mayor.iloc[-1]["saldo_deudor"], 70)
+        self.assertEqual(mayor.iloc[-1]["saldo_acreedor"], 0)
 
     def test_operacion_cliente_bimonetaria_genera_borrador_balanceado(self):
         operacion = {

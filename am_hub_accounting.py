@@ -13,6 +13,7 @@ import re
 import unicodedata
 from datetime import date
 from decimal import Decimal, ROUND_HALF_UP
+from itertools import accumulate
 
 import pandas as pd
 from pypdf import PdfReader
@@ -693,3 +694,48 @@ def balance_sumas_saldos(lineas: pd.DataFrame, cuentas: pd.DataFrame | None = No
     agrupado["saldo_deudor"] = agrupado.apply(lambda f: max(dinero(f["debe"] - f["haber"]), Decimal("0")), axis=1)
     agrupado["saldo_acreedor"] = agrupado.apply(lambda f: max(dinero(f["haber"] - f["debe"]), Decimal("0")), axis=1)
     return agrupado.rename(columns={"cuenta_codigo": "codigo", "cuenta_nombre": "cuenta"})[columnas]
+
+
+def libro_mayor(lineas: pd.DataFrame, asientos: pd.DataFrame | None = None) -> pd.DataFrame:
+    """Construye el mayor con saldo acumulado por cuenta."""
+    columnas = [
+        "cuenta_codigo", "cuenta_nombre", "fecha", "asiento_id",
+        "descripcion", "detalle", "debe", "haber", "saldo_deudor",
+        "saldo_acreedor",
+    ]
+    if lineas is None or lineas.empty:
+        return pd.DataFrame(columns=columnas)
+
+    mayor = lineas.copy()
+    mayor["debe_num"] = mayor.get("debe", pd.Series(dtype=str)).apply(dinero)
+    mayor["haber_num"] = mayor.get("haber", pd.Series(dtype=str)).apply(dinero)
+    if asientos is not None and not asientos.empty:
+        cabeceras = asientos[["id", "fecha", "descripcion"]].copy().rename(
+            columns={"id": "asiento_id", "fecha": "fecha_asiento", "descripcion": "descripcion_asiento"}
+        )
+        mayor = mayor.merge(cabeceras, on="asiento_id", how="left")
+        mayor["fecha"] = mayor["fecha_asiento"].fillna("")
+        mayor["descripcion"] = mayor["descripcion_asiento"].fillna("")
+    else:
+        mayor["fecha"] = ""
+        mayor["descripcion"] = ""
+
+    mayor["orden_num"] = pd.to_numeric(mayor.get("orden", 0), errors="coerce").fillna(0)
+    mayor = mayor.sort_values(
+        ["cuenta_codigo", "fecha", "asiento_id", "orden_num"], kind="stable",
+    ).reset_index(drop=True)
+    mayor["saldo_firmado"] = mayor["debe_num"] - mayor["haber_num"]
+    mayor["saldo_firmado"] = mayor.groupby("cuenta_codigo", sort=False)["saldo_firmado"].transform(
+        lambda valores: pd.Series(list(accumulate(valores)), index=valores.index)
+    )
+    mayor["saldo_deudor"] = mayor["saldo_firmado"].apply(
+        lambda valor: max(dinero(valor), Decimal("0"))
+    )
+    mayor["saldo_acreedor"] = mayor["saldo_firmado"].apply(
+        lambda valor: max(dinero(-valor), Decimal("0"))
+    )
+    mayor["debe"] = mayor["debe_num"]
+    mayor["haber"] = mayor["haber_num"]
+    if "detalle" not in mayor.columns:
+        mayor["detalle"] = ""
+    return mayor.reindex(columns=columnas)

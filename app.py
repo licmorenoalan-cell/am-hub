@@ -68,6 +68,7 @@ from am_hub_accounting import (
     TERCERO_COLUMNAS,
     OPERACION_COLUMNAS,
     balance_sumas_saldos,
+    libro_mayor,
     crear_asiento_manual,
     generar_asiento_banco,
     generar_asiento_operacion,
@@ -16860,6 +16861,10 @@ def _contable_periodo_vacio(cliente, periodo):
     }
 
 
+def _contable_periodo_esta_autorizado(cliente, periodo):
+    return str(_contable_periodo(cliente, periodo).get("estado", "")).strip() == "Autorizado"
+
+
 def _rango_ejercicio(ejercicio, mes_cierre=12):
     ejercicio = int(ejercicio)
     mes_cierre = max(1, min(12, int(mes_cierre or 12)))
@@ -17151,14 +17156,19 @@ def render_gestion_contable_cliente(cliente, modo="cliente", mostrar_header=True
             guardar_operacion = st.form_submit_button("Guardar operación", type="primary")
         if guardar_operacion:
             total_final = total or (neto + iva + otros)
-            if total_final <= 0:
+            periodo_op = fecha_op.strftime("%Y-%m")
+            if _contable_periodo_esta_autorizado(cliente, periodo_op):
+                st.error(
+                    f"El período {periodo_op} está autorizado y no admite nuevas operaciones. "
+                    "AM Consultora debe reabrirlo desde Contabilidad → Cierre mensual."
+                )
+            elif total_final <= 0:
                 st.error("Ingresá un importe mayor que cero.")
             elif tipo_op in ["Venta", "Compra", "Gasto", "Cobro", "Pago"] and not tercero_id:
                 st.error("Seleccioná primero un cliente o proveedor.")
             else:
                 tercero = terceros_activos[terceros_activos["id"].astype(str).eq(tercero_id)].iloc[0].to_dict() if tercero_id else {}
                 operacion_id = f"OPE-{uuid.uuid4().hex}"
-                periodo_op = fecha_op.strftime("%Y-%m")
                 operacion = {
                     "id": operacion_id, "cliente": cliente, "periodo": periodo_op,
                     "fecha": fecha_op.isoformat(), "tipo_operacion": tipo_op,
@@ -17197,6 +17207,12 @@ def render_gestion_contable_cliente(cliente, modo="cliente", mostrar_header=True
             respaldo_obs = st.file_uploader("Nuevo respaldo", accept_multiple_files=True, type=["pdf", "png", "jpg", "jpeg", "xlsx", "xls", "csv"], key=f"respaldo_obs_{elegido_obs}")
             reenviar = st.form_submit_button("Reenviar a revisión", type="primary")
         if reenviar:
+            if _contable_periodo_esta_autorizado(cliente, op_obs.get("periodo", "")):
+                st.error(
+                    f"El período {op_obs.get('periodo')} está autorizado. "
+                    "AM Consultora debe reabrirlo antes de corregir esta operación."
+                )
+                st.stop()
             op_obs.update({
                 "neto": neto_obs, "iva": iva_obs,
                 "total": total_obs or neto_obs + iva_obs + float(decimal_ar(op_obs.get("otros", 0))),
@@ -17216,12 +17232,16 @@ def render_gestion_contable_cliente(cliente, modo="cliente", mostrar_header=True
         with st.form(f"docs_contables_{cliente}"):
             d1, d2 = st.columns(2)
             periodo_doc = d1.text_input("Período", value=date.today().strftime("%Y-%m"), placeholder="AAAA-MM")
-            categoria_doc = d2.selectbox("Tipo", ["Extracto bancario", "F.931 y sueldos", "Inventario", "Bienes de uso", "Contrato", "Otro"])
+            categoria_doc = d2.selectbox("Tipo", ["Extracto bancario", "Inventario", "Bienes de uso", "Apertura y ajustes", "Contrato", "Otro"])
             docs = st.file_uploader("Archivos", accept_multiple_files=True, type=["pdf", "png", "jpg", "jpeg", "xlsx", "xls", "csv", "txt", "zip"], key=f"docs_gestion_{cliente}")
             guardar_docs = st.form_submit_button("Guardar documentación", type="primary")
         if guardar_docs:
             if not re.fullmatch(r"20\d{2}-(0[1-9]|1[0-2])", periodo_doc):
                 st.error("El período debe tener formato AAAA-MM.")
+            elif _contable_periodo_esta_autorizado(cliente, periodo_doc):
+                st.error(
+                    f"El período {periodo_doc} está autorizado. AM Consultora debe reabrirlo antes de agregar documentación."
+                )
             elif not docs:
                 st.error("Seleccioná al menos un archivo.")
             else:
@@ -17254,6 +17274,11 @@ def render_gestion_contable_cliente(cliente, modo="cliente", mostrar_header=True
                 aprobar = c_aprobar.form_submit_button("Aprobar y regenerar asiento", type="primary", use_container_width=True)
                 observar = c_observar.form_submit_button("Devolver observada", use_container_width=True)
             if aprobar or observar:
+                if _contable_periodo_esta_autorizado(cliente, op.get("periodo", "")):
+                    st.error(
+                        f"El período {op.get('periodo')} está autorizado. Reabrilo desde Contabilidad → Cierre mensual."
+                    )
+                    st.stop()
                 op.update({
                     "cuenta_resultado": cuenta_revision, "centro_costo": centro_revision,
                     "es_personal": "Sí" if personal_revision else "No",
@@ -17277,7 +17302,7 @@ def render_gestion_contable_cliente(cliente, modo="cliente", mostrar_header=True
 
 
 def render_contabilidad(cliente_fijo="", modo="admin"):
-    header("Contabilidad", "Asientos automáticos, bancos, sueldos y sumas y saldos")
+    header("Contabilidad", "Operaciones, conciliación, cierre mensual y estados contables")
     if st.session_state.get("role") not in ["admin_general", "admin", "equipo"]:
         st.error("Acceso restringido al equipo de AM Consultora.")
         return
@@ -17348,12 +17373,19 @@ def render_contabilidad(cliente_fijo="", modo="admin"):
 
     seccion = st.radio(
         "Sección contable",
-        ["Resumen", "Operaciones cliente", "Ejercicio", "Generar", "Bancos", "Sueldos y F.931", "Revisar y autorizar mes", "Reportes"],
+        ["Resumen", "Operaciones cliente", "Ejercicio", "Preparar asientos", "Conciliación bancaria", "Cierre mensual", "Reportes"],
         horizontal=True, label_visibility="collapsed", key=f"contable_seccion_{cliente}_{periodo}",
     )
     ejercicio_cerrado = str(ejercicio_contable.get("estado", "")) == "Cerrado"
-    if ejercicio_cerrado and seccion in ["Generar", "Bancos", "Sueldos y F.931", "Revisar y autorizar mes"]:
+    periodo_autorizado = str(periodo_contable.get("estado", "")) == "Autorizado"
+    if ejercicio_cerrado and seccion in ["Preparar asientos", "Conciliación bancaria", "Cierre mensual"]:
         st.warning("El ejercicio está cerrado y no admite modificaciones. Podés consultar Resumen o Reportes.")
+        return
+    if periodo_autorizado and seccion in ["Preparar asientos", "Conciliación bancaria"]:
+        st.warning(
+            f"El período {periodo} está autorizado y permanece bloqueado. "
+            "Para corregirlo, reabrilo desde Cierre mensual."
+        )
         return
 
     if seccion == "Resumen":
@@ -17361,7 +17393,7 @@ def render_contabilidad(cliente_fijo="", modo="admin"):
         m1.metric("Asientos", len(asientos))
         m2.metric("Borradores", int(asientos["estado"].astype(str).eq("Borrador").sum()) if not asientos.empty else 0)
         m3.metric("Banco pendiente", int((~bancos["conciliado"].astype(str).str.casefold().isin(["sí", "si", "true", "1"])).sum()) if not bancos.empty else 0)
-        m4.metric("Liquidaciones sueldos", len(sueldos))
+        m4.metric("Autorizados", int(asientos["estado"].astype(str).eq("Autorizado").sum()) if not asientos.empty else 0)
         if cuentas.empty:
             st.warning("Primero creá el plan de cuentas del cliente.")
         else:
@@ -17372,9 +17404,8 @@ def render_contabilidad(cliente_fijo="", modo="admin"):
             {"Etapa": "Plan de cuentas", "Estado": "Listo" if not cuentas.empty else "Pendiente"},
             {"Etapa": "Papel fiscal", "Estado": "Listo" if str(estado_fiscal.get("ventas_neto", "")).strip() else "Pendiente"},
             {"Etapa": "Asientos", "Estado": "Listo" if not asientos.empty else "Pendiente"},
-            {"Etapa": "Banco", "Estado": "Listo" if not bancos.empty else "Pendiente"},
-            {"Etapa": "Sueldos / F.931", "Estado": "Listo" if not sueldos.empty else "No cargado"},
-            {"Etapa": "Autorización", "Estado": periodo_contable.get("estado", "Abierto")},
+            {"Etapa": "Conciliación bancaria", "Estado": "Listo" if not bancos.empty and bancos["conciliado"].astype(str).apply(valor_si).all() else ("Pendiente" if not bancos.empty else "Sin extracto")},
+            {"Etapa": "Cierre mensual", "Estado": periodo_contable.get("estado", "Abierto")},
         ])
         st.dataframe(pasos, hide_index=True, use_container_width=True)
         st.info(
@@ -17498,7 +17529,7 @@ def render_contabilidad(cliente_fijo="", modo="admin"):
                 st.success("Plan actualizado.")
                 st.rerun()
 
-    if seccion == "Generar":
+    if seccion == "Preparar asientos":
         st.markdown("#### Generar borradores desde la liquidación fiscal")
         if cuentas.empty:
             st.warning("Primero creá el plan de cuentas.")
@@ -17554,7 +17585,7 @@ def render_contabilidad(cliente_fijo="", modo="admin"):
                 st.success(f"Se generaron {cantidad} asientos en borrador.")
                 st.rerun()
 
-    if seccion == "Bancos":
+    if seccion == "Conciliación bancaria":
         st.markdown("#### Extractos y conciliación")
         bancos_configurados = cuentas[
             cuentas["activa"].astype(str).str.casefold().isin(["sí", "si", "true", "1"])
@@ -17621,52 +17652,40 @@ def render_contabilidad(cliente_fijo="", modo="admin"):
                 st.success(f"Se generaron {len(cabeceras)} asientos bancarios.")
                 st.rerun()
 
-    if seccion == "Sueldos y F.931":
-        st.markdown("#### Liquidación de sueldos y cargas sociales")
-        archivo_931 = st.file_uploader("F.931 en PDF", type=["pdf"], key=f"f931_{cliente}_{periodo}")
-        sugeridos = {}
-        if archivo_931:
-            try:
-                sugeridos = extraer_totales_f931(archivo_931.getvalue())
-                if sugeridos.get("periodo") and sugeridos["periodo"] != periodo:
-                    st.warning(f"El PDF parece corresponder a {sugeridos['periodo']}, no a {periodo}.")
-                st.success(f"F.931 leído: {sugeridos.get('empleados') or '—'} empleado(s). Revisá los totales antes de guardar.")
-            except Exception as exc:
-                st.error(str(exc))
-        with st.form(f"sueldos_{cliente}_{periodo}"):
-            s1, s2, s3 = st.columns(3)
-            bruto = s1.number_input("Remuneración bruta", min_value=0.0, value=float(decimal_ar(sugeridos.get("remuneracion_bruta", 0))))
-            descuentos = s2.number_input("Aportes/descuentos", min_value=0.0, value=float(decimal_ar(sugeridos.get("descuentos_aportes", 0))))
-            neto = s3.number_input("Neto de sueldos", min_value=0.0, value=float(decimal_ar(sugeridos.get("neto_sueldos", 0))), help="Completar desde el resumen de sueldos; el F.931 no contiene este total.")
-            s4, s5, s6 = st.columns(3)
-            contribuciones = s4.number_input("Contribuciones patronales", min_value=0.0, value=float(decimal_ar(sugeridos.get("contribuciones_patronales", 0))))
-            art = s5.number_input("ART", min_value=0.0, value=float(decimal_ar(sugeridos.get("art", 0))))
-            otros = s6.number_input("Otros costos laborales", min_value=0.0, value=float(decimal_ar(sugeridos.get("otros_costos", 0))))
-            obs_sueldos = st.text_area("Observaciones")
-            guardar_sueldos = st.form_submit_button("Guardar y generar asiento", type="primary")
-        if guardar_sueldos:
-            sid = f"SUE-{hashlib.sha256(f'{cliente}|{periodo}'.encode()).hexdigest()[:24]}"
-            registro_sueldos = {
-                "id": sid, "cliente": cliente, "periodo": periodo,
-                "archivo_nombre": archivo_931.name if archivo_931 else "Carga manual",
-                "remuneracion_bruta": bruto, "descuentos_aportes": descuentos,
-                "neto_sueldos": neto, "contribuciones_patronales": contribuciones,
-                "art": art, "otros_costos": otros, "estado": "Borrador", "asiento_id": "",
-                "observaciones": obs_sueldos, "fecha_carga": _fiscal_timestamp(),
-                "cargado_por": st.session_state.get("username", ""),
-            }
-            cab, det = generar_asiento_sueldos(registro_sueldos, st.session_state.get("username", ""))
-            det = _aplicar_mapeo_contable(pd.DataFrame(det), cuentas).to_dict("records")
-            registro_sueldos["asiento_id"] = cab["id"]
-            _contable_guardar_asientos(pd.DataFrame([cab]), pd.DataFrame(det))
-            _contable_upsert_dataframe(CONTABLE_SUELDOS_PATH, SUELDO_COLUMNAS, pd.DataFrame([registro_sueldos]))
-            if archivo_931:
-                _contable_guardar_archivo(cliente, periodo, "F.931", archivo_931)
-            st.success("Liquidación y asiento de sueldos guardados en borrador.")
-            st.rerun()
+    if seccion == "Cierre mensual":
+        st.markdown("#### Cierre contable mensual")
+        if periodo_autorizado:
+            st.success(
+                f"El período {periodo} fue autorizado por "
+                f"{periodo_contable.get('autorizado_por') or 'AM Consultora'} el "
+                f"{periodo_contable.get('fecha_autorizacion') or '—'}."
+            )
+            st.caption("Las operaciones y los asientos permanecen bloqueados y ya integran los reportes definitivos del ejercicio.")
+            if st.session_state.get("role") in ["admin_general", "admin"] and st.button(
+                "Reabrir período para correcciones", key=f"reabrir_periodo_{cliente}_{periodo}",
+            ):
+                ahora = _fiscal_timestamp()
+                autorizados = asientos[asientos["estado"].astype(str).eq("Autorizado")].copy()
+                if not autorizados.empty:
+                    autorizados["estado"] = "Borrador"
+                    autorizados["fecha_autorizacion"] = ""
+                    autorizados["autorizado_por"] = ""
+                    _contable_upsert_dataframe(CONTABLE_ASIENTOS_PATH, ASIENTO_COLUMNAS, autorizados)
+                historial = str(periodo_contable.get("observaciones", "")).strip()
+                marca = f"Reabierto {_fiscal_timestamp()} por {st.session_state.get('username', '')}."
+                periodo_contable.update({
+                    "estado": "Abierto", "fecha_autorizacion": "", "autorizado_por": "",
+                    "observaciones": f"{historial}\n{marca}".strip(), "fecha_actualizacion": ahora,
+                })
+                _contable_upsert_dataframe(
+                    CONTABLE_PERIODOS_PATH, PERIODO_CONTABLE_COLUMNAS, pd.DataFrame([periodo_contable]),
+                )
+                registrar_actividad("reabrir", "periodo_contable", periodo_contable["id"], f"{cliente} · {periodo}")
+                st.success("Período reabierto. Los asientos volvieron a Borrador.")
+                st.rerun()
+            return
 
-    if seccion == "Revisar y autorizar mes":
-        st.markdown("#### Revisión y autorización")
+        st.caption("Revisá los controles. Al autorizar, el mes queda bloqueado y pasa a integrar los reportes definitivos.")
         if not cuentas.empty:
             with st.expander("Agregar asiento de apertura o ajuste manual", expanded=False):
                 codigos_cuentas = cuentas[
@@ -17726,13 +17745,50 @@ def render_contabilidad(cliente_fijo="", modo="admin"):
             operaciones_sin_revisar = operaciones_mes[
                 ~operaciones_mes["estado_revision"].astype(str).eq("Aprobada")
             ] if not operaciones_mes.empty else operaciones_mes
+            bancos_pendientes = bancos[
+                ~bancos["conciliado"].astype(str).apply(valor_si)
+            ] if not bancos.empty else bancos
+            bancos_configurados = cuentas[
+                cuentas["activa"].astype(str).apply(valor_si)
+                & cuentas["uso_automatico"].astype(str).eq("Banco")
+                & cuentas["clave_origen"].astype(str).str.strip().ne("")
+            ] if not cuentas.empty else cuentas
+            registro_fiscal = cargar_periodo_fiscal(cliente, periodo)
+            periodo_fiscal_id = registro_fiscal.get("id", "")
+            requiere_iva = str(perfil_fiscal.get("condicion_iva", "")).strip() == "Responsable inscripto"
+            requiere_iibb = str(perfil_fiscal.get("iibb_regimen", "")).strip() not in ["", "Exento"]
+            iva_listo = (not requiere_iva) or bool(ultimo_papel_autorizado(periodo_fiscal_id, cliente, "IVA"))
+            iibb_listo = (not requiere_iibb) or bool(ultimo_papel_autorizado(periodo_fiscal_id, cliente, "IIBB"))
+            asientos_balanceados = not borradores.empty and all(
+                bool(totales.get(aid, False)) for aid in borradores["id"].astype(str)
+            )
+            confirmar_sin_banco = True
+            if not bancos_configurados.empty and bancos.empty:
+                confirmar_sin_banco = st.checkbox(
+                    "Confirmo que el período no tuvo movimientos bancarios para importar",
+                    key=f"sin_banco_{cliente}_{periodo}",
+                )
+            banco_listo = bancos_pendientes.empty and confirmar_sin_banco
+            controles_cierre = pd.DataFrame([
+                {"Control": "Plan de cuentas", "Estado": "Listo" if not cuentas.empty else "Pendiente", "Detalle": f"{len(cuentas)} cuentas" if not cuentas.empty else "Crear el plan base"},
+                {"Control": "Operaciones del cliente", "Estado": "Listo" if operaciones_sin_revisar.empty else "Pendiente", "Detalle": f"{len(operaciones_sin_revisar)} sin revisar"},
+                {"Control": "Asientos balanceados", "Estado": "Listo" if asientos_balanceados else "Pendiente", "Detalle": f"{len(borradores)} borradores"},
+                {"Control": "IVA", "Estado": "Listo" if iva_listo else "Pendiente", "Detalle": "Papel autorizado" if requiere_iva else "No requerido por la ficha fiscal"},
+                {"Control": "Ingresos Brutos", "Estado": "Listo" if iibb_listo else "Pendiente", "Detalle": "Papel autorizado" if requiere_iibb else "No requerido por la ficha fiscal"},
+                {"Control": "Conciliación bancaria", "Estado": "Listo" if banco_listo else "Pendiente", "Detalle": f"{len(bancos_pendientes)} movimientos pendientes" if not bancos.empty else ("Sin movimientos confirmado" if confirmar_sin_banco else "Confirmar ausencia de movimientos")},
+            ])
+            st.markdown("##### Controles previos")
+            st.dataframe(controles_cierre, hide_index=True, use_container_width=True)
             todos_balanceados = (
-                not borradores.empty
-                and operaciones_sin_revisar.empty
-                and all(totales.get(aid, False) for aid in borradores["id"].astype(str))
+                asientos_balanceados and operaciones_sin_revisar.empty
+                and iva_listo and iibb_listo and banco_listo
             )
             if not operaciones_sin_revisar.empty:
                 st.warning(f"Hay {len(operaciones_sin_revisar)} operación(es) del cliente pendientes u observadas. Revisalas antes de autorizar el mes.")
+            observaciones_cierre = st.text_area(
+                "Observaciones del cierre", value=str(periodo_contable.get("observaciones", "")),
+                key=f"observaciones_cierre_{cliente}_{periodo}",
+            )
             st.caption("Autorizar convierte todos los borradores balanceados del período en asientos definitivos y deja registro del usuario y fecha.")
             if st.button("Autorizar período", type="primary", disabled=not todos_balanceados):
                 ahora = _fiscal_timestamp()
@@ -17743,9 +17799,11 @@ def render_contabilidad(cliente_fijo="", modo="admin"):
                 _contable_upsert_dataframe(CONTABLE_ASIENTOS_PATH, ASIENTO_COLUMNAS, actualizados)
                 periodo_contable.update({
                     "estado": "Autorizado", "fecha_autorizacion": ahora,
-                    "autorizado_por": st.session_state.get("username", ""), "fecha_actualizacion": ahora,
+                    "autorizado_por": st.session_state.get("username", ""),
+                    "observaciones": observaciones_cierre, "fecha_actualizacion": ahora,
                 })
                 _contable_upsert_dataframe(CONTABLE_PERIODOS_PATH, PERIODO_CONTABLE_COLUMNAS, pd.DataFrame([periodo_contable]))
+                registrar_actividad("autorizar", "periodo_contable", periodo_contable["id"], f"{cliente} · {periodo}")
                 st.success("Período autorizado. Los asientos ya integran los reportes definitivos.")
                 st.rerun()
 
@@ -17755,7 +17813,7 @@ def render_contabilidad(cliente_fijo="", modo="admin"):
             "Alcance", ["Mes seleccionado", "Ejercicio completo"], horizontal=True,
             key=f"alcance_reporte_{cliente}_{ejercicio_num}_{periodo}",
         )
-        incluir_borradores = st.checkbox("Incluir borradores", value=True)
+        incluir_borradores = st.checkbox("Incluir borradores (reporte provisorio)", value=False)
         if alcance_reporte == "Ejercicio completo":
             asientos_base, lineas_base = _contable_datos_ejercicio(cliente, periodos_ejercicio)
             etiqueta_reporte = f"ejercicio_{ejercicio_num}"
@@ -17786,6 +17844,14 @@ def render_contabilidad(cliente_fijo="", modo="admin"):
                     left_on="asiento_id", right_on="id", how="left",
                 )
                 st.dataframe(diario[["fecha", "descripcion", "cuenta_codigo", "cuenta_nombre", "debe", "haber", "estado"]], hide_index=True, use_container_width=True)
+            mayor = libro_mayor(lineas_reporte, asientos_reporte)
+            with st.expander("Libro Mayor"):
+                st.dataframe(mayor, hide_index=True, use_container_width=True)
+                st.download_button(
+                    "Descargar Libro Mayor", mayor.to_csv(index=False).encode("utf-8-sig"),
+                    file_name=f"libro_mayor_{cliente}_{etiqueta_reporte}.csv".replace(" ", "_"),
+                    mime="text/csv", key=f"descargar_mayor_{cliente}_{etiqueta_reporte}",
+                )
 
 
 def _cargar_fuente_libro_iva(documentos, periodo_id, periodo):
