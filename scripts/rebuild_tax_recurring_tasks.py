@@ -190,6 +190,12 @@ def build_tasks() -> list[dict]:
         )
 
     iva = [
+        ("Ian Cittadini", "20-37204125-1", "2026-11-19"),
+        ("Luciano Arleo", "20-37895606-5", "2026-11-21"),
+        ("Gus Villalobo Mallo", "20-18138928-2", "2026-11-20"),
+        ("Vero Villalobo Mallo", "27-21644470-7", "2026-11-24"),
+        ("Barbie Villalobo Mallo", "27-40884711-2", "2026-11-20"),
+        ("Online Mami", "27-38401935-3", "2026-11-20"),
         ("CASA DESER SRL", "30-71893522-5", "2026-10-21"),
         ("Matías Ojeda", "20-35656955-6", "2026-10-22"),
         ("Verónica Martínez", "27-36806250-8", "2026-10-23"),
