@@ -83,8 +83,8 @@ def build_rows() -> list[dict]:
         task_values(
             "Alejandro Vera",
             "IVA",
-            "2026-10-21",
-            "Régimen fiscal: IVA. CUIT: 20-16336071-4. Período: septiembre 2026.",
+            "2026-11-19",
+            "Régimen fiscal: IVA. CUIT: 20-16336071-4. Período: octubre 2026.",
         ),
         task_values(
             "Alejandro Vera",
