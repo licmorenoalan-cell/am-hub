@@ -22,7 +22,7 @@ PERSONAS = (
     ("Adriana Dominguez", "Adriana Dominguez", "23-14271037-4"),
     ("Joaquín Mengide", "Joaquín Mengide", "23-34037156-9"),
     ("Juan Mallo", "Juan Mallo", "20-41824832-8"),
-    ("Leslie Vera", "Leslie Vera", "27-38157776-1"),
+    ("Leslie Vera", "Leslie Vera", "27-38157761-4"),
     ("Martina Peirano", "Martina Peirano", "27-38992790-8"),
     ("Mica Verta", "Mica Verta", "27-38657949-6"),
     ("Micaela Alegre", "Micaela Alegre", "27-42315458-1"),

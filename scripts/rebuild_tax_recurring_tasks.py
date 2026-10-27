@@ -98,12 +98,14 @@ def build_tasks() -> list[dict]:
         ("Gus Villalobo Mallo", "Gus Villalobo Mallo"),
         ("Nico SAS", "Nico SAS"),
         ("HYDROTEK SRL", "Jhony Hydrotek"),
+        ("Alejandro Vera", "Alejandro Vera"),
         ("Matías Ojeda", "Matías Ojeda"),
         ("Verónica Martínez", "Verónica Martínez"),
         ("Socios SAS", "Socios SAS"),
         ("SMPA / KM146", "Marcos — SMPA SAS"),
     ]
     autonomos_cuits = {
+        "Alejandro Vera": "20-16336071-4",
         "Matías Ojeda": "20-35656955-6",
         "Verónica Martínez": "27-36806250-8",
     }
@@ -138,7 +140,7 @@ def build_tasks() -> list[dict]:
         ("Natalia Gena", "Natalia Gena", ""),
         ("Martina Peirano", "Martina Peirano", "27-38992790-8"),
         ("Abril Larreta", "Abril Larreta", "27-44998850-2"),
-        ("Leslie Vera", "Leslie Vera", "27-38157776-1"),
+        ("Leslie Vera", "Leslie Vera", "27-38157761-4"),
         ("Adriana Dominguez", "Adriana Dominguez", "23-14271037-4"),
         ("Mica Verta", "Mica Verta", "27-38657949-6"),
         ("Micaela Alegre", "Micaela Alegre", "27-42315458-1"),
