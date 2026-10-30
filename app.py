@@ -3251,9 +3251,17 @@ def clientes_visibles_para_usuario():
 
     if role == "contador":
         contables = clientes_df[
-            clientes_df.get("servicio_contabilidad", pd.Series("No", index=clientes_df.index)).apply(valor_si)
+            clientes_df.get(
+                "servicio_contabilidad",
+                pd.Series("No", index=clientes_df.index),
+            ).apply(valor_si)
         ]
-        return sorted(contables["cliente"].dropna().astype(str).unique().tolist())
+        asignaciones = cargar_asignaciones_equipo()
+        return clientes_asignados_activos(
+            asignaciones,
+            username,
+            contables["cliente"].dropna().astype(str).tolist(),
+        )
 
     if role == "cliente":
         cliente_actual = st.session_state.get("cliente", "")
