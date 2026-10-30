@@ -11,12 +11,17 @@ import argparse
 from datetime import datetime
 import hashlib
 from pathlib import Path
+import sys
 
 from sqlalchemy import create_engine, text
 import toml
 
-
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+
+from am_hub_accounting import CUENTA_COLUMNAS, plan_cuentas_inicial
+
+
 USERNAME = "contador.am"
 UPDATED_BY = "Codex / Alan Moreno"
 
@@ -334,6 +339,29 @@ def split_smpa_km146_tasks(conn) -> None:
     )
 
 
+def ensure_base_chart_of_accounts(conn, client: str) -> None:
+    exists = conn.execute(
+        text(
+            'SELECT 1 FROM "contable_cuentas" '
+            'WHERE lower("cliente")=lower(:cliente) LIMIT 1'
+        ),
+        {"cliente": client},
+    ).first()
+    if exists:
+        return
+    rows = plan_cuentas_inicial(client, USERNAME).to_dict("records")
+    conn.execute(
+        text(
+            'INSERT INTO "contable_cuentas" ('
+            + ", ".join(f'"{column}"' for column in CUENTA_COLUMNAS)
+            + ") VALUES ("
+            + ", ".join(f":{column}" for column in CUENTA_COLUMNAS)
+            + ")"
+        ),
+        rows,
+    )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--apply", action="store_true")
@@ -366,6 +394,7 @@ def main() -> None:
         for row in SOCIETIES:
             ensure_client(conn, row)
             upsert_fiscal_profile(conn, row)
+            ensure_base_chart_of_accounts(conn, row["cliente"])
         replace_assignments(conn)
         split_smpa_km146_tasks(conn)
     print("Sincronización completada.")

@@ -3403,6 +3403,76 @@ def guardar_idioma_usuario(username: str, idioma: str):
     save_users_df(usuarios)
 
 
+CONTABLE_SECCIONES = [
+    "Resumen",
+    "Operaciones cliente",
+    "Ejercicio",
+    "Preparar asientos",
+    "Conciliación bancaria",
+    "Cierre mensual",
+    "Reportes",
+]
+
+GESTION_CONTABLE_SECCIONES_CLIENTE = [
+    "Resumen",
+    "Registrar operación",
+    "Corregir observadas",
+    "Clientes y proveedores",
+    "Documentación",
+]
+
+GESTION_CONTABLE_SECCIONES_EQUIPO = [
+    *GESTION_CONTABLE_SECCIONES_CLIENTE,
+    "Revisión AM",
+    "Configuración",
+]
+
+
+def render_submenu_contable_sidebar(menu, role):
+    """Muestra la navegación contable debajo del módulo activo."""
+    if menu == "Contabilidad":
+        st.sidebar.markdown("#### Contabilidad")
+        if st.session_state.get("contable_seccion_sidebar") not in CONTABLE_SECCIONES:
+            st.session_state["contable_seccion_sidebar"] = "Resumen"
+        seccion = st.sidebar.radio(
+            "Sección contable",
+            CONTABLE_SECCIONES,
+            format_func=ui,
+            key="contable_seccion_sidebar",
+            label_visibility="collapsed",
+        )
+        if seccion == "Operaciones cliente":
+            opciones = GESTION_CONTABLE_SECCIONES_EQUIPO
+            if st.session_state.get("contable_operaciones_seccion_sidebar") not in opciones:
+                st.session_state["contable_operaciones_seccion_sidebar"] = "Resumen"
+            st.sidebar.caption("OPERACIONES DEL CLIENTE")
+            st.sidebar.radio(
+                "Operaciones del cliente",
+                opciones,
+                format_func=ui,
+                key="contable_operaciones_seccion_sidebar",
+                label_visibility="collapsed",
+            )
+        return
+
+    if menu == "Gestión contable":
+        opciones = (
+            GESTION_CONTABLE_SECCIONES_CLIENTE
+            if role == "cliente"
+            else GESTION_CONTABLE_SECCIONES_EQUIPO
+        )
+        if st.session_state.get("gestion_contable_seccion_sidebar") not in opciones:
+            st.session_state["gestion_contable_seccion_sidebar"] = "Resumen"
+        st.sidebar.markdown("#### Gestión contable")
+        st.sidebar.radio(
+            "Gestión contable",
+            opciones,
+            format_func=ui,
+            key="gestion_contable_seccion_sidebar",
+            label_visibility="collapsed",
+        )
+
+
 def sidebar():
     logo_path = ASSETS_DIR / "isologo_sidebar_limpio.png"
     if not logo_path.exists():
@@ -3559,6 +3629,8 @@ def sidebar():
                 format_func=ui,
                 key="menu_equipo_cliente",
             )
+
+    render_submenu_contable_sidebar(menu, role)
 
     st.sidebar.markdown("<div style='height: 34px;'></div>", unsafe_allow_html=True)
     st.sidebar.markdown("---")
@@ -17142,7 +17214,12 @@ def _render_configuracion_gestion(cliente):
         st.rerun()
 
 
-def render_gestion_contable_cliente(cliente, modo="cliente", mostrar_header=True):
+def render_gestion_contable_cliente(
+    cliente,
+    modo="cliente",
+    mostrar_header=True,
+    seccion_fija="",
+):
     if mostrar_header:
         header("Gestión contable", "Operaciones diarias y documentación para la contabilidad")
     asegurar_tablas_contables()
@@ -17156,12 +17233,17 @@ def render_gestion_contable_cliente(cliente, modo="cliente", mostrar_header=True
     opciones = ["Resumen", "Registrar operación", "Clientes y proveedores", "Documentación"]
     if not observadas_cliente.empty:
         opciones.insert(2, "Corregir observadas")
+    elif seccion_fija == "Corregir observadas":
+        opciones.insert(2, "Corregir observadas")
     if es_equipo:
         opciones += ["Revisión AM", "Configuración"]
-    seccion = st.radio(
-        "Gestión", opciones, horizontal=True, label_visibility="collapsed",
-        key=f"gestion_cliente_{cliente}_{modo}",
-    )
+    if seccion_fija in opciones:
+        seccion = seccion_fija
+    else:
+        seccion = st.radio(
+            "Gestión", opciones, horizontal=True, label_visibility="collapsed",
+            key=f"gestion_cliente_{cliente}_{modo}",
+        )
 
     if seccion == "Resumen":
         pendientes = operaciones[operaciones["estado_revision"].astype(str).eq("Pendiente de revisión")] if not operaciones.empty else operaciones
@@ -17615,11 +17697,17 @@ def render_contabilidad(cliente_fijo="", modo="admin"):
         bancos = _contable_cargar(CONTABLE_BANCOS_PATH, BANCO_MOVIMIENTO_COLUMNAS, cliente, periodo)
         sueldos = _contable_cargar(CONTABLE_SUELDOS_PATH, SUELDO_COLUMNAS, cliente, periodo)
 
-    seccion = st.radio(
-        "Sección contable",
-        ["Resumen", "Operaciones cliente", "Ejercicio", "Preparar asientos", "Conciliación bancaria", "Cierre mensual", "Reportes"],
-        horizontal=True, label_visibility="collapsed", key=f"contable_seccion_{cliente}_{periodo}",
-    )
+    seccion_sidebar = st.session_state.get("contable_seccion_sidebar", "")
+    if seccion_sidebar in CONTABLE_SECCIONES:
+        seccion = seccion_sidebar
+    else:
+        seccion = st.radio(
+            "Sección contable",
+            CONTABLE_SECCIONES,
+            horizontal=True,
+            label_visibility="collapsed",
+            key=f"contable_seccion_{cliente}_{periodo}",
+        )
     ejercicio_cerrado = str(ejercicio_contable.get("estado", "")) == "Cerrado"
     periodo_autorizado = str(periodo_contable.get("estado", "")) == "Autorizado"
     if ejercicio_cerrado and seccion in ["Preparar asientos", "Conciliación bancaria", "Cierre mensual"]:
@@ -17656,9 +17744,33 @@ def render_contabilidad(cliente_fijo="", modo="admin"):
             "Circuito: las liquidaciones autorizadas generan borradores. Cuando terminaste de revisar el mes, "
             "abrí Revisar y autorizar mes para convertirlos en contabilidad definitiva."
         )
+        if st.session_state.get("role") == "contador":
+            with st.expander("Guía de prueba para el contador", expanded=True):
+                st.markdown(
+                    """
+                    1. Revisá la **Ficha cliente** y adecuá el plan de cuentas.
+                    2. Registrá una operación con respaldo desde **Operaciones cliente**.
+                    3. Generá los borradores fiscales desde **Preparar asientos**.
+                    4. Importá un extracto y probá las propuestas de **Conciliación bancaria**.
+                    5. Controlá debe/haber y autorizá el período desde **Cierre mensual**.
+                    6. Validá libro diario, mayor, sumas y saldos y reportes del ejercicio.
+
+                    Para la devolución, indicá qué dato falta, qué paso resulta confuso,
+                    qué asiento debería generarse distinto y qué reporte necesitás para
+                    confeccionar balance y Ganancias.
+                    """
+                )
 
     if seccion == "Operaciones cliente":
-        render_gestion_contable_cliente(cliente, modo="equipo", mostrar_header=False)
+        render_gestion_contable_cliente(
+            cliente,
+            modo="equipo",
+            mostrar_header=False,
+            seccion_fija=st.session_state.get(
+                "contable_operaciones_seccion_sidebar",
+                "",
+            ),
+        )
 
     if seccion == "Ejercicio":
         st.markdown(f"#### Ejercicio {ejercicio_num}")
@@ -19381,7 +19493,14 @@ def main():
         elif menu == "Impuestos":
             render_impuestos_cliente(cliente)
         elif menu == "Gestión contable":
-            render_gestion_contable_cliente(cliente, modo="cliente")
+            render_gestion_contable_cliente(
+                cliente,
+                modo="cliente",
+                seccion_fija=st.session_state.get(
+                    "gestion_contable_seccion_sidebar",
+                    "",
+                ),
+            )
 
     else:
         role_actual = st.session_state.get("role", "")
