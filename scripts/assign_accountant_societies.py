@@ -48,6 +48,19 @@ SOCIETIES = [
         "observaciones": "En facturación se identifica como Cooperativa 3C3T.",
     },
     {
+        "cliente": "COOPERATIVA INSTITUTO BUENOS AIRES",
+        "razon_social": "COOPERATIVA DE SERVICIOS PARA DOCENTES INSTITUTO BUENOS AIRES",
+        "cuit": "33-58243684-9",
+        "condicion_iva": "Responsable inscripto",
+        "iibb_regimen": "",
+        "iibb_jurisdiccion": "",
+        "email_destinatarios": "",
+        "observaciones": (
+            "En facturación se identifica como Instituto Buenos Aires. "
+            "Régimen y jurisdicción de IIBB pendientes de validar con constancia."
+        ),
+    },
+    {
         "cliente": "EXPRESO RDA SAS",
         "razon_social": "EXPRESO RDA SAS",
         "cuit": "30-71961601-8",
