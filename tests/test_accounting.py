@@ -6,6 +6,7 @@ from am_hub_accounting import (
     ASIENTO_LINEA_COLUMNAS,
     balance_sumas_saldos,
     crear_asiento_manual,
+    filtrar_comprobantes_ya_registrados,
     generar_asiento_banco,
     generar_asiento_operacion,
     generar_asiento_sueldos,
@@ -19,6 +20,27 @@ from am_hub_accounting import (
 
 
 class AccountingTests(unittest.TestCase):
+    def test_comprobante_arca_se_omite_solo_si_coincide_con_operacion(self):
+        movimientos = pd.DataFrame([
+            {
+                "id": "V1", "clase": "emitido", "cuit_contraparte": "30-12345678-9",
+                "punto_venta": "00001", "numero": "00000025",
+            },
+            {
+                "id": "V2", "clase": "emitido", "cuit_contraparte": "30-12345678-9",
+                "punto_venta": "1", "numero": "26",
+            },
+        ])
+        operaciones = pd.DataFrame([{
+            "tipo_operacion": "Venta", "tercero_cuit": "30123456789",
+            "punto_venta": "1", "numero": "25",
+        }])
+        pendientes, omitidos = filtrar_comprobantes_ya_registrados(
+            movimientos, operaciones,
+        )
+        self.assertEqual(omitidos, 1)
+        self.assertEqual(pendientes["id"].tolist(), ["V2"])
+
     def test_plan_base_incluye_usos_automaticos_editables(self):
         plan = plan_cuentas_inicial("Cliente prueba", "admin")
         banco = plan[plan["codigo"].eq("1.1.02")].iloc[0]

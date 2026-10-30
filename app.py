@@ -75,6 +75,7 @@ from am_hub_accounting import (
     generar_asiento_sueldos,
     generar_asientos_comprobantes,
     generar_asientos_impuestos,
+    filtrar_comprobantes_ya_registrados,
     extraer_totales_f931,
     parsear_extracto_bancario,
     plan_cuentas_inicial,
@@ -3427,6 +3428,19 @@ GESTION_CONTABLE_SECCIONES_EQUIPO = [
     "Configuración",
 ]
 
+FISCAL_SECCIONES = [
+    "Expediente",
+    "Documentación",
+    "Papel de trabajo",
+    "Cierre mensual",
+]
+
+FISCAL_PAPEL_SECCIONES = [
+    "IVA",
+    "Ingresos Brutos",
+    "Revisar y autorizar",
+]
+
 
 def render_submenu_contable_sidebar(menu, role):
     """Muestra la navegación contable debajo del módulo activo."""
@@ -3471,6 +3485,30 @@ def render_submenu_contable_sidebar(menu, role):
             key="gestion_contable_seccion_sidebar",
             label_visibility="collapsed",
         )
+        return
+
+    if menu == "Liquidaciones":
+        if st.session_state.get("fiscal_seccion_sidebar") not in FISCAL_SECCIONES:
+            st.session_state["fiscal_seccion_sidebar"] = "Expediente"
+        st.sidebar.markdown("#### Liquidaciones")
+        seccion = st.sidebar.radio(
+            "Sección fiscal",
+            FISCAL_SECCIONES,
+            format_func=ui,
+            key="fiscal_seccion_sidebar",
+            label_visibility="collapsed",
+        )
+        if seccion == "Papel de trabajo":
+            if st.session_state.get("fiscal_papel_seccion_sidebar") not in FISCAL_PAPEL_SECCIONES:
+                st.session_state["fiscal_papel_seccion_sidebar"] = "IVA"
+            st.sidebar.caption("IMPUESTO")
+            st.sidebar.radio(
+                "Impuesto",
+                FISCAL_PAPEL_SECCIONES,
+                format_func=ui,
+                key="fiscal_papel_seccion_sidebar",
+                label_visibility="collapsed",
+            )
 
 
 def sidebar():
@@ -3572,15 +3610,39 @@ def sidebar():
             st.sidebar.warning("No hay clientes con servicio contable activo.")
             menu = "Sin clientes asignados"
         else:
+            clientes_contables = sorted(
+                clientes_contables,
+                key=lambda valor: (
+                    0 if str(valor) == "DEMO — Contabilidad" else 1,
+                    str(valor).casefold(),
+                ),
+            )
+            if (
+                "DEMO — Contabilidad" in clientes_contables
+                and not st.session_state.get("contador_demo_default_applied")
+            ):
+                st.session_state["cliente_equipo_activo"] = "DEMO — Contabilidad"
+                st.session_state["contador_demo_default_applied"] = True
             cliente_contador = st.sidebar.selectbox(
-                "Cliente contable", clientes_contables, key="cliente_equipo_activo",
+                "Cliente contable",
+                clientes_contables,
+                format_func=lambda valor: (
+                    "🧪 EMPRESA MODELO SRL — entorno de prueba"
+                    if str(valor) == "DEMO — Contabilidad"
+                    else str(valor)
+                ),
+                key="cliente_equipo_activo",
             )
             st.session_state["cliente_equipo_visible"] = cliente_contador
             st.sidebar.markdown(
                 f"**Cliente activo:** {html.escape(str(cliente_contador))}"
             )
+            opciones_contador = ["Ficha cliente", "Liquidaciones", "Contabilidad"]
+            destino_contador = st.session_state.pop("menu_contador_destino", None)
+            if destino_contador in opciones_contador:
+                st.session_state["menu_contador"] = destino_contador
             menu = st.sidebar.radio(
-                "Contabilidad", ["Ficha cliente", "Liquidaciones", "Contabilidad"],
+                "Contabilidad", opciones_contador,
                 key="menu_contador",
             )
     else:
@@ -3623,9 +3685,13 @@ def sidebar():
                 unsafe_allow_html=True,
             )
 
+            opciones_equipo = menu_por_servicios_cliente_para_equipo(cliente_equipo)
+            destino_equipo = st.session_state.pop("menu_equipo_destino", None)
+            if destino_equipo in opciones_equipo:
+                st.session_state["menu_equipo_cliente"] = destino_equipo
             menu = st.sidebar.radio(
                 ui("Portal del cliente"),
-                menu_por_servicios_cliente_para_equipo(cliente_equipo),
+                opciones_equipo,
                 format_func=ui,
                 key="menu_equipo_cliente",
             )
@@ -16631,23 +16697,23 @@ def _sincronizar_asientos_comprobantes(cliente, periodo, periodo_id):
     comprobantes = movimientos[
         movimientos.get("clase", pd.Series(dtype=str)).astype(str).isin(["emitido", "recibido"])
     ] if not movimientos.empty else movimientos
-    if comprobantes.empty:
-        return 0
     operaciones_diarias = _contable_cargar(
         CONTABLE_OPERACIONES_PATH, OPERACION_COLUMNAS, cliente, periodo,
     )
-    if not operaciones_diarias.empty:
-        # Cuando el cliente lleva gestión diaria, ARCA es fuente de control y no
-        # debe duplicar los asientos ya originados por Ventas/Compras.
-        _contable_eliminar_borradores_generados(cliente, periodo, ["Comprobante fiscal"])
-        return -len(comprobantes)
+    comprobantes_pendientes, omitidos = filtrar_comprobantes_ya_registrados(
+        comprobantes, operaciones_diarias,
+    )
+    # Los borradores importados son reconstruibles. Se regeneran sólo con los
+    # comprobantes que todavía no tienen una operación diaria equivalente.
+    _contable_eliminar_borradores_generados(cliente, periodo, ["Comprobante fiscal"])
+    if comprobantes_pendientes.empty:
+        return -omitidos if omitidos else 0
     cuentas = _contable_cargar(CONTABLE_CUENTAS_PATH, CUENTA_COLUMNAS, cliente)
     if cuentas.empty:
         cuentas = plan_cuentas_inicial(cliente, st.session_state.get("username", ""))
         _contable_upsert_dataframe(CONTABLE_CUENTAS_PATH, CUENTA_COLUMNAS, cuentas)
-    _contable_eliminar_borradores_generados(cliente, periodo, ["Comprobante fiscal"])
     cabeceras, lineas = generar_asientos_comprobantes(
-        comprobantes, cliente, periodo, st.session_state.get("username", ""),
+        comprobantes_pendientes, cliente, periodo, st.session_state.get("username", ""),
     )
     lineas = _aplicar_mapeo_contable(lineas, cuentas)
     return _contable_guardar_asientos(cabeceras, lineas)
@@ -17165,10 +17231,6 @@ def _asegurar_plan_cliente(cliente):
 
 
 def _guardar_operacion_y_asiento(operacion, cuentas):
-    _contable_eliminar_borradores_generados(
-        operacion.get("cliente", ""), operacion.get("periodo", ""),
-        ["Comprobante fiscal"],
-    )
     cabecera, lineas = generar_asiento_operacion(
         operacion, st.session_state.get("username", ""),
     )
@@ -17177,6 +17239,14 @@ def _guardar_operacion_y_asiento(operacion, cuentas):
     operacion["asiento_id"] = cabecera["id"]
     _contable_upsert_dataframe(
         CONTABLE_OPERACIONES_PATH, OPERACION_COLUMNAS, pd.DataFrame([operacion]),
+    )
+    # Una operación identificada reemplaza sólo a su comprobante ARCA; los
+    # demás comprobantes importados deben conservar su borrador contable.
+    _sincronizar_asientos_comprobantes(
+        operacion.get("cliente", ""), operacion.get("periodo", ""),
+        id_periodo_fiscal(
+            operacion.get("cliente", ""), operacion.get("periodo", ""),
+        ),
     )
     return cabecera["id"]
 
@@ -17740,27 +17810,6 @@ def render_contabilidad(cliente_fijo="", modo="admin"):
             {"Etapa": "Cierre mensual", "Estado": periodo_contable.get("estado", "Abierto")},
         ])
         st.dataframe(pasos, hide_index=True, use_container_width=True)
-        st.info(
-            "Circuito: las liquidaciones autorizadas generan borradores. Cuando terminaste de revisar el mes, "
-            "abrí Revisar y autorizar mes para convertirlos en contabilidad definitiva."
-        )
-        if st.session_state.get("role") == "contador":
-            with st.expander("Guía de prueba para el contador", expanded=True):
-                st.markdown(
-                    """
-                    1. Revisá la **Ficha cliente** y adecuá el plan de cuentas.
-                    2. Registrá una operación con respaldo desde **Operaciones cliente**.
-                    3. Generá los borradores fiscales desde **Preparar asientos**.
-                    4. Importá un extracto y probá las propuestas de **Conciliación bancaria**.
-                    5. Controlá debe/haber y autorizá el período desde **Cierre mensual**.
-                    6. Validá libro diario, mayor, sumas y saldos y reportes del ejercicio.
-
-                    Para la devolución, indicá qué dato falta, qué paso resulta confuso,
-                    qué asiento debería generarse distinto y qué reporte necesitás para
-                    confeccionar balance y Ganancias.
-                    """
-                )
-
     if seccion == "Operaciones cliente":
         render_gestion_contable_cliente(
             cliente,
@@ -17900,8 +17949,21 @@ def render_contabilidad(cliente_fijo="", modo="admin"):
             movimientos_fiscales = _cargar_tabla_fiscal(
                 FISCAL_MOVIMIENTOS_PATH, MOVIMIENTO_COLUMNAS, cliente, registro_fiscal.get("id", ""),
             )
+            comprobantes_fiscales = movimientos_fiscales[
+                movimientos_fiscales.get("clase", pd.Series(dtype=str)).astype(str).isin(
+                    ["emitido", "recibido"]
+                )
+            ] if not movimientos_fiscales.empty else movimientos_fiscales
+            operaciones_diarias = _contable_cargar(
+                CONTABLE_OPERACIONES_PATH, OPERACION_COLUMNAS, cliente, periodo,
+            )
+            comprobantes_pendientes, comprobantes_controlados = (
+                filtrar_comprobantes_ya_registrados(
+                    comprobantes_fiscales, operaciones_diarias,
+                )
+            )
             g1, g2, g3 = st.columns(3)
-            g1.metric("Comprobantes disponibles", int(movimientos_fiscales["clase"].astype(str).isin(["emitido", "recibido"]).sum()) if not movimientos_fiscales.empty else 0)
+            g1.metric("Comprobantes por contabilizar", len(comprobantes_pendientes))
             g2.metric("Papel fiscal", "Calculado" if str(registro_fiscal.get("ventas_neto", "")).strip() else "Pendiente")
             g3.metric("Borradores actuales", int(asientos["estado"].astype(str).eq("Borrador").sum()) if not asientos.empty else 0)
             st.caption(
@@ -17911,12 +17973,17 @@ def render_contabilidad(cliente_fijo="", modo="admin"):
             a1, a2 = st.columns(2)
             a1.info("IVA: autorizado" if papel_iva_autorizado else "IVA: pendiente de autorización")
             a2.info("IIBB: autorizado" if papel_iibb_autorizado else "IIBB: pendiente de autorización")
+            if comprobantes_controlados:
+                st.caption(
+                    f"{comprobantes_controlados} comprobante(s) ya tienen una operación diaria equivalente; "
+                    "se usan para control y no vuelven a contabilizarse."
+                )
             if st.button("Generar o actualizar borradores", type="primary", disabled=movimientos_fiscales.empty):
                 _contable_eliminar_borradores_generados(
                     cliente, periodo, ["Comprobante fiscal", "Papel de trabajo fiscal"],
                 )
                 cab1, lin1 = generar_asientos_comprobantes(
-                    movimientos_fiscales, cliente, periodo, st.session_state.get("username", ""),
+                    comprobantes_pendientes, cliente, periodo, st.session_state.get("username", ""),
                 )
                 registro_contable = dict(registro_fiscal)
                 if not papel_iva_autorizado:
@@ -18685,13 +18752,6 @@ def render_liquidaciones_fiscales(cliente_fijo="", modo="admin"):
         st.caption("Estado")
         st.markdown(f"**{registro.get('estado') or 'Borrador'}** · {periodo}")
 
-    module_hero(
-        "Gestión impositiva",
-        "Impuestos al día",
-        f"Organizá el expediente fiscal de {cliente}, controlá documentación y seguí el período {periodo} de punta a punta.",
-        ["IVA", "Ingresos Brutos", "Documentación", "Vencimientos"],
-    )
-
     if usar_postgres():
         contexto_fiscal = cargar_contexto_fiscal_postgres_cacheado(
             cliente, periodo_id, periodo_aplicacion_cm05(periodo),
@@ -18721,13 +18781,17 @@ def render_liquidaciones_fiscales(cliente_fijo="", modo="admin"):
         cm05_disponible=not cm05_aplicable.empty,
     )
 
-    seccion_fiscal = st.radio(
-        "Sección",
-        ["Expediente", "Documentación", "Papel de trabajo", "Cierre mensual"],
-        horizontal=True,
-        label_visibility="collapsed",
-        key=f"fiscal_seccion_{cliente}_{periodo}",
-    )
+    seccion_sidebar = st.session_state.get("fiscal_seccion_sidebar", "")
+    if seccion_sidebar in FISCAL_SECCIONES:
+        seccion_fiscal = seccion_sidebar
+    else:
+        seccion_fiscal = st.radio(
+            "Sección",
+            FISCAL_SECCIONES,
+            horizontal=True,
+            label_visibility="collapsed",
+            key=f"fiscal_seccion_{cliente}_{periodo}",
+        )
     if not str(perfil.get("cuit", "")).strip():
         st.info("La ficha fiscal permanente está incompleta. Completala una sola vez desde el menú Ficha cliente.")
 
@@ -19015,16 +19079,17 @@ def render_liquidaciones_fiscales(cliente_fijo="", modo="admin"):
                 )
 
     if seccion_fiscal == "Papel de trabajo":
-        st.info(
-            "Guardá primero la liquidación de cada impuesto. Después entrá en Revisar y autorizar: "
-            "al autorizar una versión se genera automáticamente su asiento contable en borrador."
-        )
-        subseccion_papel = st.radio(
-            "Impuesto",
-            ["IVA", "Ingresos Brutos", "Revisar y autorizar"],
-            horizontal=True, label_visibility="collapsed",
-            key=f"fiscal_papel_subseccion_{periodo_id}",
-        )
+        papel_sidebar = st.session_state.get("fiscal_papel_seccion_sidebar", "")
+        if papel_sidebar in FISCAL_PAPEL_SECCIONES:
+            subseccion_papel = papel_sidebar
+        else:
+            subseccion_papel = st.radio(
+                "Impuesto",
+                FISCAL_PAPEL_SECCIONES,
+                horizontal=True,
+                label_visibility="collapsed",
+                key=f"fiscal_papel_subseccion_{periodo_id}",
+            )
         if subseccion_papel == "IVA":
             _render_papel_iva(cliente, periodo, periodo_id, registro, movimientos, documentos)
         elif subseccion_papel == "Ingresos Brutos":
@@ -19307,7 +19372,7 @@ def render_liquidaciones_fiscales(cliente_fijo="", modo="admin"):
                         "y cada jurisdicción con coeficiente debe tener alícuota."
                     )
             if (
-                st.session_state.get("role") in ["admin_general", "admin"]
+                st.session_state.get("role") in ["admin_general", "admin", "contador"]
                 and convenio_listo and expediente_listo and papeles_listos
             ):
                 estados += ["Confirmada", "Pendiente de pago", "Pagada"]
@@ -19369,6 +19434,24 @@ def render_liquidaciones_fiscales(cliente_fijo="", modo="admin"):
             c1.metric("Asientos del mes", len(asientos_mes))
             c2.metric("Borradores", len(borradores_mes))
             c3.metric("Desbalanceados", sum(not bool(mapa_balance.get(aid, False)) for aid in borradores_mes.get("id", pd.Series(dtype=str)).astype(str)))
+            if st.button(
+                "Abrir este período en Contabilidad",
+                use_container_width=True,
+                key=f"fiscal_abrir_contabilidad_{periodo_id}",
+            ):
+                role_actual = st.session_state.get("role", "")
+                menu_key = {
+                    "contador": "menu_contador_destino",
+                    "equipo": "menu_equipo_destino",
+                }.get(role_actual, "menu_admin_destino")
+                st.session_state[menu_key] = "Contabilidad"
+                st.session_state["contable_seccion_sidebar"] = "Cierre mensual"
+                ejercicio_destino = int(str(periodo)[:4])
+                st.session_state[f"contable_ejercicio_{cliente}"] = ejercicio_destino
+                st.session_state[
+                    f"contable_periodo_{cliente}_{ejercicio_destino}"
+                ] = periodo
+                st.rerun()
             if not operaciones_pendientes_cierre.empty:
                 st.warning(f"No se puede cerrar: hay {len(operaciones_pendientes_cierre)} operación(es) sin aprobación contable.")
             if st.button(

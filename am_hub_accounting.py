@@ -407,6 +407,70 @@ def generar_asientos_comprobantes(movimientos: pd.DataFrame, cliente: str,
     )
 
 
+def filtrar_comprobantes_ya_registrados(
+    movimientos: pd.DataFrame,
+    operaciones: pd.DataFrame,
+) -> tuple[pd.DataFrame, int]:
+    """Excluye comprobantes ARCA ya asentados desde la gestión diaria.
+
+    La identidad utiliza sentido, CUIT, punto de venta y número. Si falta
+    alguno de esos datos no se presume una coincidencia, para evitar ocultar
+    documentación fiscal válida.
+    """
+    if movimientos is None or movimientos.empty:
+        return pd.DataFrame(columns=getattr(movimientos, "columns", [])), 0
+    if operaciones is None or operaciones.empty:
+        return movimientos.copy(), 0
+
+    def solo_digitos(valor) -> str:
+        return re.sub(r"\D", "", str(valor or ""))
+
+    def numero_normalizado(valor) -> str:
+        digitos = solo_digitos(valor)
+        return digitos.lstrip("0") or ("0" if digitos else "")
+
+    def clave(sentido, cuit, punto_venta, numero):
+        valores = (
+            str(sentido),
+            solo_digitos(cuit),
+            numero_normalizado(punto_venta),
+            numero_normalizado(numero),
+        )
+        return valores if all(valores) else None
+
+    claves_operaciones = set()
+    for _, operacion in operaciones.iterrows():
+        if (
+            "asiento_id" in operaciones.columns
+            and not str(operacion.get("asiento_id", "")).strip()
+        ):
+            continue
+        tipo = str(operacion.get("tipo_operacion", ""))
+        sentido = "emitido" if tipo == "Venta" else (
+            "recibido" if tipo in {"Compra", "Gasto"} else ""
+        )
+        valor = clave(
+            sentido,
+            operacion.get("tercero_cuit", ""),
+            operacion.get("punto_venta", ""),
+            operacion.get("numero", ""),
+        )
+        if valor:
+            claves_operaciones.add(valor)
+
+    duplicados = []
+    for _, movimiento in movimientos.iterrows():
+        valor = clave(
+            movimiento.get("clase", ""),
+            movimiento.get("cuit_contraparte", ""),
+            movimiento.get("punto_venta", ""),
+            movimiento.get("numero", ""),
+        )
+        duplicados.append(bool(valor and valor in claves_operaciones))
+    mascara = pd.Series(duplicados, index=movimientos.index, dtype=bool)
+    return movimientos.loc[~mascara].copy(), int(mascara.sum())
+
+
 def generar_asientos_impuestos(registro: dict, cliente: str, periodo: str,
                                usuario: str = "") -> tuple[pd.DataFrame, pd.DataFrame]:
     """Genera liquidaciones mensuales de IVA e IIBB desde el papel guardado."""
