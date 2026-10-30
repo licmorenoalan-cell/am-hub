@@ -24,6 +24,7 @@ from am_hub_accounting import CUENTA_COLUMNAS, plan_cuentas_inicial
 
 USERNAME = "contador.am"
 UPDATED_BY = "Codex / Alan Moreno"
+PILOT_CLIENTS = ["DEMO — Contabilidad"]
 
 
 def database_url() -> str:
@@ -287,11 +288,12 @@ def replace_assignments(conn) -> None:
         ),
         {"username": USERNAME},
     )
-    for row in SOCIETIES:
+    assigned_clients = [row["cliente"] for row in SOCIETIES] + PILOT_CLIENTS
+    for client in assigned_clients:
         values = {
-            "id": stable_id("ASG", f"{USERNAME}:{row['cliente']}"),
+            "id": stable_id("ASG", f"{USERNAME}:{client}"),
             "username": USERNAME,
-            "cliente": row["cliente"],
+            "cliente": client,
         }
         existing = conn.execute(
             text(
@@ -371,6 +373,8 @@ def main() -> None:
     print(f"Sociedades: {len(SOCIETIES)}")
     for row in SOCIETIES:
         print(f"- {row['cliente']} | CUIT {row['cuit'] or 'pendiente'}")
+    for client in PILOT_CLIENTS:
+        print(f"- {client} | entorno de prueba")
     if not args.apply:
         print("Vista previa: ejecute con --apply para persistir.")
         return
