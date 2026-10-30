@@ -75,13 +75,23 @@ from am_hub_accounting import (
     generar_asiento_sueldos,
     generar_asientos_comprobantes,
     generar_asientos_impuestos,
-    filtrar_comprobantes_ya_registrados,
     extraer_totales_f931,
     parsear_extracto_bancario,
     plan_cuentas_inicial,
     proponer_conciliacion_bancaria,
     validar_asientos,
 )
+
+# Compatibilidad durante despliegues de Streamlit: app.py y el motor pueden
+# quedar unos segundos en revisiones distintas mientras se reinicia el worker.
+try:
+    from am_hub_accounting import filtrar_comprobantes_ya_registrados
+except ImportError:
+    def filtrar_comprobantes_ya_registrados(movimientos, operaciones):
+        """Fallback conservador: nunca oculta comprobantes ante un deploy parcial."""
+        if movimientos is None:
+            return pd.DataFrame(), 0
+        return movimientos.copy(), 0
 
 
 def current_language() -> str:
