@@ -217,7 +217,52 @@ class FiscalCalendarTests(unittest.TestCase):
             with redirect_stdout(io.StringIO()) as output:
                 result=announce_release('app.py')
         self.assertEqual(result['revision'],'a'*40)
-        self.assertEqual(result['calendar_entries'],68)
+        self.assertEqual(result['calendar_entries'],69)
         self.assertEqual(len(result['fingerprint']),64)
         self.assertNotIn('DATABASE',output.getvalue())
         announce_release.cache_clear()
+
+
+class RecategorizationSemesterTests(unittest.TestCase):
+    def task(self, digit=None):
+        values=dict(impuesto='MONOTRIBUTO',obligacion='RECATEGORIZACION',jurisdiccion='NACIONAL',periodo='2026-H2')
+        if digit is not None:
+            values['terminacion']=digit
+        return dict(tarea='Revisar recategorización Monotributo',frecuencia='Semestral',intervalo=1,id_externo=encode_metadata(values))
+
+    def test_all_digits_and_no_digit_use_normative_date(self):
+        from am_hub_tax_calendar import fiscal_period_label
+        for digit in [None]+list(range(10)):
+            t=self.task(digit);result=resolve(t)
+            self.assertEqual(result['fecha'],'2027-02-05')
+            saved=apply_resolution(t,result)
+            ctx=metadata(saved)
+            self.assertEqual(ctx['semester_end'],'2026-12-31')
+            self.assertEqual(ctx['evalwindow'],{'desde':'2026-01-01','hasta':'2026-12-31'})
+            self.assertEqual(ctx['evidence_type'],'norma_vigente_fecha_derivada')
+            self.assertIn('normativa vigente',fiscal_period_label(saved))
+            self.assertIn('presentar solo si corresponde',fiscal_period_label(saved))
+
+    def test_next_semester_does_not_inherit_date_or_evidence(self):
+        t=apply_resolution(self.task(),resolve(self.task()))
+        next_task=construir_siguiente_ocurrencia(t,'tester')
+        ctx=metadata(next_task)
+        self.assertEqual(ctx['periodo'],'2027-H1')
+        self.assertEqual(next_task['fecha_limite'],'')
+        for field in ('semester_end','evalwindow','evidence_type'):
+            self.assertNotIn(field,ctx)
+
+    def test_half_year_boundaries_and_invalid_monthly_frequency(self):
+        from am_hub_tax_calendar import shift_period
+        self.assertEqual(shift_period('2026-H2',6),'2027-H1')
+        self.assertEqual(shift_period('2027-H1',6),'2027-H2')
+        self.assertEqual(shift_period('2026-H2',12),'2027-H2')
+        with self.assertRaises(ValueError):shift_period('2026-H2',1)
+
+    def test_future_official_override_can_replace_normative_entry(self):
+        rows=load_calendar()
+        entry=next(r for r in rows if r.get('periodo')=='2026-H2')
+        entry.update(vencimiento='2027-02-08',evidence_type='prorroga_oficial',norma='TEST: prórroga')
+        result=resolve(self.task(),calendar=rows)
+        self.assertEqual(result['fecha'],'2027-02-08')
+        self.assertEqual(result['contexto']['evidence_type'],'prorroga_oficial')

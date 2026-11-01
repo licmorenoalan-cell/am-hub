@@ -52,3 +52,11 @@ No hay cambios de datos de producción en esta implementación. La auditoría re
 La suite cubre grupos de terminaciones, cambios de año, períodos anuales, jurisdicciones, datos faltantes/contradictorios, calendario ausente/ambiguo/no verificado, conservación de IDs externos, no exposición de identificadores completos en metadatos, historial intacto, replay/reapertura sin duplicados y rutas de edición de Pocket/grillas de Hub. Persistencia probada con SQLite y adaptador del bloqueo PostgreSQL; no es una prueba de concurrencia real sobre PostgreSQL. No se ejecutaron pruebas de escritura ni despliegue en producción, ni comprobación visual de la versión nueva en el navegador.
 
 Revisión final: pruebas transaccionales de plan aplicado dos veces verifican idempotencia, preservación de filas finalizadas y de fechas/notas legadas. La activación individual funciona con el último dígito únicamente. Única corrección propuesta: IVA, período octubre 2026, de 19/11 a 20/11/2026; todavía no aplicada.
+
+
+Recategorización 2026-H2: control de categoría sobre ingresos de 2026 completos.
+Vence 05/02/2027 según RG 4309 art.20 vigente RG 5546/2024; procedencia
+`norma_vigente_fecha_derivada`, revisada 01/11/2026. No se presenta como agenda
+2027 confirmada; puede reemplazarse por una prórroga oficial. La UI aclara
+que hay que revisar categoría y presentar solamente si corresponde. La próxima
+ocurrencia es 2027-H1 y queda sin fecha hasta contar con su registro verificado.

@@ -1064,5 +1064,36 @@
     "reemplaza": "Fechas originales del anticipo octubre 2026 de RG CA 20/2025",
     "verificado_el": "2026-11-01",
     "verificado": true
+  },
+  {
+    "impuesto": "MONOTRIBUTO",
+    "obligacion": "RECATEGORIZACION",
+    "jurisdiccion": "NACIONAL",
+    "periodo": "2026-H2",
+    "semester_end": "2026-12-31",
+    "evalwindow": {
+      "desde": "2026-01-01",
+      "hasta": "2026-12-31"
+    },
+    "terminaciones": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9
+    ],
+    "vencimiento": "2027-02-05",
+    "fuente": "https://biblioteca.arca.gob.ar/search/query/norma.aspx?p=t:RAG|n:4309|o:3|a:2018|f:17/09/2018",
+    "fuente_guia": "https://serviciosweb.arca.gob.ar/genericos/guiasPasoPaso/VerGuia.aspx?id=515",
+    "norma": "RG 4309 art. 20, texto vigente RG 5546/2024",
+    "verificado": true,
+    "verificado_el": "2026-11-01",
+    "evidence_type": "norma_vigente_fecha_derivada",
+    "observaciones": "Viernes, no feriado fijo de Ley 27399; sujeto a futuras prórrogas o días inhábiles. No es una agenda 2027 confirmada. Revisar categoría; presentar solo si corresponde."
   }
 ]

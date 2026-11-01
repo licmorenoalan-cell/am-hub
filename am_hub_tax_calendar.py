@@ -16,6 +16,8 @@ from pathlib import Path
 
 PREFIX = 'fiscal:v1:'
 PENDING = 'Vencimiento fiscal pendiente'
+NORMATIVE_NOTE = 'Vencimiento calculado según normativa vigente; sujeto a futuras prórrogas o días inhábiles'
+EVIDENCE_FIELDS = ('semester_end', 'evalwindow', 'evidence_type', 'verificado_el')
 
 
 def metadata(task):
@@ -31,7 +33,7 @@ def metadata(task):
 
 def encode_metadata(values):
     allowed = ('impuesto', 'obligacion', 'jurisdiccion', 'periodo', 'terminacion',
-               'estado', 'motivo', 'fuente', 'periodo_fuente')
+               'estado', 'motivo', 'fuente', 'periodo_fuente') + EVIDENCE_FIELDS
     return PREFIX + json.dumps({k: values[k] for k in allowed if k in values}, ensure_ascii=False, sort_keys=True)
 
 
@@ -144,6 +146,12 @@ def valid_entry(entry):
 
 
 def shift_period(period, months):
+    if re.fullmatch(r'\d{4}-H[12]', str(period)):
+        if months % 6:
+            raise ValueError('Un semestre requiere intervalos de seis meses')
+        year, half = int(period[:4]), int(period[-1])
+        total = year * 2 + half - 1 + months // 6
+        return f'{total // 2:04d}-H{total % 2 + 1}'
     if re.fullmatch(r'\d{4}', str(period)) and months % 12 == 0:
         return str(int(period) + months // 12)
     if not re.fullmatch(r'\d{4}-(0[1-9]|1[0-2])', str(period)):
@@ -177,6 +185,11 @@ def resolve(task, profiles=(), calendar=None, next_period=False):
     matches = [r for r in rows if _matches(ctx, r) and valid_entry(r)] if not reason else []
     if len(matches) != 1 and not reason:
         reason = 'Calendario oficial no disponible' if not matches else 'Calendario oficial ambiguo'
+    # Evidence belongs to one exact period; never inherit a prior semester's window.
+    for field in EVIDENCE_FIELDS:
+        ctx.pop(field, None)
+    if not reason:
+        ctx.update({k: matches[0][k] for k in EVIDENCE_FIELDS if k in matches[0]})
     ctx.update(estado='pendiente' if reason else 'verificado', motivo=reason,
                fuente='' if reason else matches[0]['fuente'])
     return {'fecha': '' if reason else matches[0]['vencimiento'], 'contexto': ctx, 'motivo': reason}
@@ -219,8 +232,13 @@ def pending_label(task):
 
 
 def fiscal_period_label(task):
-    period = metadata(task).get('periodo')
-    return f'Período fiscal: {period}' if period else ''
+    fiscal = metadata(task)
+    period = fiscal.get('periodo')
+    label = f'Período fiscal: {period}' if period else ''
+    if fiscal.get('evidence_type') == 'norma_vigente_fecha_derivada':
+        label += ' · ' + NORMATIVE_NOTE
+        label += ' · Revisar categoría; presentar solo si corresponde'
+    return label
 
 
 def suggested_period(task, profiles=(), calendar=None):
