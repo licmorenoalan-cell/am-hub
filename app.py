@@ -44,8 +44,14 @@ from am_hub_core import (
 )
 from am_hub_i18n import LANGUAGES, normalize_language, translate
 from am_hub_auth import crear_token_sesion, validar_token_sesion
+from am_hub_tax_calendar import announce_release
 from am_hub_tasks import (
     actualizar_estado_tarea_postgres,
+    construir_siguiente_ocurrencia,
+    pending_label,
+    fiscal_period_label,
+    validate_completion,
+    preparar_nueva_tarea_fiscal,
     categoria_visual_tarea,
     es_categoria_impositiva,
     titulo_visual_tarea,
@@ -110,6 +116,8 @@ st.set_page_config(
     page_icon="AM",
     layout="wide",
 )
+
+announce_release("app.py")
 
 AUTH_COOKIE_NAME = "am_hub_session_v2"
 AUTH_LEGACY_COOKIE_NAMES = ("am_hub_session_v1",)
@@ -6221,7 +6229,7 @@ def render_edicion_rapida(clientes, contenidos, materiales, campanias, reportes,
         )
 
         if st.button("Guardar tareas", use_container_width=True, key="guardar_rapido_tareas"):
-            generar_recurrencias_desde_edicion(
+            edited = generar_recurrencias_desde_edicion(
                 tareas,
                 edited,
                 st.session_state.get("name", "Sistema"),
@@ -11968,7 +11976,7 @@ def render_crud_table(title, path, df=None, cliente_preview=""):
 
         if st.button(f"Guardar {title}", use_container_width=True, key=f"guardar_{title}_{cliente_preview}"):
             if path == TAREAS_PATH:
-                generar_recurrencias_desde_edicion(
+                edited = generar_recurrencias_desde_edicion(
                     full,
                     edited,
                     st.session_state.get("name", "Sistema"),
@@ -12245,86 +12253,43 @@ def avance_checklist_tarea(items):
     ))
 
 
-def siguiente_fecha_tarea(fecha_actual, frecuencia, intervalo=1):
-    try:
-        fecha = pd.Timestamp(fecha_actual)
-    except Exception:
-        fecha = pd.Timestamp(date.today())
-
-    try:
-        intervalo = max(1, int(float(intervalo or 1)))
-    except Exception:
-        intervalo = 1
-
-    if frecuencia == "Diaria":
-        siguiente = fecha + pd.DateOffset(days=intervalo)
-    elif frecuencia == "Semanal":
-        siguiente = fecha + pd.DateOffset(weeks=intervalo)
-    elif frecuencia == "Mensual":
-        siguiente = fecha + pd.DateOffset(months=intervalo)
-    elif frecuencia == "Semestral":
-        siguiente = fecha + pd.DateOffset(months=6 * intervalo)
-    elif frecuencia == "Primer día hábil del mes":
-        mes_objetivo = fecha + pd.DateOffset(months=intervalo)
-        siguiente = pd.Timestamp(
-            year=mes_objetivo.year,
-            month=mes_objetivo.month,
-            day=1,
-        )
-        while siguiente.weekday() >= 5:
-            siguiente += pd.DateOffset(days=1)
-    elif frecuencia == "Último día hábil del mes":
-        mes_objetivo = fecha + pd.DateOffset(months=intervalo)
-        siguiente = (
-            pd.Timestamp(
-                year=mes_objetivo.year,
-                month=mes_objetivo.month,
-                day=1,
-            )
-            + pd.offsets.MonthEnd(1)
-        )
-        while siguiente.weekday() >= 5:
-            siguiente -= pd.DateOffset(days=1)
-    else:
-        siguiente = fecha
-
-    return siguiente.strftime("%Y-%m-%d")
-
-
 def generar_recurrencias_desde_edicion(tareas_antes, tareas_despues, usuario):
-    """Conserva la recurrencia cuando se finaliza desde una grilla editable."""
-    if not usar_postgres():
-        return
-    if tareas_antes is None or tareas_despues is None:
-        return
-    if tareas_antes.empty or tareas_despues.empty:
-        return
-    if "id" not in tareas_antes.columns or "id" not in tareas_despues.columns:
-        return
-
-    estados_anteriores = {
-        str(row.get("id", "")): str(row.get("estado", ""))
-        for _, row in tareas_antes.iterrows()
-    }
-    hubo_cambios = False
+    """Return the edited frame including generated rows, so a full save cannot delete them."""
+    if tareas_antes is None or tareas_despues is None or tareas_antes.empty or tareas_despues.empty:
+        return tareas_despues
+    if 'id' not in tareas_antes.columns or 'id' not in tareas_despues.columns:
+        return tareas_despues
+    previous = {str(r.get('id')): r.to_dict() for _, r in tareas_antes.iterrows()}
+    tareas_despues = tareas_despues.copy()
+    for index, row in tareas_despues.iterrows():
+        if str(row.get('id')) not in previous:
+            prepared = preparar_nueva_tarea_fiscal(row.to_dict())
+            for key in ('fecha_limite', 'id_externo', 'comentarios'):
+                if key in prepared:
+                    tareas_despues.loc[index, key] = prepared[key]
+    generated = []
     for _, row in tareas_despues.iterrows():
-        tarea_id = str(row.get("id", ""))
-        estado_nuevo = str(row.get("estado", ""))
-        if (
-            tarea_id
-            and estado_nuevo == "Finalizada"
-            and estados_anteriores.get(tarea_id, "") != "Finalizada"
-        ):
-            actualizar_estado_tarea_postgres(
-                get_postgres_engine(),
-                tarea_id,
-                estado_nuevo,
-                usuario,
-            )
-            hubo_cambios = True
-
-    if hubo_cambios:
+        old = previous.get(str(row.get('id')))
+        if not old or row.get('estado') != 'Finalizada' or old.get('estado') == 'Finalizada':
+            continue
+        if usar_postgres():
+            result = actualizar_estado_tarea_postgres(get_postgres_engine(), row['id'], 'Finalizada', usuario)
+            new = result['generada']
+        else:
+            validate_completion(dict(row))
+            if pending_label(old):
+                raise ValueError('Vencimiento fiscal pendiente: completar datos y calendario antes de finalizar.')
+            new = construir_siguiente_ocurrencia(dict(row), usuario) if row.get('recurrente') == 'Sí' else None
+        if new:
+            existing = tareas_despues[
+                (tareas_despues.get('serie_id', pd.Series('', index=tareas_despues.index)) == new['serie_id'])
+                & (pd.to_numeric(tareas_despues.get('ocurrencia', pd.Series(1, index=tareas_despues.index)), errors='coerce').fillna(1) == int(new['ocurrencia']))
+            ]
+            if existing.empty:
+                generated.append(new)
+    if usar_postgres():
         _limpiar_cache_postgres()
+    return pd.concat([tareas_despues, pd.DataFrame(generated)], ignore_index=True) if generated else tareas_despues
 
 
 def cargar_tareas_internas(cliente=""):
@@ -12733,7 +12698,9 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
             for columna in columnas_tareas_internas()
         }
         nueva_tarea["id"] = nueva_id
-        nueva_tarea["id_externo"] = ""
+        source_fiscal = str(row_tarea.get("id_externo") or "")
+        nueva_tarea["id_externo"] = source_fiscal if source_fiscal.startswith("fiscal:v1:") else ""
+        nueva_tarea = preparar_nueva_tarea_fiscal(nueva_tarea)
         nueva_tarea["fecha_carga"] = date.today().strftime("%Y-%m-%d")
         nueva_tarea["creado_por"] = nombre_usuario
         nueva_tarea["fecha_actualizacion"] = date.today().strftime(
@@ -13116,6 +13083,15 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
             .iloc[0]
         )
 
+        row_tarea = tareas_actualizadas.loc[mask].iloc[0].to_dict()
+        if nuevo_estado == 'Finalizada' and estado_anterior != 'Finalizada':
+            try:
+                validate_completion(row_tarea)
+            except ValueError as exc:
+                return False, str(exc)
+        if nuevo_estado == 'Finalizada' and estado_anterior != 'Finalizada' and pending_label(row_tarea):
+            return False, 'Vencimiento fiscal pendiente: completar datos y calendario antes de finalizar.'
+
         tareas_actualizadas.loc[
             mask, "estado"
         ] = nuevo_estado
@@ -13139,9 +13115,7 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
         )
 
         if debe_generar:
-            serie_id_rapido = str(
-                row_tarea.get("serie_id", "")
-            )
+            serie_id_rapido = str(row_tarea.get("serie_id", "") or "") or f"SER-{tarea_id_rapido}"
 
             try:
                 ocurrencia_actual = int(
@@ -13172,115 +13146,9 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
                 ).any()
 
             if not ya_existe:
-                checklist_actual = parsear_checklist_tarea(
-                    row_tarea.get("checklist", "")
+                nueva_ocurrencia = construir_siguiente_ocurrencia(
+                    dict(row_tarea), nombre_usuario,
                 )
-
-                checklist_reiniciado = [
-                    {
-                        "texto": str(
-                            item.get("texto", "")
-                        ),
-                        "hecho": False,
-                    }
-                    for item in checklist_actual
-                    if str(
-                        item.get("texto", "")
-                    ).strip()
-                ]
-
-                try:
-                    intervalo_rapido = int(
-                        row_tarea.get("intervalo", 1) or 1
-                    )
-                except (TypeError, ValueError):
-                    intervalo_rapido = 1
-
-                siguiente_fecha = siguiente_fecha_tarea(
-                    str(
-                        row_tarea.get(
-                            "fecha_limite",
-                            "",
-                        )
-                    ),
-                    str(
-                        row_tarea.get(
-                            "frecuencia",
-                            "",
-                        )
-                    ),
-                    intervalo_rapido,
-                )
-
-                nueva_id = (
-                    "TAR-"
-                    + pd.Timestamp.now().strftime(
-                        "%Y%m%d%H%M%S%f"
-                    )
-                )
-
-                nueva_ocurrencia = {
-                    "id": nueva_id,
-                    "unidad": str(
-                        row_tarea.get(
-                            "unidad",
-                            "AM Consultora",
-                        )
-                    ),
-                    "proyecto": str(
-                        row_tarea.get("proyecto", "")
-                    ),
-                    "cliente": str(
-                        row_tarea.get("cliente", "")
-                    ),
-                    "tarea": str(
-                        row_tarea.get("tarea", "")
-                    ),
-                    "descripcion": str(
-                        row_tarea.get("descripcion", "")
-                    ),
-                    "responsable_am": str(
-                        row_tarea.get(
-                            "responsable_am",
-                            "Sin asignar",
-                        )
-                    ),
-                    "prioridad": str(
-                        row_tarea.get(
-                            "prioridad",
-                            "Media",
-                        )
-                    ),
-                    "estado": "Pendiente",
-                    "fecha_limite": siguiente_fecha,
-                    "checklist": serializar_checklist_tarea(
-                        checklist_reiniciado
-                    ),
-                    "avance": 0,
-                    "recurrente": "Sí",
-                    "frecuencia": str(
-                        row_tarea.get("frecuencia", "")
-                    ),
-                    "intervalo": intervalo_rapido,
-                    "serie_id": serie_id_rapido,
-                    "ocurrencia": proxima_ocurrencia,
-                    "comentarios": "",
-                    "origen": str(
-                        row_tarea.get("origen", "AM Hub")
-                    ),
-                    "id_externo": "",
-                    "categoria": str(
-                        row_tarea.get("categoria", "")
-                    ),
-                    "fecha_carga": (
-                        date.today().strftime("%Y-%m-%d")
-                    ),
-                    "creado_por": "Generación automática",
-                    "fecha_actualizacion": (
-                        date.today().strftime("%Y-%m-%d")
-                    ),
-                    "actualizado_por": nombre_usuario,
-                }
 
                 tareas_actualizadas = pd.concat(
                     [
@@ -13711,6 +13579,12 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
                         "actualizado_por": nombre_usuario,
                     }
 
+                    perfiles_fiscales = []
+                    if usar_postgres() and nueva.get('cliente') and nueva.get('recurrente') == 'Sí':
+                        perfiles_fiscales = leer_postgres_cliente(
+                            'fiscal_clientes', ['cliente', 'cuit', 'iibb_regimen', 'iibb_jurisdiccion'], nueva['cliente'],
+                        ).to_dict('records')
+                    nueva = preparar_nueva_tarea_fiscal(nueva, perfiles_fiscales)
                     if usar_postgres():
                         insertar_postgres_registros(
                             "tareas",
@@ -14542,6 +14416,8 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
                     )
 
                     with st.container(border=True):
+                        if fiscal_period_label(row):
+                            st.caption(fiscal_period_label(row))
                         titulo_col, check_col = st.columns(
                             [6, 1],
                             vertical_alignment="center",
@@ -14627,7 +14503,7 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
                             st.caption(" · ".join(contexto_tarjeta))
 
                         vencimiento_texto, vencimiento_fondo, vencimiento_color = (
-                            vencimiento_tarjeta(fecha_txt, estado_actual)
+                            pending_label(row) or vencimiento_tarjeta(fecha_txt, estado_actual)
                         )
                         st.markdown(
                             '<div style="display:inline-flex;align-items:center;'
@@ -15613,10 +15489,12 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
                                         # próxima ocurrencia; luego persistimos el
                                         # resto de los cambios en una sola fila.
                                         if finaliza_recurrente:
-                                            actualizar_estado_rapido_tarea(
-                                                row,
-                                                "Finalizada",
+                                            ok, error = actualizar_estado_rapido_tarea(
+                                                row, "Finalizada",
                                             )
+                                            if not ok:
+                                                st.error(error)
+                                                st.stop()
 
                                         registro_actualizado = (
                                             tareas_actualizadas.loc[mask]
@@ -15652,18 +15530,10 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
                                                 )
                                             _limpiar_cache_postgres()
                                     else:
-                                        save_csv(
-                                            tareas_actualizadas,
-                                            TAREAS_PATH,
+                                        tareas_actualizadas = generar_recurrencias_desde_edicion(
+                                            pd.DataFrame([row]), tareas_actualizadas, nombre_usuario,
                                         )
-
-                                    # En CSV se mantiene la generación posterior
-                                    # sobre el archivo recién guardado.
-                                    if finaliza_recurrente and not usar_postgres():
-                                        actualizar_estado_rapido_tarea(
-                                            row,
-                                            "Finalizada",
-                                        )
+                                        save_csv(tareas_actualizadas, TAREAS_PATH)
 
                                     st.session_state[
                                         "tarea_abierta_id"

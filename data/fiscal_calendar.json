@@ -1,0 +1,1068 @@
+[
+  {
+    "impuesto": "IIBB",
+    "obligacion": "CM03",
+    "jurisdiccion": "COMARB",
+    "periodo": "2026-11",
+    "terminaciones": [
+      0,
+      1,
+      2
+    ],
+    "vencimiento": "2026-12-15",
+    "fuente": "https://www.ca.gob.ar/resoluciones-comarb?catid=451&id=8627%3Arg-20-vencimientos-sifere-2026&task=download.send",
+    "norma": "RG CA 20/2025",
+    "verificado_el": "2026-11-01",
+    "verificado": true
+  },
+  {
+    "impuesto": "IIBB",
+    "obligacion": "CM03",
+    "jurisdiccion": "COMARB",
+    "periodo": "2026-11",
+    "terminaciones": [
+      3,
+      4,
+      5
+    ],
+    "vencimiento": "2026-12-16",
+    "fuente": "https://www.ca.gob.ar/resoluciones-comarb?catid=451&id=8627%3Arg-20-vencimientos-sifere-2026&task=download.send",
+    "norma": "RG CA 20/2025",
+    "verificado_el": "2026-11-01",
+    "verificado": true
+  },
+  {
+    "impuesto": "IIBB",
+    "obligacion": "CM03",
+    "jurisdiccion": "COMARB",
+    "periodo": "2026-11",
+    "terminaciones": [
+      6,
+      7
+    ],
+    "vencimiento": "2026-12-17",
+    "fuente": "https://www.ca.gob.ar/resoluciones-comarb?catid=451&id=8627%3Arg-20-vencimientos-sifere-2026&task=download.send",
+    "norma": "RG CA 20/2025",
+    "verificado_el": "2026-11-01",
+    "verificado": true
+  },
+  {
+    "impuesto": "IIBB",
+    "obligacion": "CM03",
+    "jurisdiccion": "COMARB",
+    "periodo": "2026-11",
+    "terminaciones": [
+      8,
+      9
+    ],
+    "vencimiento": "2026-12-18",
+    "fuente": "https://www.ca.gob.ar/resoluciones-comarb?catid=451&id=8627%3Arg-20-vencimientos-sifere-2026&task=download.send",
+    "norma": "RG CA 20/2025",
+    "verificado_el": "2026-11-01",
+    "verificado": true
+  },
+  {
+    "impuesto": "IIBB",
+    "obligacion": "CM03",
+    "jurisdiccion": "COMARB",
+    "periodo": "2026-12",
+    "terminaciones": [
+      0,
+      1,
+      2
+    ],
+    "vencimiento": "2027-01-15",
+    "fuente": "https://www.ca.gob.ar/resoluciones-comarb?catid=451&id=8627%3Arg-20-vencimientos-sifere-2026&task=download.send",
+    "norma": "RG CA 20/2025",
+    "verificado_el": "2026-11-01",
+    "verificado": true
+  },
+  {
+    "impuesto": "IIBB",
+    "obligacion": "CM03",
+    "jurisdiccion": "COMARB",
+    "periodo": "2026-12",
+    "terminaciones": [
+      3,
+      4,
+      5
+    ],
+    "vencimiento": "2027-01-18",
+    "fuente": "https://www.ca.gob.ar/resoluciones-comarb?catid=451&id=8627%3Arg-20-vencimientos-sifere-2026&task=download.send",
+    "norma": "RG CA 20/2025",
+    "verificado_el": "2026-11-01",
+    "verificado": true
+  },
+  {
+    "impuesto": "IIBB",
+    "obligacion": "CM03",
+    "jurisdiccion": "COMARB",
+    "periodo": "2026-12",
+    "terminaciones": [
+      6,
+      7
+    ],
+    "vencimiento": "2027-01-19",
+    "fuente": "https://www.ca.gob.ar/resoluciones-comarb?catid=451&id=8627%3Arg-20-vencimientos-sifere-2026&task=download.send",
+    "norma": "RG CA 20/2025",
+    "verificado_el": "2026-11-01",
+    "verificado": true
+  },
+  {
+    "impuesto": "IIBB",
+    "obligacion": "CM03",
+    "jurisdiccion": "COMARB",
+    "periodo": "2026-12",
+    "terminaciones": [
+      8,
+      9
+    ],
+    "vencimiento": "2027-01-20",
+    "fuente": "https://www.ca.gob.ar/resoluciones-comarb?catid=451&id=8627%3Arg-20-vencimientos-sifere-2026&task=download.send",
+    "norma": "RG CA 20/2025",
+    "verificado_el": "2026-11-01",
+    "verificado": true
+  },
+  {
+    "impuesto": "IIBB",
+    "obligacion": "MENSUAL",
+    "jurisdiccion": "BUENOS AIRES",
+    "periodo": "2026-10",
+    "terminaciones": [
+      0,
+      1
+    ],
+    "vencimiento": "2026-11-24",
+    "fuente": "https://web.arba.gov.ar/sites/default/files/2026-02/Calendario2026_02.pdf",
+    "norma": "Calendario fiscal ARBA 2026, página 2 — IIBB local régimen general",
+    "verificado_el": "2026-11-01",
+    "verificado": true
+  },
+  {
+    "impuesto": "IIBB",
+    "obligacion": "MENSUAL",
+    "jurisdiccion": "BUENOS AIRES",
+    "periodo": "2026-10",
+    "terminaciones": [
+      2,
+      3
+    ],
+    "vencimiento": "2026-11-25",
+    "fuente": "https://web.arba.gov.ar/sites/default/files/2026-02/Calendario2026_02.pdf",
+    "norma": "Calendario fiscal ARBA 2026, página 2 — IIBB local régimen general",
+    "verificado_el": "2026-11-01",
+    "verificado": true
+  },
+  {
+    "impuesto": "IIBB",
+    "obligacion": "MENSUAL",
+    "jurisdiccion": "BUENOS AIRES",
+    "periodo": "2026-10",
+    "terminaciones": [
+      4,
+      5
+    ],
+    "vencimiento": "2026-11-26",
+    "fuente": "https://web.arba.gov.ar/sites/default/files/2026-02/Calendario2026_02.pdf",
+    "norma": "Calendario fiscal ARBA 2026, página 2 — IIBB local régimen general",
+    "verificado_el": "2026-11-01",
+    "verificado": true
+  },
+  {
+    "impuesto": "IIBB",
+    "obligacion": "MENSUAL",
+    "jurisdiccion": "BUENOS AIRES",
+    "periodo": "2026-10",
+    "terminaciones": [
+      6,
+      7
+    ],
+    "vencimiento": "2026-11-27",
+    "fuente": "https://web.arba.gov.ar/sites/default/files/2026-02/Calendario2026_02.pdf",
+    "norma": "Calendario fiscal ARBA 2026, página 2 — IIBB local régimen general",
+    "verificado_el": "2026-11-01",
+    "verificado": true
+  },
+  {
+    "impuesto": "IIBB",
+    "obligacion": "MENSUAL",
+    "jurisdiccion": "BUENOS AIRES",
+    "periodo": "2026-10",
+    "terminaciones": [
+      8,
+      9
+    ],
+    "vencimiento": "2026-11-30",
+    "fuente": "https://web.arba.gov.ar/sites/default/files/2026-02/Calendario2026_02.pdf",
+    "norma": "Calendario fiscal ARBA 2026, página 2 — IIBB local régimen general",
+    "verificado_el": "2026-11-01",
+    "verificado": true
+  },
+  {
+    "impuesto": "IIBB",
+    "obligacion": "MENSUAL",
+    "jurisdiccion": "BUENOS AIRES",
+    "periodo": "2026-11",
+    "terminaciones": [
+      0,
+      1
+    ],
+    "vencimiento": "2026-12-21",
+    "fuente": "https://web.arba.gov.ar/sites/default/files/2026-02/Calendario2026_02.pdf",
+    "norma": "Calendario fiscal ARBA 2026, página 2 — IIBB local régimen general",
+    "verificado_el": "2026-11-01",
+    "verificado": true
+  },
+  {
+    "impuesto": "IIBB",
+    "obligacion": "MENSUAL",
+    "jurisdiccion": "BUENOS AIRES",
+    "periodo": "2026-11",
+    "terminaciones": [
+      2,
+      3
+    ],
+    "vencimiento": "2026-12-22",
+    "fuente": "https://web.arba.gov.ar/sites/default/files/2026-02/Calendario2026_02.pdf",
+    "norma": "Calendario fiscal ARBA 2026, página 2 — IIBB local régimen general",
+    "verificado_el": "2026-11-01",
+    "verificado": true
+  },
+  {
+    "impuesto": "IIBB",
+    "obligacion": "MENSUAL",
+    "jurisdiccion": "BUENOS AIRES",
+    "periodo": "2026-11",
+    "terminaciones": [
+      4,
+      5
+    ],
+    "vencimiento": "2026-12-23",
+    "fuente": "https://web.arba.gov.ar/sites/default/files/2026-02/Calendario2026_02.pdf",
+    "norma": "Calendario fiscal ARBA 2026, página 2 — IIBB local régimen general",
+    "verificado_el": "2026-11-01",
+    "verificado": true
+  },
+  {
+    "impuesto": "IIBB",
+    "obligacion": "MENSUAL",
+    "jurisdiccion": "BUENOS AIRES",
+    "periodo": "2026-11",
+    "terminaciones": [
+      6,
+      7
+    ],
+    "vencimiento": "2026-12-28",
+    "fuente": "https://web.arba.gov.ar/sites/default/files/2026-02/Calendario2026_02.pdf",
+    "norma": "Calendario fiscal ARBA 2026, página 2 — IIBB local régimen general",
+    "verificado_el": "2026-11-01",
+    "verificado": true
+  },
+  {
+    "impuesto": "IIBB",
+    "obligacion": "MENSUAL",
+    "jurisdiccion": "BUENOS AIRES",
+    "periodo": "2026-11",
+    "terminaciones": [
+      8,
+      9
+    ],
+    "vencimiento": "2026-12-29",
+    "fuente": "https://web.arba.gov.ar/sites/default/files/2026-02/Calendario2026_02.pdf",
+    "norma": "Calendario fiscal ARBA 2026, página 2 — IIBB local régimen general",
+    "verificado_el": "2026-11-01",
+    "verificado": true
+  },
+  {
+    "impuesto": "IIBB",
+    "obligacion": "MENSUAL",
+    "jurisdiccion": "BUENOS AIRES",
+    "periodo": "2026-12",
+    "terminaciones": [
+      0,
+      1
+    ],
+    "vencimiento": "2027-01-18",
+    "fuente": "https://web.arba.gov.ar/sites/default/files/2026-02/Calendario2026_02.pdf",
+    "norma": "Calendario fiscal ARBA 2026, página 2 — IIBB local régimen general",
+    "verificado_el": "2026-11-01",
+    "verificado": true
+  },
+  {
+    "impuesto": "IIBB",
+    "obligacion": "MENSUAL",
+    "jurisdiccion": "BUENOS AIRES",
+    "periodo": "2026-12",
+    "terminaciones": [
+      2,
+      3
+    ],
+    "vencimiento": "2027-01-19",
+    "fuente": "https://web.arba.gov.ar/sites/default/files/2026-02/Calendario2026_02.pdf",
+    "norma": "Calendario fiscal ARBA 2026, página 2 — IIBB local régimen general",
+    "verificado_el": "2026-11-01",
+    "verificado": true
+  },
+  {
+    "impuesto": "IIBB",
+    "obligacion": "MENSUAL",
+    "jurisdiccion": "BUENOS AIRES",
+    "periodo": "2026-12",
+    "terminaciones": [
+      4,
+      5
+    ],
+    "vencimiento": "2027-01-20",
+    "fuente": "https://web.arba.gov.ar/sites/default/files/2026-02/Calendario2026_02.pdf",
+    "norma": "Calendario fiscal ARBA 2026, página 2 — IIBB local régimen general",
+    "verificado_el": "2026-11-01",
+    "verificado": true
+  },
+  {
+    "impuesto": "IIBB",
+    "obligacion": "MENSUAL",
+    "jurisdiccion": "BUENOS AIRES",
+    "periodo": "2026-12",
+    "terminaciones": [
+      6,
+      7
+    ],
+    "vencimiento": "2027-01-21",
+    "fuente": "https://web.arba.gov.ar/sites/default/files/2026-02/Calendario2026_02.pdf",
+    "norma": "Calendario fiscal ARBA 2026, página 2 — IIBB local régimen general",
+    "verificado_el": "2026-11-01",
+    "verificado": true
+  },
+  {
+    "impuesto": "IIBB",
+    "obligacion": "MENSUAL",
+    "jurisdiccion": "BUENOS AIRES",
+    "periodo": "2026-12",
+    "terminaciones": [
+      8,
+      9
+    ],
+    "vencimiento": "2027-01-22",
+    "fuente": "https://web.arba.gov.ar/sites/default/files/2026-02/Calendario2026_02.pdf",
+    "norma": "Calendario fiscal ARBA 2026, página 2 — IIBB local régimen general",
+    "verificado_el": "2026-11-01",
+    "verificado": true
+  },
+  {
+    "impuesto": "IIBB",
+    "obligacion": "MENSUAL",
+    "jurisdiccion": "BUENOS AIRES",
+    "periodo": "2026-09",
+    "terminaciones": [
+      0,
+      1
+    ],
+    "vencimiento": "2026-10-19",
+    "fuente": "https://web.arba.gov.ar/sites/default/files/2026-02/Calendario2026_02.pdf",
+    "norma": "Calendario ARBA 2026 p. 2 — IIBB local régimen general",
+    "verificado_el": "2026-11-01",
+    "verificado": true
+  },
+  {
+    "impuesto": "IIBB",
+    "obligacion": "MENSUAL",
+    "jurisdiccion": "BUENOS AIRES",
+    "periodo": "2026-09",
+    "terminaciones": [
+      2,
+      3
+    ],
+    "vencimiento": "2026-10-20",
+    "fuente": "https://web.arba.gov.ar/sites/default/files/2026-02/Calendario2026_02.pdf",
+    "norma": "Calendario ARBA 2026 p. 2 — IIBB local régimen general",
+    "verificado_el": "2026-11-01",
+    "verificado": true
+  },
+  {
+    "impuesto": "IIBB",
+    "obligacion": "MENSUAL",
+    "jurisdiccion": "BUENOS AIRES",
+    "periodo": "2026-09",
+    "terminaciones": [
+      4,
+      5
+    ],
+    "vencimiento": "2026-10-21",
+    "fuente": "https://web.arba.gov.ar/sites/default/files/2026-02/Calendario2026_02.pdf",
+    "norma": "Calendario ARBA 2026 p. 2 — IIBB local régimen general",
+    "verificado_el": "2026-11-01",
+    "verificado": true
+  },
+  {
+    "impuesto": "IIBB",
+    "obligacion": "MENSUAL",
+    "jurisdiccion": "BUENOS AIRES",
+    "periodo": "2026-09",
+    "terminaciones": [
+      6,
+      7
+    ],
+    "vencimiento": "2026-10-22",
+    "fuente": "https://web.arba.gov.ar/sites/default/files/2026-02/Calendario2026_02.pdf",
+    "norma": "Calendario ARBA 2026 p. 2 — IIBB local régimen general",
+    "verificado_el": "2026-11-01",
+    "verificado": true
+  },
+  {
+    "impuesto": "IIBB",
+    "obligacion": "MENSUAL",
+    "jurisdiccion": "BUENOS AIRES",
+    "periodo": "2026-09",
+    "terminaciones": [
+      8,
+      9
+    ],
+    "vencimiento": "2026-10-23",
+    "fuente": "https://web.arba.gov.ar/sites/default/files/2026-02/Calendario2026_02.pdf",
+    "norma": "Calendario ARBA 2026 p. 2 — IIBB local régimen general",
+    "verificado_el": "2026-11-01",
+    "verificado": true
+  },
+  {
+    "impuesto": "IIBB",
+    "obligacion": "MENSUAL",
+    "jurisdiccion": "CABA",
+    "periodo": "2026-11",
+    "terminaciones": [
+      0,
+      1
+    ],
+    "vencimiento": "2026-12-11",
+    "fuente": "https://documentosboletinoficial.buenosaires.gob.ar/publico/PE-RES-MHFGC-AGIP-557-25-ANX.pdf",
+    "norma": "Resolución AGIP 557/2025 anexo p. 1 — IIBB local régimen general",
+    "verificado_el": "2026-11-01",
+    "verificado": true
+  },
+  {
+    "impuesto": "IIBB",
+    "obligacion": "MENSUAL",
+    "jurisdiccion": "CABA",
+    "periodo": "2026-11",
+    "terminaciones": [
+      2,
+      3
+    ],
+    "vencimiento": "2026-12-14",
+    "fuente": "https://documentosboletinoficial.buenosaires.gob.ar/publico/PE-RES-MHFGC-AGIP-557-25-ANX.pdf",
+    "norma": "Resolución AGIP 557/2025 anexo p. 1 — IIBB local régimen general",
+    "verificado_el": "2026-11-01",
+    "verificado": true
+  },
+  {
+    "impuesto": "IIBB",
+    "obligacion": "MENSUAL",
+    "jurisdiccion": "CABA",
+    "periodo": "2026-11",
+    "terminaciones": [
+      4,
+      5
+    ],
+    "vencimiento": "2026-12-15",
+    "fuente": "https://documentosboletinoficial.buenosaires.gob.ar/publico/PE-RES-MHFGC-AGIP-557-25-ANX.pdf",
+    "norma": "Resolución AGIP 557/2025 anexo p. 1 — IIBB local régimen general",
+    "verificado_el": "2026-11-01",
+    "verificado": true
+  },
+  {
+    "impuesto": "IIBB",
+    "obligacion": "MENSUAL",
+    "jurisdiccion": "CABA",
+    "periodo": "2026-11",
+    "terminaciones": [
+      6,
+      7
+    ],
+    "vencimiento": "2026-12-16",
+    "fuente": "https://documentosboletinoficial.buenosaires.gob.ar/publico/PE-RES-MHFGC-AGIP-557-25-ANX.pdf",
+    "norma": "Resolución AGIP 557/2025 anexo p. 1 — IIBB local régimen general",
+    "verificado_el": "2026-11-01",
+    "verificado": true
+  },
+  {
+    "impuesto": "IIBB",
+    "obligacion": "MENSUAL",
+    "jurisdiccion": "CABA",
+    "periodo": "2026-11",
+    "terminaciones": [
+      8,
+      9
+    ],
+    "vencimiento": "2026-12-17",
+    "fuente": "https://documentosboletinoficial.buenosaires.gob.ar/publico/PE-RES-MHFGC-AGIP-557-25-ANX.pdf",
+    "norma": "Resolución AGIP 557/2025 anexo p. 1 — IIBB local régimen general",
+    "verificado_el": "2026-11-01",
+    "verificado": true
+  },
+  {
+    "impuesto": "IIBB",
+    "obligacion": "MENSUAL",
+    "jurisdiccion": "CABA",
+    "periodo": "2026-12",
+    "terminaciones": [
+      0,
+      1
+    ],
+    "vencimiento": "2027-01-11",
+    "fuente": "https://documentosboletinoficial.buenosaires.gob.ar/publico/PE-RES-MHFGC-AGIP-557-25-ANX.pdf",
+    "norma": "Resolución AGIP 557/2025 anexo p. 1 — IIBB local régimen general",
+    "verificado_el": "2026-11-01",
+    "verificado": true
+  },
+  {
+    "impuesto": "IIBB",
+    "obligacion": "MENSUAL",
+    "jurisdiccion": "CABA",
+    "periodo": "2026-12",
+    "terminaciones": [
+      2,
+      3
+    ],
+    "vencimiento": "2027-01-12",
+    "fuente": "https://documentosboletinoficial.buenosaires.gob.ar/publico/PE-RES-MHFGC-AGIP-557-25-ANX.pdf",
+    "norma": "Resolución AGIP 557/2025 anexo p. 1 — IIBB local régimen general",
+    "verificado_el": "2026-11-01",
+    "verificado": true
+  },
+  {
+    "impuesto": "IIBB",
+    "obligacion": "MENSUAL",
+    "jurisdiccion": "CABA",
+    "periodo": "2026-12",
+    "terminaciones": [
+      4,
+      5
+    ],
+    "vencimiento": "2027-01-13",
+    "fuente": "https://documentosboletinoficial.buenosaires.gob.ar/publico/PE-RES-MHFGC-AGIP-557-25-ANX.pdf",
+    "norma": "Resolución AGIP 557/2025 anexo p. 1 — IIBB local régimen general",
+    "verificado_el": "2026-11-01",
+    "verificado": true
+  },
+  {
+    "impuesto": "IIBB",
+    "obligacion": "MENSUAL",
+    "jurisdiccion": "CABA",
+    "periodo": "2026-12",
+    "terminaciones": [
+      6,
+      7
+    ],
+    "vencimiento": "2027-01-14",
+    "fuente": "https://documentosboletinoficial.buenosaires.gob.ar/publico/PE-RES-MHFGC-AGIP-557-25-ANX.pdf",
+    "norma": "Resolución AGIP 557/2025 anexo p. 1 — IIBB local régimen general",
+    "verificado_el": "2026-11-01",
+    "verificado": true
+  },
+  {
+    "impuesto": "IIBB",
+    "obligacion": "MENSUAL",
+    "jurisdiccion": "CABA",
+    "periodo": "2026-12",
+    "terminaciones": [
+      8,
+      9
+    ],
+    "vencimiento": "2027-01-15",
+    "fuente": "https://documentosboletinoficial.buenosaires.gob.ar/publico/PE-RES-MHFGC-AGIP-557-25-ANX.pdf",
+    "norma": "Resolución AGIP 557/2025 anexo p. 1 — IIBB local régimen general",
+    "verificado_el": "2026-11-01",
+    "verificado": true
+  },
+  {
+    "impuesto": "IVA",
+    "obligacion": "MENSUAL",
+    "jurisdiccion": "NACIONAL",
+    "periodo": "2026-10",
+    "terminaciones": [
+      0,
+      1
+    ],
+    "vencimiento": "2026-11-18",
+    "fuente": "https://seti.afip.gob.ar/av/viewVencimientosSintetica.do",
+    "norma": "Agenda oficial ARCA — consulta dinámica 01/11/2026, IVA 2026-10",
+    "verificado_el": "2026-11-01",
+    "verificado": true
+  },
+  {
+    "impuesto": "IVA",
+    "obligacion": "MENSUAL",
+    "jurisdiccion": "NACIONAL",
+    "periodo": "2026-10",
+    "terminaciones": [
+      2,
+      3
+    ],
+    "vencimiento": "2026-11-19",
+    "fuente": "https://seti.afip.gob.ar/av/viewVencimientosSintetica.do",
+    "norma": "Agenda oficial ARCA — consulta dinámica 01/11/2026, IVA 2026-10",
+    "verificado_el": "2026-11-01",
+    "verificado": true
+  },
+  {
+    "impuesto": "IVA",
+    "obligacion": "MENSUAL",
+    "jurisdiccion": "NACIONAL",
+    "periodo": "2026-10",
+    "terminaciones": [
+      4,
+      5
+    ],
+    "vencimiento": "2026-11-20",
+    "fuente": "https://seti.afip.gob.ar/av/viewVencimientosSintetica.do",
+    "norma": "Agenda oficial ARCA — consulta dinámica 01/11/2026, IVA 2026-10",
+    "verificado_el": "2026-11-01",
+    "verificado": true
+  },
+  {
+    "impuesto": "IVA",
+    "obligacion": "MENSUAL",
+    "jurisdiccion": "NACIONAL",
+    "periodo": "2026-10",
+    "terminaciones": [
+      6,
+      7
+    ],
+    "vencimiento": "2026-11-24",
+    "fuente": "https://seti.afip.gob.ar/av/viewVencimientosSintetica.do",
+    "norma": "Agenda oficial ARCA — consulta dinámica 01/11/2026, IVA 2026-10",
+    "verificado_el": "2026-11-01",
+    "verificado": true
+  },
+  {
+    "impuesto": "IVA",
+    "obligacion": "MENSUAL",
+    "jurisdiccion": "NACIONAL",
+    "periodo": "2026-10",
+    "terminaciones": [
+      8,
+      9
+    ],
+    "vencimiento": "2026-11-25",
+    "fuente": "https://seti.afip.gob.ar/av/viewVencimientosSintetica.do",
+    "norma": "Agenda oficial ARCA — consulta dinámica 01/11/2026, IVA 2026-10",
+    "verificado_el": "2026-11-01",
+    "verificado": true
+  },
+  {
+    "impuesto": "IVA",
+    "obligacion": "MENSUAL",
+    "jurisdiccion": "NACIONAL",
+    "periodo": "2026-11",
+    "terminaciones": [
+      0,
+      1
+    ],
+    "vencimiento": "2026-12-18",
+    "fuente": "https://seti.afip.gob.ar/av/viewVencimientosSintetica.do",
+    "norma": "Agenda oficial ARCA — consulta dinámica 01/11/2026, IVA 2026-11",
+    "verificado_el": "2026-11-01",
+    "verificado": true
+  },
+  {
+    "impuesto": "IVA",
+    "obligacion": "MENSUAL",
+    "jurisdiccion": "NACIONAL",
+    "periodo": "2026-11",
+    "terminaciones": [
+      2,
+      3
+    ],
+    "vencimiento": "2026-12-21",
+    "fuente": "https://seti.afip.gob.ar/av/viewVencimientosSintetica.do",
+    "norma": "Agenda oficial ARCA — consulta dinámica 01/11/2026, IVA 2026-11",
+    "verificado_el": "2026-11-01",
+    "verificado": true
+  },
+  {
+    "impuesto": "IVA",
+    "obligacion": "MENSUAL",
+    "jurisdiccion": "NACIONAL",
+    "periodo": "2026-11",
+    "terminaciones": [
+      4,
+      5
+    ],
+    "vencimiento": "2026-12-22",
+    "fuente": "https://seti.afip.gob.ar/av/viewVencimientosSintetica.do",
+    "norma": "Agenda oficial ARCA — consulta dinámica 01/11/2026, IVA 2026-11",
+    "verificado_el": "2026-11-01",
+    "verificado": true
+  },
+  {
+    "impuesto": "IVA",
+    "obligacion": "MENSUAL",
+    "jurisdiccion": "NACIONAL",
+    "periodo": "2026-11",
+    "terminaciones": [
+      6,
+      7
+    ],
+    "vencimiento": "2026-12-23",
+    "fuente": "https://seti.afip.gob.ar/av/viewVencimientosSintetica.do",
+    "norma": "Agenda oficial ARCA — consulta dinámica 01/11/2026, IVA 2026-11",
+    "verificado_el": "2026-11-01",
+    "verificado": true
+  },
+  {
+    "impuesto": "IVA",
+    "obligacion": "MENSUAL",
+    "jurisdiccion": "NACIONAL",
+    "periodo": "2026-11",
+    "terminaciones": [
+      8,
+      9
+    ],
+    "vencimiento": "2026-12-24",
+    "fuente": "https://seti.afip.gob.ar/av/viewVencimientosSintetica.do",
+    "norma": "Agenda oficial ARCA — consulta dinámica 01/11/2026, IVA 2026-11",
+    "verificado_el": "2026-11-01",
+    "verificado": true
+  },
+  {
+    "impuesto": "AUTONOMOS",
+    "obligacion": "MENSUAL",
+    "jurisdiccion": "NACIONAL",
+    "periodo": "2026-09",
+    "terminaciones": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "vencimiento": "2026-10-05",
+    "fuente": "https://seti.afip.gob.ar/av/viewVencimientosSintetica.do",
+    "norma": "Agenda oficial ARCA — consulta dinámica 01/11/2026, Autónomos 2026-09",
+    "verificado_el": "2026-11-01",
+    "verificado": true
+  },
+  {
+    "impuesto": "AUTONOMOS",
+    "obligacion": "MENSUAL",
+    "jurisdiccion": "NACIONAL",
+    "periodo": "2026-09",
+    "terminaciones": [
+      4,
+      5,
+      6
+    ],
+    "vencimiento": "2026-10-06",
+    "fuente": "https://seti.afip.gob.ar/av/viewVencimientosSintetica.do",
+    "norma": "Agenda oficial ARCA — consulta dinámica 01/11/2026, Autónomos 2026-09",
+    "verificado_el": "2026-11-01",
+    "verificado": true
+  },
+  {
+    "impuesto": "AUTONOMOS",
+    "obligacion": "MENSUAL",
+    "jurisdiccion": "NACIONAL",
+    "periodo": "2026-09",
+    "terminaciones": [
+      7,
+      8,
+      9
+    ],
+    "vencimiento": "2026-10-07",
+    "fuente": "https://seti.afip.gob.ar/av/viewVencimientosSintetica.do",
+    "norma": "Agenda oficial ARCA — consulta dinámica 01/11/2026, Autónomos 2026-09",
+    "verificado_el": "2026-11-01",
+    "verificado": true
+  },
+  {
+    "impuesto": "AUTONOMOS",
+    "obligacion": "MENSUAL",
+    "jurisdiccion": "NACIONAL",
+    "periodo": "2026-10",
+    "terminaciones": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "vencimiento": "2026-11-05",
+    "fuente": "https://seti.afip.gob.ar/av/viewVencimientosSintetica.do",
+    "norma": "Agenda oficial ARCA — consulta dinámica 01/11/2026, Autónomos 2026-10",
+    "verificado_el": "2026-11-01",
+    "verificado": true
+  },
+  {
+    "impuesto": "AUTONOMOS",
+    "obligacion": "MENSUAL",
+    "jurisdiccion": "NACIONAL",
+    "periodo": "2026-10",
+    "terminaciones": [
+      4,
+      5,
+      6
+    ],
+    "vencimiento": "2026-11-11",
+    "fuente": "https://seti.afip.gob.ar/av/viewVencimientosSintetica.do",
+    "norma": "Agenda oficial ARCA — consulta dinámica 01/11/2026, Autónomos 2026-10",
+    "verificado_el": "2026-11-01",
+    "verificado": true
+  },
+  {
+    "impuesto": "AUTONOMOS",
+    "obligacion": "MENSUAL",
+    "jurisdiccion": "NACIONAL",
+    "periodo": "2026-10",
+    "terminaciones": [
+      7,
+      8,
+      9
+    ],
+    "vencimiento": "2026-11-12",
+    "fuente": "https://seti.afip.gob.ar/av/viewVencimientosSintetica.do",
+    "norma": "Agenda oficial ARCA — consulta dinámica 01/11/2026, Autónomos 2026-10",
+    "verificado_el": "2026-11-01",
+    "verificado": true
+  },
+  {
+    "impuesto": "AUTONOMOS",
+    "obligacion": "MENSUAL",
+    "jurisdiccion": "NACIONAL",
+    "periodo": "2026-11",
+    "terminaciones": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "vencimiento": "2026-12-09",
+    "fuente": "https://seti.afip.gob.ar/av/viewVencimientosSintetica.do",
+    "norma": "Agenda oficial ARCA — consulta dinámica 01/11/2026, Autónomos 2026-11",
+    "verificado_el": "2026-11-01",
+    "verificado": true
+  },
+  {
+    "impuesto": "AUTONOMOS",
+    "obligacion": "MENSUAL",
+    "jurisdiccion": "NACIONAL",
+    "periodo": "2026-11",
+    "terminaciones": [
+      4,
+      5,
+      6
+    ],
+    "vencimiento": "2026-12-10",
+    "fuente": "https://seti.afip.gob.ar/av/viewVencimientosSintetica.do",
+    "norma": "Agenda oficial ARCA — consulta dinámica 01/11/2026, Autónomos 2026-11",
+    "verificado_el": "2026-11-01",
+    "verificado": true
+  },
+  {
+    "impuesto": "AUTONOMOS",
+    "obligacion": "MENSUAL",
+    "jurisdiccion": "NACIONAL",
+    "periodo": "2026-11",
+    "terminaciones": [
+      7,
+      8,
+      9
+    ],
+    "vencimiento": "2026-12-11",
+    "fuente": "https://seti.afip.gob.ar/av/viewVencimientosSintetica.do",
+    "norma": "Agenda oficial ARCA — consulta dinámica 01/11/2026, Autónomos 2026-11",
+    "verificado_el": "2026-11-01",
+    "verificado": true
+  },
+  {
+    "impuesto": "MONOTRIBUTO",
+    "obligacion": "MENSUAL",
+    "jurisdiccion": "NACIONAL",
+    "periodo": "2026-10",
+    "terminaciones": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9
+    ],
+    "vencimiento": "2026-10-20",
+    "fuente": "https://seti.afip.gob.ar/av/viewVencimientosSintetica.do",
+    "norma": "Agenda oficial ARCA — consulta dinámica 01/11/2026, Monotributo 2026-10",
+    "verificado_el": "2026-11-01",
+    "verificado": true
+  },
+  {
+    "impuesto": "MONOTRIBUTO",
+    "obligacion": "MENSUAL",
+    "jurisdiccion": "NACIONAL",
+    "periodo": "2026-11",
+    "terminaciones": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9
+    ],
+    "vencimiento": "2026-11-20",
+    "fuente": "https://seti.afip.gob.ar/av/viewVencimientosSintetica.do",
+    "norma": "Agenda oficial ARCA — consulta dinámica 01/11/2026, Monotributo 2026-11",
+    "verificado_el": "2026-11-01",
+    "verificado": true
+  },
+  {
+    "impuesto": "MONOTRIBUTO",
+    "obligacion": "MENSUAL",
+    "jurisdiccion": "NACIONAL",
+    "periodo": "2026-12",
+    "terminaciones": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9
+    ],
+    "vencimiento": "2026-12-21",
+    "fuente": "https://seti.afip.gob.ar/av/viewVencimientosSintetica.do",
+    "norma": "Agenda oficial ARCA — consulta dinámica 01/11/2026, Monotributo 2026-12",
+    "verificado_el": "2026-11-01",
+    "verificado": true
+  },
+  {
+    "impuesto": "IIBB",
+    "obligacion": "MENSUAL",
+    "jurisdiccion": "CABA",
+    "periodo": "2026-10",
+    "terminaciones": [
+      2,
+      3
+    ],
+    "vencimiento": "2026-11-12",
+    "fuente": "https://documentosboletinoficial.buenosaires.gob.ar/publico/PE-RES-MHFGC-AGIP-557-25-ANX.pdf",
+    "norma": "Resolución AGIP 557/2025 anexo p. 1 — grupos no afectados por prórroga",
+    "verificado_el": "2026-11-01",
+    "verificado": true
+  },
+  {
+    "impuesto": "IIBB",
+    "obligacion": "MENSUAL",
+    "jurisdiccion": "CABA",
+    "periodo": "2026-10",
+    "terminaciones": [
+      4,
+      5
+    ],
+    "vencimiento": "2026-11-13",
+    "fuente": "https://documentosboletinoficial.buenosaires.gob.ar/publico/PE-RES-MHFGC-AGIP-557-25-ANX.pdf",
+    "norma": "Resolución AGIP 557/2025 anexo p. 1 — grupos no afectados por prórroga",
+    "verificado_el": "2026-11-01",
+    "verificado": true
+  },
+  {
+    "impuesto": "IIBB",
+    "obligacion": "MENSUAL",
+    "jurisdiccion": "CABA",
+    "periodo": "2026-10",
+    "terminaciones": [
+      6,
+      7
+    ],
+    "vencimiento": "2026-11-16",
+    "fuente": "https://documentosboletinoficial.buenosaires.gob.ar/publico/PE-RES-MHFGC-AGIP-557-25-ANX.pdf",
+    "norma": "Resolución AGIP 557/2025 anexo p. 1 — grupos no afectados por prórroga",
+    "verificado_el": "2026-11-01",
+    "verificado": true
+  },
+  {
+    "impuesto": "IIBB",
+    "obligacion": "MENSUAL",
+    "jurisdiccion": "CABA",
+    "periodo": "2026-10",
+    "terminaciones": [
+      8,
+      9
+    ],
+    "vencimiento": "2026-11-17",
+    "fuente": "https://documentosboletinoficial.buenosaires.gob.ar/publico/PE-RES-MHFGC-AGIP-557-25-ANX.pdf",
+    "norma": "Resolución AGIP 557/2025 anexo p. 1 — grupos no afectados por prórroga",
+    "verificado_el": "2026-11-01",
+    "verificado": true
+  },
+  {
+    "impuesto": "IIBB",
+    "obligacion": "CM03",
+    "jurisdiccion": "COMARB",
+    "periodo": "2026-10",
+    "terminaciones": [
+      0,
+      1,
+      2
+    ],
+    "vencimiento": "2026-11-17",
+    "fuente": "https://www.ca.gob.ar/descargas/sifere/vencimientos/2026-11.pdf",
+    "norma": "RG CA 11/2026, artículo 3",
+    "reemplaza": "Fechas originales del anticipo octubre 2026 de RG CA 20/2025",
+    "verificado_el": "2026-11-01",
+    "verificado": true
+  },
+  {
+    "impuesto": "IIBB",
+    "obligacion": "CM03",
+    "jurisdiccion": "COMARB",
+    "periodo": "2026-10",
+    "terminaciones": [
+      3,
+      4,
+      5
+    ],
+    "vencimiento": "2026-11-18",
+    "fuente": "https://www.ca.gob.ar/descargas/sifere/vencimientos/2026-11.pdf",
+    "norma": "RG CA 11/2026, artículo 3",
+    "reemplaza": "Fechas originales del anticipo octubre 2026 de RG CA 20/2025",
+    "verificado_el": "2026-11-01",
+    "verificado": true
+  },
+  {
+    "impuesto": "IIBB",
+    "obligacion": "CM03",
+    "jurisdiccion": "COMARB",
+    "periodo": "2026-10",
+    "terminaciones": [
+      6,
+      7
+    ],
+    "vencimiento": "2026-11-19",
+    "fuente": "https://www.ca.gob.ar/descargas/sifere/vencimientos/2026-11.pdf",
+    "norma": "RG CA 11/2026, artículo 3",
+    "reemplaza": "Fechas originales del anticipo octubre 2026 de RG CA 20/2025",
+    "verificado_el": "2026-11-01",
+    "verificado": true
+  },
+  {
+    "impuesto": "IIBB",
+    "obligacion": "CM03",
+    "jurisdiccion": "COMARB",
+    "periodo": "2026-10",
+    "terminaciones": [
+      8,
+      9
+    ],
+    "vencimiento": "2026-11-20",
+    "fuente": "https://www.ca.gob.ar/descargas/sifere/vencimientos/2026-11.pdf",
+    "norma": "RG CA 11/2026, artículo 3",
+    "reemplaza": "Fechas originales del anticipo octubre 2026 de RG CA 20/2025",
+    "verificado_el": "2026-11-01",
+    "verificado": true
+  }
+]

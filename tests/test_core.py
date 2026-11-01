@@ -18,25 +18,7 @@ from am_hub_core import (
 from am_hub_i18n import normalize_language, translate
 
 
-def _siguiente_fecha_tarea(fecha_actual, frecuencia, intervalo=1):
-    import ast
-    from pathlib import Path
-
-    modulo = ast.parse(Path(__file__).parents[1].joinpath("app.py").read_text())
-    nodo = next(
-        item
-        for item in modulo.body
-        if isinstance(item, ast.FunctionDef)
-        and item.name == "siguiente_fecha_tarea"
-    )
-    mini_modulo = ast.Module(body=[nodo], type_ignores=[])
-    namespace = {"pd": __import__("pandas"), "date": __import__("datetime").date}
-    exec(compile(mini_modulo, "app.py", "exec"), namespace)
-    return namespace["siguiente_fecha_tarea"](
-        fecha_actual,
-        frecuencia,
-        intervalo,
-    )
+from am_hub_tasks import siguiente_fecha_recurrente as _siguiente_fecha_tarea
 
 
 class CoreTests(unittest.TestCase):

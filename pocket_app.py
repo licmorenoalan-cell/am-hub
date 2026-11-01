@@ -14,8 +14,12 @@ import pandas as pd
 import streamlit as st
 from sqlalchemy import create_engine, text
 from am_hub_i18n import LANGUAGES, normalize_language, translate
+from am_hub_tax_calendar import announce_release
 from am_hub_tasks import (
     actualizar_estado_tarea_postgres,
+    actualizar_estado_tarea_en_conexion,
+    pending_label,
+    fiscal_period_label,
     categoria_visual_tarea,
     es_categoria_impositiva,
     titulo_visual_tarea,
@@ -31,6 +35,8 @@ st.set_page_config(
     layout="centered",
     initial_sidebar_state="collapsed",
 )
+
+announce_release("pocket_app.py")
 
 st.markdown(
     """
@@ -1156,7 +1162,7 @@ def actualizar_detalle_tarea(
                 """
                 SELECT comentarios
                 FROM tareas
-                WHERE id = :id
+                WHERE id = :id FOR UPDATE
                 """
             ),
             {"id": tarea_id},
@@ -1183,7 +1189,6 @@ def actualizar_detalle_tarea(
                 SET
                     unidad = :unidad,
                     proyecto = :proyecto,
-                    estado = :estado,
                     responsable_am = :responsable,
                     prioridad = :prioridad,
                     fecha_limite = :fecha_limite,
@@ -1214,6 +1219,8 @@ def actualizar_detalle_tarea(
                 "id": tarea_id,
             },
         )
+
+        actualizar_estado_tarea_en_conexion(conn, tarea_id, estado, usuario)
 
     limpiar_cache()
 
@@ -2173,8 +2180,11 @@ if pagina_pocket == "📋 Mi tablero":
 
             st.caption(
                 f"{texto_prioridad(prioridad)}"
-                f" · {texto_fecha(row.get('fecha_limite', ''))}"
+                f" · {pending_label(row) or texto_fecha(row.get('fecha_limite', ''))}"
             )
+
+            if fiscal_period_label(row):
+                st.caption(fiscal_period_label(row))
 
             detalle = f"👤 {responsable}"
 

@@ -2,6 +2,8 @@ import json
 import unittest
 from datetime import date
 
+from am_hub_tax_calendar import encode_metadata
+
 from am_hub_tasks import (
     categoria_visual_tarea,
     construir_siguiente_ocurrencia,
@@ -67,6 +69,7 @@ class RecurrenciasTareasTests(unittest.TestCase):
             "comentarios": "Presentado",
             "categoria": "IVA",
             "descripcion": "Régimen fiscal: IVA. CUIT: 30-71893522-5.",
+            "id_externo": encode_metadata(dict(impuesto="IVA",obligacion="MENSUAL",jurisdiccion="NACIONAL",periodo="2026-11",terminacion=5)),
         }
 
         nueva = construir_siguiente_ocurrencia(
@@ -78,9 +81,10 @@ class RecurrenciasTareasTests(unittest.TestCase):
 
         self.assertEqual(nueva["id"], "TAR-2")
         self.assertEqual(nueva["estado"], "Pendiente")
-        self.assertEqual(nueva["fecha_limite"], "2026-11-20")
+        self.assertEqual(nueva["fecha_limite"], "")
+        self.assertIn("Vencimiento fiscal pendiente", nueva["comentarios"])
         self.assertEqual(nueva["ocurrencia"], "5")
-        self.assertEqual(nueva["comentarios"], "")
+        self.assertNotIn("Presentado", nueva["comentarios"])
         self.assertEqual(
             json.loads(nueva["checklist"]),
             [
@@ -98,7 +102,7 @@ class RecurrenciasTareasTests(unittest.TestCase):
                 "Régimen fiscal: IIBB ARBA Local. CUIT: 20-35656955-6."
             ),
         }
-        self.assertEqual(siguiente_fecha_fiscal(tarea), "2026-11-27")
+        self.assertEqual(siguiente_fecha_fiscal(tarea), "")  # No official entry/period configured.
 
 
 if __name__ == "__main__":
