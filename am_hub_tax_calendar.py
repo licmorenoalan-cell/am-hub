@@ -69,12 +69,14 @@ def context(task, profiles=(), calendar=None):
         if d is None:
             return result, 'Terminación de CUIT inválida'
         digits.add(d)
+    personal_obligation = result.get('impuesto') == 'AUTONOMOS' or bool(re.search(r'\baut[oó]nomos?\b', words))
     cuit = re.sub(r'\D', '', str(profile.get('cuit') or ''))
-    if len(cuit) == 11:
+    if len(cuit) == 11 and (not personal_obligation or cuit[:2] in {'20', '23', '24', '27'}):
         digits.add(int(cuit[-1]))
     # Legacy text is only a fallback; no complete identifier is persisted in metadata.
     for cuit in re.findall(r'\b(?:20|23|24|27|30|33)-?\d{8}-?\d\b', words):
-        digits.add(int(cuit[-1]))
+        if not personal_obligation or cuit[:2] in {'20', '23', '24', '27'}:
+            digits.add(int(cuit[-1]))
     if len(digits) > 1:
         return result, 'Terminaciones de CUIT contradictorias'
     if digits:

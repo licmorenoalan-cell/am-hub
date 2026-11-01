@@ -266,3 +266,22 @@ class RecategorizationSemesterTests(unittest.TestCase):
         result=resolve(self.task(),calendar=rows)
         self.assertEqual(result['fecha'],'2027-02-08')
         self.assertEqual(result['contexto']['evidence_type'],'prorroga_oficial')
+
+
+class AutonomosIdentityTests(unittest.TestCase):
+    def test_company_profile_and_legacy_company_identifier_cannot_supply_person_digit(self):
+        for prefix in ('30','33','34'):
+            t=dict(tarea='Autónomos — Socio',cliente='Empresa',descripcion=prefix+'000000006',id_externo=encode_metadata(dict(impuesto='AUTONOMOS',obligacion='MENSUAL',jurisdiccion='NACIONAL',periodo='2026-10')))
+            result=resolve(t,[dict(cliente='Empresa',cuit=prefix+'000000006')])
+            self.assertIn('terminación',result['motivo'])
+            self.assertNotIn('terminacion',result['contexto'])
+
+    def test_reviewed_person_digit_can_coexist_with_company_client(self):
+        t=dict(tarea='Autónomos — Socio',cliente='Empresa',id_externo=encode_metadata(dict(impuesto='AUTONOMOS',obligacion='MENSUAL',jurisdiccion='NACIONAL',periodo='2026-10',terminacion=9)))
+        result=resolve(t,[dict(cliente='Empresa',cuit='30000000006')])
+        self.assertEqual(result['fecha'],'2026-11-12')
+        self.assertEqual(result['contexto']['terminacion'],9)
+
+    def test_person_profile_remains_supported(self):
+        t=dict(tarea='Autónomos',cliente='Persona',id_externo=encode_metadata(dict(impuesto='AUTONOMOS',obligacion='MENSUAL',jurisdiccion='NACIONAL',periodo='2026-10')))
+        self.assertEqual(resolve(t,[dict(cliente='Persona',cuit='20000000004')])['fecha'],'2026-11-11')
