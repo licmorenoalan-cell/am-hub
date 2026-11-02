@@ -22,6 +22,7 @@ TITLES = (
     "AGUS CABALEIRO",
     "DANI CABALEIRO",
     "LEY DJANIKIAN",
+    "MARTINA PEIRANO",
 )
 
 
