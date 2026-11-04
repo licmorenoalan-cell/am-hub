@@ -56,6 +56,29 @@ class PersistenceTests(unittest.TestCase):
         with self.db.connect() as c:
             self.assertEqual(c.execute(text('SELECT count(*) FROM tareas')).scalar(),2)
 
+    def test_advance_cycle_transaction_replay_preserves_history_and_cm03(self):
+        from am_hub_tax_calendar import metadata
+        seed=dict(id='advance-origin',tarea='Anticipo Ganancias',frecuencia='Mensual',intervalo=2,
+                  id_externo=encode_metadata(dict(impuesto='GANANCIAS',obligacion='ANTICIPO_PH',
+                     jurisdiccion='NACIONAL',periodo='2026-12',terminacion=5)))
+        fourth=construir_siguiente_ocurrencia(seed,'test',nueva_id='fourth')
+        with self.db.begin() as c:
+            c.execute(text('INSERT INTO tareas ('+','.join(fourth)+') VALUES ('+','.join(':'+k for k in fourth)+')'),fourth)
+            for i in range(113):
+                c.execute(text("INSERT INTO tareas(id,estado,comentarios) VALUES(:id,'Finalizada','History')"),{'id':f'history-{i}'})
+            untouched=[dict(r) for r in c.execute(text("SELECT * FROM tareas WHERE id<>'fourth' ORDER BY id")).mappings()]
+        fifth=actualizar_estado_tarea_postgres(self.engine,'fourth','Finalizada','test')['generada']
+        self.assertIsNone(actualizar_estado_tarea_postgres(self.engine,'fourth','Finalizada','test')['generada'])
+        actualizar_estado_tarea_postgres(self.engine,'fourth','Pendiente','test')
+        self.assertIsNone(actualizar_estado_tarea_postgres(self.engine,'fourth','Finalizada','test')['generada'])
+        first=actualizar_estado_tarea_postgres(self.engine,fifth['id'],'Finalizada','test')['generada']
+        self.assertEqual(metadata(first)['periodo'],'2027-08')
+        self.assertEqual(first['fecha_limite'],'')
+        with self.assertRaises(ValueError):actualizar_estado_tarea_postgres(self.engine,first['id'],'Finalizada','test')
+        with self.db.connect() as c:
+            self.assertEqual(c.execute(text('SELECT count(*) FROM tareas')).scalar(),117)
+            self.assertEqual([dict(r) for r in c.execute(text("SELECT * FROM tareas WHERE id='one' OR id LIKE 'history-%' ORDER BY id")).mappings()],untouched)
+
     def test_unknown_next_calendar_persists_and_cannot_be_finalized(self):
         r=actualizar_estado_tarea_postgres(self.engine,'one','Finalizada','test')
         r2=actualizar_estado_tarea_postgres(self.engine,r['generada']['id'],'Finalizada','test')

@@ -217,7 +217,7 @@ class FiscalCalendarTests(unittest.TestCase):
             with redirect_stdout(io.StringIO()) as output:
                 result=announce_release('app.py')
         self.assertEqual(result['revision'],'a'*40)
-        self.assertEqual(result['calendar_entries'],69)
+        self.assertEqual(result['calendar_entries'],75)
         self.assertEqual(len(result['fingerprint']),64)
         self.assertNotIn('DATABASE',output.getvalue())
         announce_release.cache_clear()

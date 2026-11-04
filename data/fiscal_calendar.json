@@ -1095,5 +1095,115 @@
     "verificado_el": "2026-11-01",
     "evidence_type": "norma_vigente_fecha_derivada",
     "observaciones": "Viernes, no feriado fijo de Ley 27399; sujeto a futuras prórrogas o días inhábiles. No es una agenda 2027 confirmada. Revisar categoría; presentar solo si corresponde."
+  },
+  {
+    "impuesto": "GANANCIAS",
+    "obligacion": "ANTICIPO_PH",
+    "jurisdiccion": "NACIONAL",
+    "periodo": "2027-02",
+    "terminaciones": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "vencimiento": "2027-02-15",
+    "fuente": "https://biblioteca.arca.gob.ar/search/query/norma.aspx?p=t:RAG%7Cn:5211%7Co:3%7Ca:2022%7Cf:24/06/2022",
+    "norma": "RG 5211 arts. 2, 4 y 5, texto vigente",
+    "verificado": true,
+    "verificado_el": "2026-11-04",
+    "evidence_type": "norma_vigente_fecha_derivada",
+    "observaciones": "Ejercicio fiscal 2026. Fecha derivada de días 13/14/15 y corrimiento correlativo por inhábiles. Febrero inicia sábado 13: 15/16/17. Abril: 13/14/15. Sujeto a futuras prórrogas o inhábiles; no es agenda anual 2027 confirmada."
+  },
+  {
+    "impuesto": "GANANCIAS",
+    "obligacion": "ANTICIPO_PH",
+    "jurisdiccion": "NACIONAL",
+    "periodo": "2027-02",
+    "terminaciones": [
+      4,
+      5,
+      6
+    ],
+    "vencimiento": "2027-02-16",
+    "fuente": "https://biblioteca.arca.gob.ar/search/query/norma.aspx?p=t:RAG%7Cn:5211%7Co:3%7Ca:2022%7Cf:24/06/2022",
+    "norma": "RG 5211 arts. 2, 4 y 5, texto vigente",
+    "verificado": true,
+    "verificado_el": "2026-11-04",
+    "evidence_type": "norma_vigente_fecha_derivada",
+    "observaciones": "Ejercicio fiscal 2026. Fecha derivada de días 13/14/15 y corrimiento correlativo por inhábiles. Febrero inicia sábado 13: 15/16/17. Abril: 13/14/15. Sujeto a futuras prórrogas o inhábiles; no es agenda anual 2027 confirmada."
+  },
+  {
+    "impuesto": "GANANCIAS",
+    "obligacion": "ANTICIPO_PH",
+    "jurisdiccion": "NACIONAL",
+    "periodo": "2027-02",
+    "terminaciones": [
+      7,
+      8,
+      9
+    ],
+    "vencimiento": "2027-02-17",
+    "fuente": "https://biblioteca.arca.gob.ar/search/query/norma.aspx?p=t:RAG%7Cn:5211%7Co:3%7Ca:2022%7Cf:24/06/2022",
+    "norma": "RG 5211 arts. 2, 4 y 5, texto vigente",
+    "verificado": true,
+    "verificado_el": "2026-11-04",
+    "evidence_type": "norma_vigente_fecha_derivada",
+    "observaciones": "Ejercicio fiscal 2026. Fecha derivada de días 13/14/15 y corrimiento correlativo por inhábiles. Febrero inicia sábado 13: 15/16/17. Abril: 13/14/15. Sujeto a futuras prórrogas o inhábiles; no es agenda anual 2027 confirmada."
+  },
+  {
+    "impuesto": "GANANCIAS",
+    "obligacion": "ANTICIPO_PH",
+    "jurisdiccion": "NACIONAL",
+    "periodo": "2027-04",
+    "terminaciones": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "vencimiento": "2027-04-13",
+    "fuente": "https://biblioteca.arca.gob.ar/search/query/norma.aspx?p=t:RAG%7Cn:5211%7Co:3%7Ca:2022%7Cf:24/06/2022",
+    "norma": "RG 5211 arts. 2, 4 y 5, texto vigente",
+    "verificado": true,
+    "verificado_el": "2026-11-04",
+    "evidence_type": "norma_vigente_fecha_derivada",
+    "observaciones": "Ejercicio fiscal 2026. Fecha derivada de días 13/14/15 y corrimiento correlativo por inhábiles. Febrero inicia sábado 13: 15/16/17. Abril: 13/14/15. Sujeto a futuras prórrogas o inhábiles; no es agenda anual 2027 confirmada."
+  },
+  {
+    "impuesto": "GANANCIAS",
+    "obligacion": "ANTICIPO_PH",
+    "jurisdiccion": "NACIONAL",
+    "periodo": "2027-04",
+    "terminaciones": [
+      4,
+      5,
+      6
+    ],
+    "vencimiento": "2027-04-14",
+    "fuente": "https://biblioteca.arca.gob.ar/search/query/norma.aspx?p=t:RAG%7Cn:5211%7Co:3%7Ca:2022%7Cf:24/06/2022",
+    "norma": "RG 5211 arts. 2, 4 y 5, texto vigente",
+    "verificado": true,
+    "verificado_el": "2026-11-04",
+    "evidence_type": "norma_vigente_fecha_derivada",
+    "observaciones": "Ejercicio fiscal 2026. Fecha derivada de días 13/14/15 y corrimiento correlativo por inhábiles. Febrero inicia sábado 13: 15/16/17. Abril: 13/14/15. Sujeto a futuras prórrogas o inhábiles; no es agenda anual 2027 confirmada."
+  },
+  {
+    "impuesto": "GANANCIAS",
+    "obligacion": "ANTICIPO_PH",
+    "jurisdiccion": "NACIONAL",
+    "periodo": "2027-04",
+    "terminaciones": [
+      7,
+      8,
+      9
+    ],
+    "vencimiento": "2027-04-15",
+    "fuente": "https://biblioteca.arca.gob.ar/search/query/norma.aspx?p=t:RAG%7Cn:5211%7Co:3%7Ca:2022%7Cf:24/06/2022",
+    "norma": "RG 5211 arts. 2, 4 y 5, texto vigente",
+    "verificado": true,
+    "verificado_el": "2026-11-04",
+    "evidence_type": "norma_vigente_fecha_derivada",
+    "observaciones": "Ejercicio fiscal 2026. Fecha derivada de días 13/14/15 y corrimiento correlativo por inhábiles. Febrero inicia sábado 13: 15/16/17. Abril: 13/14/15. Sujeto a futuras prórrogas o inhábiles; no es agenda anual 2027 confirmada."
   }
 ]

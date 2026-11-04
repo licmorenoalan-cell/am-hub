@@ -69,7 +69,9 @@ def context(task, profiles=(), calendar=None):
         if d is None:
             return result, 'Terminación de CUIT inválida'
         digits.add(d)
-    personal_obligation = result.get('impuesto') == 'AUTONOMOS' or bool(re.search(r'\baut[oó]nomos?\b', words))
+    personal_obligation = (result.get('impuesto') == 'AUTONOMOS'
+                           or is_ganancias_ph(result)
+                           or bool(re.search(r'\baut[oó]nomos?\b', words)))
     cuit = re.sub(r'\D', '', str(profile.get('cuit') or ''))
     if len(cuit) == 11 and (not personal_obligation or cuit[:2] in {'20', '23', '24', '27'}):
         digits.add(int(cuit[-1]))
@@ -163,9 +165,46 @@ def shift_period(period, months):
     return f'{total // 12:04d}-{total % 12 + 1:02d}'
 
 
+def is_ganancias_ph(ctx):
+    return ctx.get('impuesto') == 'GANANCIAS' and ctx.get('obligacion') == 'ANTICIPO_PH'
+
+
+def ganancias_ph_period(period):
+    """Month-of-obligation key -> fiscal year/advance. No deadline inference.
+
+    RG 5211 art. 5: August, October, December, February, April.
+    First advance 2026 moved to September (RG 5876/5890); October stays #2.
+    """
+    if not re.fullmatch(r'\d{4}-(0[1-9]|1[0-2])', str(period)):
+        raise ValueError('Mes de anticipo inválido')
+    year, month = map(int, period.split('-'))
+    first_month = 9 if year == 2026 else 8
+    if month == first_month:
+        return year, 1
+    if month in (10, 12):
+        return year, {10: 2, 12: 3}[month]
+    if month in (2, 4):
+        return year - 1, {2: 4, 4: 5}[month]
+    raise ValueError('Mes fuera del ciclo de cinco anticipos')
+
+
+def next_ganancias_ph_period(period):
+    year, advance = ganancias_ph_period(period)
+    if advance == 5:
+        year += 1
+        return f'{year}-' + ('09' if year == 2026 else '08')
+    return {1: f'{year}-10', 2: f'{year}-12',
+            3: f'{year + 1}-02', 4: f'{year + 1}-04'}[advance]
+
+
 def resolve(task, profiles=(), calendar=None, next_period=False):
     rows = load_calendar() if calendar is None else calendar
     ctx, reason = context(task, profiles, rows)
+    if is_ganancias_ph(ctx) and ctx.get('periodo'):
+        try:
+            ganancias_ph_period(ctx['periodo'])
+        except ValueError:
+            reason = 'Frecuencia o período fiscal no configurado para esta obligación'
     if not reason:
         missing = [k for k in ('impuesto', 'obligacion', 'jurisdiccion', 'periodo') if not ctx.get(k)]
         if ctx.get('terminacion') is None and ctx.get('impuesto') != 'MONOTRIBUTO':
@@ -180,7 +219,12 @@ def resolve(task, profiles=(), calendar=None, next_period=False):
                 raise ValueError()
             months = {'Mensual': 1, 'Semestral': 6, 'Anual': 12}[frequency] * int(raw_interval)
             previous_period = ctx['periodo']
-            ctx['periodo'] = shift_period(previous_period, months)
+            if is_ganancias_ph(ctx):
+                if frequency != 'Mensual' or raw_interval != 2:
+                    raise ValueError('Cadencia incompatible con el ciclo de anticipos')
+                ctx['periodo'] = next_ganancias_ph_period(previous_period)
+            else:
+                ctx['periodo'] = shift_period(previous_period, months)
             ctx['periodo_fuente'] = 'Siguiente período de ' + previous_period
         except (ValueError, TypeError, KeyError, OverflowError):
             reason = 'Frecuencia o período fiscal no configurado para esta obligación'
@@ -237,9 +281,16 @@ def fiscal_period_label(task):
     fiscal = metadata(task)
     period = fiscal.get('periodo')
     label = f'Período fiscal: {period}' if period else ''
+    if is_ganancias_ph(fiscal) and period:
+        try:
+            year, advance = ganancias_ph_period(period)
+            label = f'Ganancias PH · ejercicio {year} · anticipo {advance}/5 · mes de vencimiento {period}'
+        except ValueError:
+            label = 'Anticipo de Ganancias: período por revisar'
     if fiscal.get('evidence_type') == 'norma_vigente_fecha_derivada':
         label += ' · ' + NORMATIVE_NOTE
-        label += ' · Revisar categoría; presentar solo si corresponde'
+        label += (' · Verificar importe exigible antes de pagar' if is_ganancias_ph(fiscal)
+                  else ' · Revisar categoría; presentar solo si corresponde')
     return label
 
 
