@@ -1205,5 +1205,57 @@
     "verificado_el": "2026-11-04",
     "evidence_type": "norma_vigente_fecha_derivada",
     "observaciones": "Ejercicio fiscal 2026. Fecha derivada de días 13/14/15 y corrimiento correlativo por inhábiles. Febrero inicia sábado 13: 15/16/17. Abril: 13/14/15. Sujeto a futuras prórrogas o inhábiles; no es agenda anual 2027 confirmada."
+  },
+  {
+    "impuesto": "GANANCIAS",
+    "obligacion": "ANTICIPO_PH",
+    "jurisdiccion": "NACIONAL",
+    "periodo": "2026-12",
+    "terminaciones": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "vencimiento": "2026-12-14",
+    "fuente": "https://seti.afip.gob.ar/av/",
+    "norma": "Agenda oficial ARCA actualizada 03/11/2026; Ganancias personas físicas y sucesiones indivisas, anticipos RG 5211, tercer anticipo 2026",
+    "verificado_el": "2026-11-05",
+    "verificado": true,
+    "observaciones": "Consulta oficial 01–31/12/2026, todos los CUIT, impuesto Ganancias. Agenda expresa: 14/15/16 diciembre por grupos 0–3/4–6/7–9; sustituye incertidumbre del PDF anterior."
+  },
+  {
+    "impuesto": "GANANCIAS",
+    "obligacion": "ANTICIPO_PH",
+    "jurisdiccion": "NACIONAL",
+    "periodo": "2026-12",
+    "terminaciones": [
+      4,
+      5,
+      6
+    ],
+    "vencimiento": "2026-12-15",
+    "fuente": "https://seti.afip.gob.ar/av/",
+    "norma": "Agenda oficial ARCA actualizada 03/11/2026; Ganancias personas físicas y sucesiones indivisas, anticipos RG 5211, tercer anticipo 2026",
+    "verificado_el": "2026-11-05",
+    "verificado": true,
+    "observaciones": "Consulta oficial 01–31/12/2026, todos los CUIT, impuesto Ganancias. Agenda expresa: 14/15/16 diciembre por grupos 0–3/4–6/7–9; sustituye incertidumbre del PDF anterior."
+  },
+  {
+    "impuesto": "GANANCIAS",
+    "obligacion": "ANTICIPO_PH",
+    "jurisdiccion": "NACIONAL",
+    "periodo": "2026-12",
+    "terminaciones": [
+      7,
+      8,
+      9
+    ],
+    "vencimiento": "2026-12-16",
+    "fuente": "https://seti.afip.gob.ar/av/",
+    "norma": "Agenda oficial ARCA actualizada 03/11/2026; Ganancias personas físicas y sucesiones indivisas, anticipos RG 5211, tercer anticipo 2026",
+    "verificado_el": "2026-11-05",
+    "verificado": true,
+    "observaciones": "Consulta oficial 01–31/12/2026, todos los CUIT, impuesto Ganancias. Agenda expresa: 14/15/16 diciembre por grupos 0–3/4–6/7–9; sustituye incertidumbre del PDF anterior."
   }
 ]

@@ -38,3 +38,9 @@ transacción de cuarto→quinto→agosto, replay/reapertura sin duplicados y pre
 de 113 filas finalizadas y CM03 de control. SQLite adapta FOR UPDATE: no simula
 concurrencia real PostgreSQL. Read-back real de producción verifica los 113 hashes
 históricos, CM03 Alan y 13 anticipos únicos bloqueados en el motor publicado.
+
+Actualización 05/11/2026: agenda oficial ARCA (actualizada 03/11) consultada para
+01–31 diciembre, Ganancias PH / RG5211, tercer anticipo2026: 14/15/16 diciembre
+según grupos0–3/4–6/7–9. Se agregan tres entradas expresas que sustituyen el
+bloqueo de diciembre descrito arriba; no se extrapolan fechas de agosto2027.
+Fuente: https://seti.afip.gob.ar/av/ .

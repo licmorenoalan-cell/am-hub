@@ -37,11 +37,25 @@ class AdvanceCycleTests(unittest.TestCase):
             self.assertEqual(first['fecha_limite'],'')
             self.assertEqual(metadata(first)['estado'],'pendiente')
 
-    def test_december_conflict_stays_blocked_even_with_manual_date(self):
-        for date in ['','2026-12-14','2026-12-15','2026-12-16']:
-            t=advance();t['fecha_limite']=date
-            self.assertEqual(resolve(t)['fecha'],'')
+    def test_december_official_agenda_groups_and_wrong_manual_date(self):
+        for digit in range(10):
+            expected=f'2026-12-{14 if digit<4 else 15 if digit<7 else 16}'
+            t=apply_resolution(advance(digit=digit),resolve(advance(digit=digit)))
+            self.assertEqual(t['fecha_limite'],expected)
+            self.assertEqual(metadata(t)['fuente'],'https://seti.afip.gob.ar/av/')
+            validate_completion(t)
+            t['fecha_limite']='2026-12-13'
             with self.assertRaises(ValueError):validate_completion(t)
+
+    def test_missing_agenda_still_blocks_manual_dates(self):
+        from unittest.mock import patch
+        from am_hub_tax_calendar import load_calendar
+        rows=[r for r in load_calendar() if not (r['impuesto']=='GANANCIAS' and r['periodo']=='2026-12')]
+        with patch('am_hub_tax_calendar.load_calendar',return_value=rows):
+            for date in ['','2026-12-14','2026-12-15','2026-12-16']:
+                t=advance();t['fecha_limite']=date
+                self.assertEqual(resolve(t)['fecha'],'')
+                with self.assertRaises(ValueError):validate_completion(t)
 
     def test_company_profile_never_supplies_personal_digit(self):
         t=advance();profile=[dict(cliente='Example',cuit='30000000006')]
