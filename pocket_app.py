@@ -368,18 +368,18 @@ def cargar_tareas():
             , posicion_manual
         FROM tareas
         ORDER BY
-            CASE
-                WHEN posicion_manual ~ '^[0-9]+$'
-                THEN posicion_manual::integer
-                ELSE NULL
-            END ASC NULLS LAST,
+            NULLIF(fecha_limite, '') ASC NULLS LAST,
             CASE prioridad
                 WHEN 'Alta' THEN 1
                 WHEN 'Media' THEN 2
                 WHEN 'Baja' THEN 3
                 ELSE 4
             END,
-            NULLIF(fecha_limite, '') ASC NULLS LAST,
+            CASE
+                WHEN posicion_manual ~ '^[0-9]+$'
+                THEN posicion_manual::integer
+                ELSE NULL
+            END ASC NULLS LAST,
             fecha_carga DESC
         """
     )
@@ -1350,6 +1350,38 @@ def texto_fecha(valor: str) -> str:
     return f"📅 {texto}"
 
 
+def vencimiento_tarjeta(valor: str, estado: str):
+    """Devuelve texto y colores del semáforo de vencimiento móvil."""
+    fecha = pd.to_datetime(
+        str(valor or "").strip(),
+        errors="coerce",
+    )
+
+    if estado == "Finalizada":
+        return "✓ Finalizada", "#DCFCE7", "#166534"
+
+    if pd.isna(fecha):
+        return pocket_ui("Sin fecha"), "#F1F5F9", "#475569"
+
+    fecha_legible = fecha.strftime("%d/%m/%Y")
+    diferencia = (fecha.date() - date.today()).days
+
+    if diferencia < 0:
+        return f"Vencida · {fecha_legible}", "#FEE2E2", "#991B1B"
+
+    if diferencia == 0:
+        return f"Vence hoy · {fecha_legible}", "#FEF3C7", "#92400E"
+
+    if diferencia <= 7:
+        return (
+            f"Vence en {diferencia} días · {fecha_legible}",
+            "#FEF3C7",
+            "#92400E",
+        )
+
+    return f"Vence {fecha_legible}", "#DCFCE7", "#166534"
+
+
 def texto_prioridad(valor: str) -> str:
     mapa = {
         "Alta": "🔴 " + pocket_ui("Alta"),
@@ -2053,6 +2085,23 @@ if pagina_pocket == "📋 Mi tablero":
             mascara_fecha
         ].copy()
 
+    # La vista móvil siempre prioriza el calendario: primero lo vencido y,
+    # a continuación, cada vencimiento futuro en orden cronológico.
+    vista["_orden_fecha"] = pd.to_datetime(
+        vista["fecha_limite"],
+        errors="coerce",
+    )
+    vista["_orden_prioridad"] = (
+        vista["prioridad"]
+        .map({"Alta": 1, "Media": 2, "Baja": 3})
+        .fillna(4)
+    )
+    vista = vista.sort_values(
+        ["_orden_fecha", "_orden_prioridad", "fecha_carga"],
+        ascending=[True, True, False],
+        na_position="last",
+    )
+
     st.caption(
         f"{len(vista)} tarea(s)"
     )
@@ -2177,9 +2226,19 @@ if pagina_pocket == "📋 Mi tablero":
             if contexto:
                 st.caption(" · ".join(contexto))
 
-            st.caption(
-                f"{texto_prioridad(prioridad)}"
-                f" · {texto_fecha(row.get('fecha_limite', ''))}"
+            vencimiento_texto, vencimiento_fondo, vencimiento_color = (
+                vencimiento_tarjeta(
+                    row.get("fecha_limite", ""),
+                    estado,
+                )
+            )
+            st.markdown(
+                '<div style="display:inline-flex;align-items:center;'
+                'padding:6px 9px;border-radius:6px;margin:8px 0 6px;'
+                'font-size:0.79rem;font-weight:800;line-height:1.2;'
+                f'background:{vencimiento_fondo};color:{vencimiento_color}">'
+                f'◷ {html.escape(vencimiento_texto)}</div>',
+                unsafe_allow_html=True,
             )
 
             if fiscal_period_label(row):

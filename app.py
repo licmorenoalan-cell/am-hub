@@ -13922,6 +13922,7 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
             "Unidad",
             "Cliente",
         ],
+        index=1,
         format_func=ui,
         horizontal=True,
         key=f"criterio_tareas_{modo}",
@@ -14104,10 +14105,10 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
         if diferencia < 0:
             return f"Vencida · {fecha_legible}", "#FEE2E2", "#991B1B"
         if diferencia == 0:
-            return f"Vence hoy · {fecha_legible}", "#FFEDD5", "#9A3412"
+            return f"Vence hoy · {fecha_legible}", "#FEF3C7", "#92400E"
         if diferencia <= 7:
             return f"Vence en {diferencia} días · {fecha_legible}", "#FEF3C7", "#92400E"
-        return f"Vence {fecha_legible}", "#E0E7FF", "#3730A3"
+        return f"Vence {fecha_legible}", "#DCFCE7", "#166534"
 
     if criterio_columnas == "Estado":
         grupos = estados_kanban
@@ -14249,15 +14250,28 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
                     errors="coerce",
                 )
 
-                subset = subset.sort_values(
-                    [
-                        "_posicion_manual",
-                        "_orden_prioridad",
-                        "_orden_fecha",
-                    ],
-                    ascending=[True, True, True],
-                    na_position="last",
-                )
+                if criterio_columnas == "Fecha de vencimiento":
+                    # En la vista predeterminada manda el vencimiento real.
+                    # La posición manual sólo desempata tareas del mismo día.
+                    subset = subset.sort_values(
+                        [
+                            "_orden_fecha",
+                            "_posicion_manual",
+                            "_orden_prioridad",
+                        ],
+                        ascending=[True, True, True],
+                        na_position="last",
+                    )
+                else:
+                    subset = subset.sort_values(
+                        [
+                            "_posicion_manual",
+                            "_orden_prioridad",
+                            "_orden_fecha",
+                        ],
+                        ascending=[True, True, True],
+                        na_position="last",
+                    )
 
             with columnas[indice]:
                 titulo_grupo = (
