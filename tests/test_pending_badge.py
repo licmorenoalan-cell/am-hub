@@ -78,16 +78,16 @@ class BadgeTests(unittest.TestCase):
             self.assertEqual(self.badge({'fecha_limite': value}), ('Sin vencimiento', '#F1F5F9', '#475569'))
 
     def test_existing_normal_labels(self):
-        for days, prefix in ((-1, 'Vencida · '), (0, 'Vence hoy · '), (3, 'Vence en 3 días · '), (10, 'Vence ')):
+        for days, suffix in ((-1, ' · Vencida'), (0, ' · Vence hoy'), (3, ' · Vence en 3 días'), (10, ' · En fecha')):
             day = date.today() + timedelta(days=days)
-            self.assertEqual(self.badge({'fecha_limite': day.isoformat()})[0], prefix + day.strftime('%d/%m/%Y'))
+            self.assertEqual(self.badge({'fecha_limite': day.isoformat()})[0], day.strftime('%d/%m') + suffix)
         self.assertEqual(self.badge({'estado': 'Finalizada'}), ('✓ Finalizada', '#DCFCE7', '#166534'))
 
     def test_previous_date_uses_normal_due_badge(self):
         for reason in ('Calendario no disponible', 'Falta período', ''):
             row = {'categoria': 'IVA', 'fecha_limite': '2026-01-01',
                    'id_externo': 'fiscal:v1:' + json.dumps({'estado': 'pendiente', 'motivo': reason})}
-            self.assertEqual(self.badge(row), ('Vencida · 01/01/2026', '#FEE2E2', '#991B1B'))
+            self.assertEqual(self.badge(row), ('01/01 · Vencida', '#FEE2E2', '#991B1B'))
 
     def test_textual_contract_for_existing_consumers(self):
         for row, expected in (({}, ''), ({'recurrente': 'Sí', 'categoria': 'IVA'}, 'Vencimiento fiscal pendiente')):

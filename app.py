@@ -14100,15 +14100,15 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
             return "✓ Finalizada", "#DCFCE7", "#166534"
         if pd.isna(fecha):
             return "Sin vencimiento", "#F1F5F9", "#475569"
-        fecha_legible = fecha.strftime("%d/%m/%Y")
+        fecha_legible = fecha.strftime("%d/%m")
         diferencia = (fecha.date() - date.today()).days
         if diferencia < 0:
-            return f"Vencida · {fecha_legible}", "#FEE2E2", "#991B1B"
+            return f"{fecha_legible} · Vencida", "#FEE2E2", "#991B1B"
         if diferencia == 0:
-            return f"Vence hoy · {fecha_legible}", "#FEF3C7", "#92400E"
+            return f"{fecha_legible} · Vence hoy", "#FEF3C7", "#92400E"
         if diferencia <= 7:
-            return f"Vence en {diferencia} días · {fecha_legible}", "#FEF3C7", "#92400E"
-        return f"Vence {fecha_legible}", "#DCFCE7", "#166534"
+            return f"{fecha_legible} · Vence en {diferencia} días", "#FEF3C7", "#92400E"
+        return f"{fecha_legible} · En fecha", "#DCFCE7", "#166534"
 
     if criterio_columnas == "Estado":
         grupos = estados_kanban
@@ -14526,7 +14526,7 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
                             'padding:6px 9px;border-radius:6px;margin:8px 0 6px;'
                             'font-size:0.79rem;font-weight:800;line-height:1.2;'
                             f'background:{vencimiento_fondo};color:{vencimiento_color}">'
-                            f'◷ {html.escape(vencimiento_texto)}</div>',
+                            f'{html.escape(vencimiento_texto)}</div>',
                             unsafe_allow_html=True,
                         )
 
