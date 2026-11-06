@@ -69,9 +69,9 @@ class BadgeTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'too many values to unpack'):
             a, b, c = label or ('normal', 'background', 'foreground')
 
-    def test_pending(self):
+    def test_pending_validation_is_not_rendered_on_card(self):
         self.assertEqual(self.badge({'recurrente': 'Sí', 'categoria': 'IVA'}),
-                         ('Vencimiento fiscal pendiente', '#FEF3C7', '#92400E'))
+                         ('Sin vencimiento', '#F1F5F9', '#475569'))
 
     def test_empty_values(self):
         for value in ('', None):
@@ -83,13 +83,11 @@ class BadgeTests(unittest.TestCase):
             self.assertEqual(self.badge({'fecha_limite': day.isoformat()})[0], prefix + day.strftime('%d/%m/%Y'))
         self.assertEqual(self.badge({'estado': 'Finalizada'}), ('✓ Finalizada', '#DCFCE7', '#166534'))
 
-    def test_previous_date_warning_and_reasons(self):
-        for reason, prefix in (('Calendario no disponible', 'Calendario fiscal pendiente: Calendario no disponible'),
-                               ('Falta período', 'Datos fiscales por revisar: Falta período'),
-                               ('', 'Vencimiento fiscal pendiente')):
+    def test_previous_date_uses_normal_due_badge(self):
+        for reason in ('Calendario no disponible', 'Falta período', ''):
             row = {'categoria': 'IVA', 'fecha_limite': '2026-01-01',
                    'id_externo': 'fiscal:v1:' + json.dumps({'estado': 'pendiente', 'motivo': reason})}
-            self.assertEqual(self.badge(row), (prefix + ' · fecha previa sin verificar: 2026-01-01', '#FEF3C7', '#92400E'))
+            self.assertEqual(self.badge(row), ('Vencida · 01/01/2026', '#FEE2E2', '#991B1B'))
 
     def test_textual_contract_for_existing_consumers(self):
         for row, expected in (({}, ''), ({'recurrente': 'Sí', 'categoria': 'IVA'}, 'Vencimiento fiscal pendiente')):

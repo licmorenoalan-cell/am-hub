@@ -14502,11 +14502,10 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
                         if contexto_tarjeta:
                             st.caption(" · ".join(contexto_tarjeta))
 
-                        etiqueta_pendiente = pending_label(row)
+                        # Las validaciones fiscales siguen aplicándose al guardar o
+                        # finalizar, pero no deben ocupar la portada de la tarjeta.
                         vencimiento_texto, vencimiento_fondo, vencimiento_color = (
-                            (etiqueta_pendiente, "#FEF3C7", "#92400E")
-                            if etiqueta_pendiente
-                            else vencimiento_tarjeta(fecha_txt, estado_actual)
+                            vencimiento_tarjeta(fecha_txt, estado_actual)
                         )
                         st.markdown(
                             '<div style="display:inline-flex;align-items:center;'

@@ -18,7 +18,6 @@ from am_hub_tax_calendar import announce_release
 from am_hub_tasks import (
     actualizar_estado_tarea_postgres,
     actualizar_estado_tarea_en_conexion,
-    pending_label,
     fiscal_period_label,
     categoria_visual_tarea,
     es_categoria_impositiva,
@@ -2180,7 +2179,7 @@ if pagina_pocket == "📋 Mi tablero":
 
             st.caption(
                 f"{texto_prioridad(prioridad)}"
-                f" · {pending_label(row) or texto_fecha(row.get('fecha_limite', ''))}"
+                f" · {texto_fecha(row.get('fecha_limite', ''))}"
             )
 
             if fiscal_period_label(row):
