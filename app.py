@@ -13480,23 +13480,32 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
                     value=False,
                 )
 
-                if es_recurrente:
-                    frecuencia_sel = st.selectbox(
-                        ui("Frecuencia"),
-                        frecuencias,
-                        format_func=ui,
-                    )
-
-                    intervalo_sel = st.number_input(
-                        ui("Repetir cada"),
-                        min_value=1,
-                        max_value=24,
-                        value=1,
-                        step=1,
-                    )
-                else:
-                    frecuencia_sel = ""
-                    intervalo_sel = 1
+                # Los widgets de un form se envían juntos: no pueden depender
+                # del valor recién marcado de otro widget para aparecer.
+                frecuencia_sel = st.selectbox(
+                    ui("Frecuencia"),
+                    frecuencias,
+                    index=None,
+                    placeholder="Elegí la frecuencia si la tarea es recurrente",
+                    format_func=ui,
+                )
+                intervalo_sel = st.number_input(
+                    ui("Repetir cada"),
+                    min_value=1,
+                    value=1,
+                    step=1,
+                    help=(
+                        "Cantidad de días, semanas, meses o semestres según "
+                        "la frecuencia elegida."
+                    ),
+                )
+                st.caption(
+                    "Sólo se aplica si marcás Tarea recurrente. "
+                    "Ejemplos: cada 15 días, cada 2 semanas, cada 3 meses "
+                    "(trimestral) o cada 12 meses (anual). "
+                    "Los días hábiles de esta opción excluyen sábados y domingos; "
+                    "no contemplan feriados."
+                )
 
             crear = st.form_submit_button(
                 ui("Crear tarea"),
@@ -13518,6 +13527,8 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
                     st.error(
                         "La tarea no puede estar vacía."
                     )
+                elif es_recurrente and not frecuencia_sel:
+                    st.error("Elegí una frecuencia para la tarea recurrente.")
                 else:
                     ahora_id = pd.Timestamp.now().strftime(
                         "%Y%m%d%H%M%S%f"
@@ -13557,8 +13568,8 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
                             if es_recurrente
                             else "No"
                         ),
-                        "frecuencia": frecuencia_sel,
-                        "intervalo": int(intervalo_sel),
+                        "frecuencia": frecuencia_sel if es_recurrente else "",
+                        "intervalo": int(intervalo_sel) if es_recurrente else 1,
                         "serie_id": (
                             f"SER-{ahora_id}"
                             if es_recurrente
