@@ -321,3 +321,26 @@ def preparar_nueva_tarea_fiscal(task, perfiles=()):
     if task.get('recurrente') != 'Sí' or not is_fiscal(task):
         return task
     return apply_resolution(task, resolve(task, perfiles))
+
+
+def guardar_detalle_tarea_postgres(engine, tarea_id, cambios, nuevo_estado, usuario):
+    """Persist edited fields and recurrence transition in one transaction."""
+    permitidas = {
+        'cliente', 'tarea', 'responsable_am', 'prioridad', 'fecha_limite',
+        'descripcion', 'comentarios', 'fecha_carga', 'creado_por',
+        'fecha_actualizacion', 'actualizado_por', 'checklist', 'avance',
+        'recurrente', 'frecuencia', 'intervalo', 'serie_id', 'ocurrencia',
+        'proyecto', 'origen', 'id_externo', 'categoria', 'unidad',
+        'orden_manual', 'archivos_habilitados', 'posicion_manual',
+    }
+    campos = {k: v for k, v in cambios.items() if k in permitidas}
+    with engine.begin() as conn:
+        existe = conn.execute(text('SELECT id FROM tareas WHERE id=:id FOR UPDATE'),
+                              {'id': str(tarea_id)}).first()
+        if not existe:
+            raise ValueError('No se encontró la tarea.')
+        if campos:
+            conn.execute(text('UPDATE tareas SET ' + ', '.join(
+                f'"{k}" = :{k}' for k in campos) + ' WHERE id = :_id'),
+                dict(campos, _id=str(tarea_id)))
+        return actualizar_estado_tarea_en_conexion(conn, tarea_id, nuevo_estado, usuario)
