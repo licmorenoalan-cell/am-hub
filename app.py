@@ -47,6 +47,7 @@ from am_hub_auth import crear_token_sesion, validar_token_sesion
 from am_hub_tax_calendar import announce_release
 from am_hub_tasks import (
     actualizar_estado_tarea_postgres,
+    guardar_detalle_tarea_postgres,
     construir_siguiente_ocurrencia,
     pending_label,
     fiscal_period_label,
@@ -14741,6 +14742,26 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
                                 ),
                             )
 
+                            nueva_recurrencia = st.checkbox(
+                                "Tarea recurrente", value=recurrente_actual == "Sí",
+                                key=f"recurrente_detalle_{tarea_id}",
+                            )
+                            frecuencia_guardada = str(row.get("frecuencia", "") or "")
+                            nueva_frecuencia = st.selectbox(
+                                "Frecuencia", frecuencias,
+                                index=frecuencias.index(frecuencia_guardada) if frecuencia_guardada in frecuencias else None,
+                                placeholder="Elegí la frecuencia si es recurrente",
+                                key=f"frecuencia_detalle_{tarea_id}",
+                            )
+                            nuevo_intervalo = st.number_input(
+                                "Repetir cada", min_value=1,
+                                value=max(1, int(row.get("intervalo", 1) or 1)), step=1,
+                                key=f"intervalo_detalle_{tarea_id}",
+                            )
+                            st.caption("La regla se aplica a esta tarjeta y sus futuras repeticiones. "
+                                       "No cambia tarjetas ya generadas ni su fecha límite. "
+                                       "Para trimestral elegí Mensual y Repetir cada 3.")
+
                             clave_mostrar_descripcion = (
                                 f"mostrar_descripcion_{tarea_id}"
                             )
@@ -15407,6 +15428,13 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
                                         )
                                         st.stop()
 
+                                    if nueva_recurrencia and not nueva_frecuencia:
+                                        st.error("Elegí una frecuencia para la tarea recurrente.")
+                                        st.stop()
+                                    tareas_actualizadas.loc[mask, "recurrente"] = "Sí" if nueva_recurrencia else "No"
+                                    tareas_actualizadas.loc[mask, "frecuencia"] = nueva_frecuencia or ""
+                                    tareas_actualizadas.loc[mask, "intervalo"] = int(nuevo_intervalo)
+
                                     tareas_actualizadas.loc[
                                         mask,
                                         "tarea",
@@ -15522,38 +15550,17 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
                                             posicion_deseada,
                                         )
 
-                                    finaliza_recurrente = (
-                                        nuevo_estado
-                                        == "Finalizada"
-                                        and estado_actual
-                                        != "Finalizada"
-                                        and str(row.get("recurrente", "No")).strip()
-                                        == "Sí"
-                                    )
-
                                     if usar_postgres():
-                                        # La transición recurrente crea primero la
-                                        # próxima ocurrencia; luego persistimos el
-                                        # resto de los cambios en una sola fila.
-                                        if finaliza_recurrente:
-                                            ok, error = actualizar_estado_rapido_tarea(
-                                                row, "Finalizada",
+                                        registro_actualizado = tareas_actualizadas.loc[mask].iloc[0].to_dict()
+                                        try:
+                                            guardar_detalle_tarea_postgres(
+                                                get_postgres_engine(), tarea_id,
+                                                registro_actualizado, nuevo_estado, nombre_usuario,
                                             )
-                                            if not ok:
-                                                st.error(error)
-                                                st.stop()
-
-                                        registro_actualizado = (
-                                            tareas_actualizadas.loc[mask]
-                                            .iloc[0]
-                                            .to_dict()
-                                        )
-                                        registro_actualizado.pop("id", None)
-                                        actualizar_postgres_por_id(
-                                            "tareas",
-                                            tarea_id,
-                                            registro_actualizado,
-                                        )
+                                            _limpiar_cache_postgres()
+                                        except Exception as exc:
+                                            st.error(str(exc))
+                                            st.stop()
 
                                         if ids_reordenados:
                                             with get_postgres_engine().begin() as conn:
