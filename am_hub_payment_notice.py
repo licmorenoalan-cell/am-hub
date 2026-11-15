@@ -139,7 +139,7 @@ def render_payment_notice(cliente, perfil):
         try:
             validate(fields);url,ics=calendar_outputs(fields);eml=email_draft(fields,files)
         except ValueError as exc: st.error(str(exc));return
-        st.text_area('Texto listo para copiar',value=body(fields),height=230,key=approval_key+'_body')
+        st.text_area('Texto listo para copiar',value=body(fields),height=230,disabled=True,key=approval_key+'_body')
         for index,(name,content) in enumerate(files):
             st.download_button('Descargar '+name,content,file_name=name,mime='application/pdf',key=key+'_pdf_'+str(index))
         st.warning('Zoho no está integrado por API: esta descarga NO guarda un borrador en Zoho. Podés copiar el texto y adjuntar los PDF, o abrir el .eml en un cliente compatible.')
