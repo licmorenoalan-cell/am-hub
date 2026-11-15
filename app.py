@@ -18709,6 +18709,9 @@ def render_liquidaciones_fiscales(cliente_fijo="", modo="admin"):
         cm05_aplicable = cargar_coeficientes_cm05(
             cliente, periodo_aplicacion_cm05(periodo),
         )
+    from am_hub_payment_notice import render_payment_notice
+    render_payment_notice(cliente, perfil)
+
     resumen = resumir_movimientos(movimientos)
     expediente = evaluar_expediente_fiscal(
         perfil, registro, documentos, movimientos,
