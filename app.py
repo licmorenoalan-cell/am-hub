@@ -53,6 +53,8 @@ from am_hub_tasks import (
     validate_completion,
     preparar_nueva_tarea_fiscal,
     categoria_visual_tarea,
+    opciones_categorias_tareas,
+    resolver_categoria_tarea,
     es_categoria_impositiva,
     titulo_visual_tarea,
 )
@@ -13444,12 +13446,18 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
                     height=110,
                 )
 
-                categoria_txt = st.text_input(
+                catalogo_categorias = opciones_categorias_tareas(
+                    tareas_vista_base["_categoria_visual"].fillna("").tolist()
+                )
+                categoria_elegida = st.selectbox(
                     "Categoría — opcional",
-                    placeholder=(
-                        "Ejemplo: Estudios, Administración, "
-                        "Facturación"
-                    ),
+                    ["Sin categoría"] + catalogo_categorias + ["Crear nueva categoría"],
+                    help="Elegí una existente o creá una nueva. Luego podrás filtrarla en el tablero.",
+                )
+                categoria_nueva = st.text_input(
+                    "Nombre de nueva categoría",
+                    placeholder="Sólo si elegiste Crear nueva categoría",
+                    max_chars=80,
                 )
 
             with col_2:
@@ -13513,13 +13521,23 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
             )
 
             if crear:
+                try:
+                    categoria_txt = resolver_categoria_tarea(
+                        categoria_elegida, categoria_nueva, catalogo_categorias
+                    )
+                    error_categoria = ""
+                except ValueError as exc:
+                    categoria_txt = ""
+                    error_categoria = str(exc)
                 unidad_final = (
                     unidad_nueva.strip()
                     if unidad_sel == "Agregar nueva unidad"
                     else unidad_sel
                 )
 
-                if not unidad_final:
+                if error_categoria:
+                    st.error(error_categoria)
+                elif not unidad_final:
                     st.error(
                         "Ingresá el nombre de la nueva unidad."
                     )
@@ -13652,7 +13670,7 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
         )
 
     with f2:
-        categorias_disponibles = sorted(
+        categorias_disponibles = opciones_categorias_tareas(
             valor
             for valor in tareas_vista_base["_categoria_visual"]
             .fillna("")
@@ -13667,7 +13685,7 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
             categorias_disponibles,
             default=[],
             key=f"filtro_categoria_tareas_multi_{modo}",
-            help="Filtrá IVA, Ingresos Brutos, Autónomos, Monotributo u otra categoría.",
+            help="Filtrá IVA, Ingresos Brutos, SUELDOS, BOLETAS SINDICALES o tus propias categorías.",
         )
 
     with f3:
@@ -14086,6 +14104,8 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
 
     def colores_categoria_tarea(valor):
         return {
+            "SUELDOS": ("#DCFCE7", "#166534"),
+            "BOLETAS SINDICALES": ("#FEF3C7", "#92400E"),
             "IVA": ("#DBEAFE", "#1D4ED8"),
             "Ingresos Brutos": ("#CCFBF1", "#0F766E"),
             "Monotributo": ("#FEF3C7", "#A16207"),
