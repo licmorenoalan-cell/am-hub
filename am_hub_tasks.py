@@ -23,6 +23,35 @@ CATEGORIAS_IMPOSITIVAS = (
 )
 
 
+CATEGORIAS_LABORALES = ("SUELDOS", "BOLETAS SINDICALES")
+
+
+def opciones_categorias_tareas(valores=()):
+    """Catálogo reutilizable sin duplicar diferencias de mayúsculas/espacios."""
+    opciones = {}
+    for valor in (*CATEGORIAS_IMPOSITIVAS, *CATEGORIAS_LABORALES, *valores):
+        nombre = " ".join(str(valor or "").split())
+        if nombre:
+            opciones.setdefault(nombre.casefold(), nombre)
+    return sorted(opciones.values(), key=str.casefold)
+
+
+def resolver_categoria_tarea(elegida, nueva, opciones):
+    nombre = " ".join(str(nueva or "").split())
+    if elegida == "Crear nueva categoría":
+        if not nombre:
+            raise ValueError("Escribí el nombre de la nueva categoría.")
+    elif nombre:
+        raise ValueError("Seleccioná Crear nueva categoría para usar el nombre ingresado.")
+    else:
+        nombre = "" if elegida == "Sin categoría" else elegida
+    if len(nombre) > 80:
+        raise ValueError("La categoría no puede superar 80 caracteres.")
+    if nombre.casefold() in {"sin categoría", "crear nueva categoría"}:
+        raise ValueError("Elegí otro nombre para la categoría.")
+    return next((op for op in opciones if op.casefold() == nombre.casefold()), nombre)
+
+
 def siguiente_fecha_fiscal(tarea: dict, intervalo=1) -> str:
     tarea = dict(tarea, intervalo=intervalo)
     return resolve(tarea, next_period=True)['fecha']
@@ -31,6 +60,17 @@ def siguiente_fecha_fiscal(tarea: dict, intervalo=1) -> str:
 def categoria_visual_tarea(categoria, titulo="") -> str:
     """Normaliza la etiqueta fiscal sin modificar el dato guardado."""
     categoria_limpia = str(categoria or "").strip()
+    # Etiquetas laborales explícitas; sólo inferir desde títulos reconocibles
+    # de tarjetas heredadas sin categoría específica. No altera recurrencias.
+    laborales = {c.casefold(): c for c in CATEGORIAS_LABORALES}
+    if categoria_limpia.casefold() in laborales:
+        return laborales[categoria_limpia.casefold()]
+    if categoria_limpia.casefold() in {"", "bandeja de entrada", "administración", "impuestos", "laboral"}:
+        titulo_laboral = str(titulo or "").casefold().strip()
+        if re.match(r"^(?:liquidaci[oó]n (?:de )?)?sueldos\b", titulo_laboral):
+            return "SUELDOS"
+        if re.match(r"^boletas? sindicales?\b", titulo_laboral):
+            return "BOLETAS SINDICALES"
     texto = f"{categoria_limpia} {titulo or ''}".casefold()
 
     reglas = (
