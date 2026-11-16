@@ -123,7 +123,8 @@ def render_payment_notice(cliente, perfil):
         except Exception:
             st.error('No se pudo leer el VEP. Usá un PDF legible, sin contraseña y de hasta 15 MB / 40 páginas.');return
         if not text.strip(): st.warning('PDF sin texto: completá todos los campos manualmente contrastando el documento.')
-        with st.expander('Texto extraído del VEP (evidencia)'): st.text(text[:30000])
+        if st.checkbox('Mostrar texto extraído del VEP (evidencia)', key=key+'_evidence'):
+            st.text(text[:30000])
         for warn in data['advertencias']: st.caption(warn)
         detected=re.sub(r'\D','',data['cuit']);expected=re.sub(r'\D','',str(perfil.get('cuit','')))
         if detected and expected and detected!=expected:
