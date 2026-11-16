@@ -1,5 +1,6 @@
 """Conservative labeled DDJJ extraction; never derive payable amounts from sign."""
 import re,json
+EXTRACTOR_REVISION = "iva-simple-cm03-v3"
 from datetime import datetime
 
 def _one(values):
