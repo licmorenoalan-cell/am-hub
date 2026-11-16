@@ -1,5 +1,6 @@
 """Human-reviewed payment notices. No email sending or external PDF processing."""
 import hashlib
+import html
 import io
 import re
 from datetime import date, datetime, timedelta, timezone
@@ -91,27 +92,44 @@ def calendar_attachments(fields):
     items=notice_items(fields)
     return [('vencimiento.ics' if len(items)==1 else f'vencimiento_{i+1:02d}.ics', calendar_outputs(item)[1]) for i,item in enumerate(items)]
 
+def tax_label(value):
+    # Only normalize recognized names, never infer another tax from a document.
+    normalized=re.sub(r'^\d+\s*[-:]\s*','',value.strip()).upper()
+    if normalized in ('IVA','IMPUESTO AL VALOR AGREGADO'): return 'IVA'
+    if normalized in ('IIBB','INGRESOS BRUTOS','INGRESOS BRUTOS LOCAL','INGRESOS BRUTOS AGIP','INGRESOS BRUTOS CONVENIO MULTILATERAL'):
+        return 'Ingresos brutos'
+    return value.strip()
+
+def notice_opening(items):
+    labels=list(dict.fromkeys(tax_label(x['impuesto']).upper() for x in items))
+    # Conventional order for the requested IVA / IIBB combination.
+    if set(labels)=={'IVA','INGRESOS BRUTOS'}: names='IVA e INGRESOS BRUTOS'
+    elif len(labels)==1: names=labels[0]
+    else:
+        conjunction=' e ' if labels[-1].startswith(('I','HI')) else ' y '
+        names=', '.join(labels[:-1])+conjunction+labels[-1]
+    return 'Adjuntamos la documentación de '+names+' del periodo de referencia.'
+
 def body(fields):
-    if 'avisos' in fields:
-        items=notice_items(fields)
-        sections=[]
-        for i,item in enumerate(items):
-            url,_=calendar_outputs(item)
-            sections.append(f"{i+1}. {item['impuesto']} | {item['periodo']}\nImporte: $ {item['monto']} | Vencimiento: {item['vencimiento']}\nGoogle Calendar: {url}")
-        return ("Hola,\n\nAdjuntamos la documentación de "+fields['cliente']+".\n\n"+'\n\n'.join(sections)+
-                "\n\nAdjuntamos un archivo ICS por vencimiento. Importalo o usá el enlace Google (no ambos, para evitar duplicados). "
-                "Cada ICS solicita un aviso un día antes; revisá fecha, zona horaria y notificaciones al importar: algunas aplicaciones ignoran alarmas. "
-                "En Google debés guardar y configurar el aviso. No se agenda automáticamente.\n\nPor favor, enviános el comprobante una vez realizado el pago.\n\nAM Consultora")
-    calendar_url, _ = calendar_outputs(fields)
-    return (f"Hola,\n\nAdjuntamos la documentación de {fields['cliente']} correspondiente a "
-            f"{fields['impuesto']}, período {fields['periodo']}.\n"
-            f"Importe a pagar: $ {fields['monto']}.\n"
-            f"Vencimiento indicado en el VEP: {fields['vencimiento']}.\n\n"
-            "Por favor, enviános el comprobante una vez realizado el pago.\n\n"
-            f"Agregar vencimiento a Google Calendar: {calendar_url}\n"
-            "También adjuntamos vencimiento.ics para importar en tu calendario.\n"
-            "El archivo solicita un aviso un día antes. Al guardar/importar, revisá fecha, zona horaria y notificaciones: algunas aplicaciones ignoran las alarmas del archivo.\n"
-            "El enlace de Google requiere guardar el evento y configurar el aviso; no se agenda automáticamente.\n\nAM Consultora")
+    items=notice_items(fields)
+    sections=[]
+    for item in items:
+        url,_=calendar_outputs(item)
+        sections.append(f"{tax_label(item['impuesto'])}\n- Saldo a pagar: $ {item['monto']}\n- Vencimiento: {item['vencimiento']} (Agendar vencimiento: {url})")
+    return ('Buenos días!\n\n'+notice_opening(items)+'\n\n'+'\n\n'.join(sections)+
+            '\n\nCualquier duda, quedamos a disposición\n\nSaludos!')
+
+def body_html(fields):
+    items=notice_items(fields)
+    parts=['<p>Buenos días!</p>','<p>'+html.escape(notice_opening(items))+'</p>']
+    for item in items:
+        url,_=calendar_outputs(item)
+        parts.append('<p><strong>'+html.escape(tax_label(item['impuesto']))+'</strong><br>'+
+                     '- Saldo a pagar: $ '+html.escape(item['monto'])+'<br>'+
+                     '- Vencimiento: '+html.escape(item['vencimiento'])+
+                     ' (<a href="'+html.escape(url,quote=True)+'">Agendar vencimiento</a>)</p>')
+    parts+=['<p>Cualquier duda, quedamos a disposición</p>','<p>Saludos!</p>']
+    return ''.join(parts)
 
 def calendar_outputs(fields):
     validate(fields)
@@ -144,6 +162,7 @@ def email_draft(fields, attachments):
     msg=EmailMessage(policy=policy.SMTP)
     msg['To']=fields['email'];msg['Subject']=notice_subject(fields)
     msg['X-Unsent']='1';msg.set_content(body(fields))
+    msg.add_alternative(body_html(fields),subtype='html')
     for name,data in unique_pdfs(attachments):
         if not data.startswith(b'%PDF-') or len(data)>MAX_BYTES: raise ValueError('Adjunto PDF inválido.')
         msg.add_attachment(data,maintype='application',subtype='pdf',filename=name.split('/')[-1].split('\\')[-1])
@@ -199,6 +218,8 @@ def render_payment_notice(cliente, perfil):
         try:
             notice_items(fields);eml=email_draft(fields,files)
         except ValueError as exc: st.error(str(exc));return
+        st.markdown(body_html(fields), unsafe_allow_html=True)
+        st.caption('Calendario: usar el enlace o importar el ICS (no ambos). El ICS solicita aviso un día antes; el cliente debe revisar notificaciones, fecha y zona horaria. En Google debe guardar el evento y configurar el aviso.')
         st.text_area('Texto listo para copiar',value=body(fields),height=230,disabled=True,key=approval_key+'_body')
         for index,(name,content) in enumerate(files):
             st.download_button('Descargar '+name,content,file_name=name,mime='application/pdf',key=key+'_pdf_'+str(index))
