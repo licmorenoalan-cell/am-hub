@@ -46,7 +46,7 @@ class ZohoDraftClient:
             raise ZohoDraftError('No se pudo confirmar la operación. Revisá Borradores en Zoho antes de reintentar.') from None
 
     def create_draft(self,fields,attachments):
-        from am_hub_payment_notice import notice_items,notice_subject,unique_pdfs,body,MAX_BYTES,calendar_attachments
+        from am_hub_payment_notice import notice_items,notice_subject,unique_pdfs,body_html,MAX_BYTES,calendar_attachments
         notice_items(fields)
         attachments=unique_pdfs(attachments)
         if not 1<=len(attachments)<=10 or sum(len(d) for _,d in attachments)>25*1024*1024:
@@ -78,7 +78,7 @@ class ZohoDraftClient:
         result=self._request('POST',base,headers=headers,json={
             'fromAddress':self.config.from_address,'toAddress':fields['email'],
             'subject':notice_subject(fields),
-            'content':body(fields),'mailFormat':'plaintext','mode':'draft','attachments':refs})
+            'content':body_html(fields),'mailFormat':'html','mode':'draft','attachments':refs})
         data=result.get('data',{})
         if not isinstance(data,dict) or not data.get('messageId'):
             raise ZohoDraftError('Respuesta sin identificador. Revisá Borradores antes de reintentar.')
