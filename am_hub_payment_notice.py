@@ -10,6 +10,7 @@ from email import policy
 from urllib.parse import urlencode
 
 MAX_BYTES = 15 * 1024 * 1024
+PARSER_REVISION = "ddjj-cm03-zero-v2"
 
 def pdf_text(data):
     from pypdf import PdfReader
@@ -240,6 +241,10 @@ def email_draft(fields, attachments):
         msg.add_attachment(ics, maintype='text', subtype='calendar', filename=name)
     return msg.as_bytes()
 
+def extraction_state_key(key,index,reread=0):
+    """Version parsed data AND widget state; retain separate draft receipt keys."""
+    return key+'_'+str(index)+'_'+PARSER_REVISION+'_'+str(reread)
+
 def render_payment_notice(cliente, perfil, tasks=()):
     import streamlit as st
     with st.expander('Preparar aviso de pago · DDJJ / VEP',expanded=False):
@@ -248,6 +253,13 @@ def render_payment_notice(cliente, perfil, tasks=()):
         veps=st.file_uploader('VEP (PDF, uno o varios)',type=['pdf'],accept_multiple_files=True,key=base+'_veps')
         ddjj=st.file_uploader('DDJJ y respaldos (PDF)',type=['pdf'],accept_multiple_files=True,key=base+'_ddjj')
         credits=st.file_uploader('DDJJ a analizar (con o sin VEP)',type=['pdf'],accept_multiple_files=True,key=base+'_credits')
+        # Preserve the familiar uploader while fixing the silent DDJJ-only path.
+        auto_ddjj=bool(ddjj and not veps and not credits)
+        if auto_ddjj:
+            credits=ddjj
+            st.info('Se analizarán las DDJJ cargadas automáticamente porque no hay VEP ni otros documentos a analizar.')
+        elif ddjj:
+            st.caption('DDJJ y respaldos se adjuntan sin analizar cuando ya hay VEP u otras DDJJ a analizar. Para extraer otro impuesto, cargá su DDJJ en «DDJJ a analizar».')
         if not veps and not credits: return
         vep_files=unique_pdfs([(x.name,x.getvalue()) for x in veps])
         credit_files=unique_pdfs([(x.name,x.getvalue()) for x in credits])
@@ -259,9 +271,13 @@ def render_payment_notice(cliente, perfil, tasks=()):
             st.error('Máximo 10 PDF y 25 MB por correo.');return
         digest=hashlib.sha256(b''.join(x[1] for x in files)+repr([(n,k) for n,_,k in source_files]).encode()).hexdigest()[:16]
         key=base+'_'+digest
+        reread_key=key+'_reread'
+        if st.button('Volver a leer los PDF (descartar correcciones de estos campos)',key=key+'_reread_button'):
+            st.session_state[reread_key]=st.session_state.get(reread_key,0)+1
+        st.caption('Lectura automática: '+PARSER_REVISION+'. Releer reemplaza los campos por los datos detectados y requiere confirmarlos otra vez; no crea borradores.')
         notices=[];documentos={}
         for i,(filename,raw,source_kind) in enumerate(source_files):
-            subkey=key+'_'+str(i)
+            subkey=extraction_state_key(key,i,st.session_state.get(reread_key,0))
             st.markdown('**Documento '+str(i+1)+' · '+filename+'**')
             try:
                 if subkey+'_parsed' not in st.session_state:
@@ -271,14 +287,14 @@ def render_payment_notice(cliente, perfil, tasks=()):
                     st.session_state[subkey+'_parsed']=(text,parsed)
                 text,data=st.session_state[subkey+'_parsed']
             except Exception:
-                st.error('No se pudo leer este VEP. Usá PDF legible sin contraseña, hasta 15 MB / 40 páginas.');return
-            if not text.strip(): st.warning('PDF sin texto: completá este VEP manualmente contrastando el documento.')
-            if st.checkbox('Mostrar evidencia VEP '+str(i+1),key=subkey+'_evidence'): st.text(text[:30000])
+                st.error('No se pudo leer este documento. Usá PDF legible sin contraseña, hasta 15 MB / 40 páginas.');return
+            if not text.strip(): st.warning('PDF sin texto: completá este documento manualmente contrastando el documento.')
+            if st.checkbox('Mostrar evidencia del documento '+str(i+1),key=subkey+'_evidence'): st.text(text[:30000])
             for warn in data['advertencias']: st.caption(warn)
             detected=re.sub(r'\D','',data['cuit']);expected=re.sub(r'\D','',str(perfil.get('cuit','')))
             if detected and expected and detected!=expected:
-                st.error('El CUIT de este VEP no coincide con el cliente.');return
-            if not detected or not expected: st.warning('Revisá CUIT de este VEP y ficha del cliente: contraste automático no disponible.')
+                st.error('El CUIT de este documento no coincide con el cliente.');return
+            if not detected or not expected: st.warning('Revisá CUIT de este documento y ficha del cliente: contraste automático no disponible.')
             if data.get('nota_saldo'): st.warning(data['nota_saldo'])
             if data.get('fuente_fecha'): st.caption(data['fuente_fecha'])
             detected_kind=data.get('resultado') or ('A pagar' if source_kind=='A pagar' else 'Seleccionar')
@@ -307,7 +323,7 @@ def render_payment_notice(cliente, perfil, tasks=()):
                     item['_unreviewed']=True
             reviewkey=subkey+hashlib.sha256(repr(sorted(item.items())).encode()).hexdigest()[:12]
             if not st.checkbox('Verifiqué impuesto, período, tipo de saldo e importe del documento '+str(i+1),key=reviewkey):
-                st.caption('Revisá este VEP antes de preparar el correo.')
+                st.caption('Revisá este documento antes de preparar el correo.')
                 notices.append(dict(item,_unreviewed=True))
             else: notices.append(item)
             documentos[hashlib.sha256(raw).hexdigest()]={'tipo':'VEP' if source_kind=='A pagar' else 'DDJJ','impuesto':item['impuesto'],'periodo':item['periodo']}
