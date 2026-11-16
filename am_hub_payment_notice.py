@@ -20,7 +20,7 @@ def pdf_text(data):
         raise ValueError('El PDF está protegido. Usá una copia sin contraseña.')
     if len(reader.pages) > 40:
         raise ValueError('El PDF supera 40 páginas.')
-    return '\n'.join(p.extract_text() or '' for p in reader.pages)
+    return '\n'.join((p.extract_text(extraction_mode='layout') or '') if '/Contents' in p else '' for p in reader.pages)
 
 def parse_vep(text):
     """Only explicit labelled values; ambiguous or absent values stay blank."""
@@ -194,14 +194,14 @@ def email_draft(fields, attachments):
         msg.add_attachment(ics, maintype='text', subtype='calendar', filename=name)
     return msg.as_bytes()
 
-def render_payment_notice(cliente, perfil):
+def render_payment_notice(cliente, perfil, tasks=()):
     import streamlit as st
     with st.expander('Preparar aviso de pago · DDJJ / VEP',expanded=False):
         st.caption('Borrador asistido. Los PDF se procesan en AM Hub, sin enviarse a servicios de IA. No se envían correos ni se crean eventos automáticamente.')
         base='aviso_'+hashlib.sha256(cliente.encode()).hexdigest()[:12]
         veps=st.file_uploader('VEP (PDF, uno o varios)',type=['pdf'],accept_multiple_files=True,key=base+'_veps')
         ddjj=st.file_uploader('DDJJ y respaldos (PDF)',type=['pdf'],accept_multiple_files=True,key=base+'_ddjj')
-        credits=st.file_uploader('DDJJ con saldo a favor (sin VEP)',type=['pdf'],accept_multiple_files=True,key=base+'_credits')
+        credits=st.file_uploader('DDJJ a analizar (con o sin VEP)',type=['pdf'],accept_multiple_files=True,key=base+'_credits')
         if not veps and not credits: return
         vep_files=unique_pdfs([(x.name,x.getvalue()) for x in veps])
         credit_files=unique_pdfs([(x.name,x.getvalue()) for x in credits])
@@ -219,7 +219,10 @@ def render_payment_notice(cliente, perfil):
             st.markdown('**Documento '+str(i+1)+' · '+filename+'**')
             try:
                 if subkey+'_parsed' not in st.session_state:
-                    text=pdf_text(raw);st.session_state[subkey+'_parsed']=(text,parse_credit(text) if source_kind=='Saldo a favor' else parse_vep(text))
+                    text=pdf_text(raw)
+                    from am_hub_notice_extract import parse_ddjj
+                    parsed=parse_ddjj(text) if source_kind=='Saldo a favor' else parse_vep(text)
+                    st.session_state[subkey+'_parsed']=(text,parsed)
                 text,data=st.session_state[subkey+'_parsed']
             except Exception:
                 st.error('No se pudo leer este VEP. Usá PDF legible sin contraseña, hasta 15 MB / 40 páginas.');return
@@ -230,14 +233,31 @@ def render_payment_notice(cliente, perfil):
             if detected and expected and detected!=expected:
                 st.error('El CUIT de este VEP no coincide con el cliente.');return
             if not detected or not expected: st.warning('Revisá CUIT de este VEP y ficha del cliente: contraste automático no disponible.')
-            item={'resultado':st.selectbox('Resultado de la declaración', ['A pagar','Saldo a favor'],index=1 if source_kind=='Saldo a favor' else 0,key=subkey+'_kind')}
+            if data.get('nota_saldo'): st.warning(data['nota_saldo'])
+            if data.get('fuente_fecha'): st.caption(data['fuente_fecha'])
+            detected_kind=data.get('resultado') or ('A pagar' if source_kind=='A pagar' else 'Seleccionar')
+            kinds=['Seleccionar','A pagar','Saldo a favor']
+            selected=st.selectbox('Resultado de la declaración',kinds,index=kinds.index(detected_kind),key=subkey+'_kind')
+            if selected=='Seleccionar':
+                st.warning('Elegí el tipo de saldo luego de revisar la DDJJ.');return
+            item={'resultado':selected}
             labels=[('impuesto','Impuesto'),('periodo','Período fiscal'),('monto','Saldo a pagar en pesos' if is_payable(item) else 'Saldo a favor del contribuyente en pesos')]
             if is_payable(item): labels.append(('vencimiento','Vencimiento / expiración del VEP (DD/MM/AAAA)'))
             else:
                 item['vencimiento']=''
                 st.caption('No se generará enlace ni recordatorio de pago para este impuesto.')
             for name,label in labels:
-                item[name]=st.text_input(label,value=data[name],key=subkey+'_'+name)
+                default=data[name]
+                if name=='vencimiento' and tax_label(item.get('impuesto',''))=='IVA':
+                    from am_hub_notice_extract import card_deadline
+                    default,source=card_deadline(cliente,perfil.get('cuit',''),data.get('cuit',''),item.get('periodo',''),tasks)
+                    st.caption(source)
+                fieldkey=subkey+'_'+name
+                if name=='vencimiento': fieldkey+='_'+hashlib.sha256((item.get('impuesto','')+'|'+item.get('periodo','')+'|'+str(perfil.get('cuit',''))).encode()).hexdigest()[:10]
+                item[name]=st.text_input(label,value=default,key=fieldkey)
+            if source_kind=='Saldo a favor' and is_payable(item):
+                if not st.checkbox('Confirmé el saldo final a pagar contra la DDJJ y el VEP, incluyendo compensaciones y percepciones.',key=subkey+'_final_payment'):
+                    item['_unreviewed']=True
             reviewkey=subkey+hashlib.sha256(repr(sorted(item.items())).encode()).hexdigest()[:12]
             if not st.checkbox('Verifiqué impuesto, período, tipo de saldo e importe del documento '+str(i+1),key=reviewkey):
                 st.caption('Revisá este VEP antes de preparar el correo.')
@@ -246,6 +266,9 @@ def render_payment_notice(cliente, perfil):
         fields={'cliente':cliente,'avisos':notices}
         fields['email']=st.text_input('Destinatarios (coma para separar)',value=str(perfil.get('email_destinatarios','') or ''),key=key+'_email')
         if any(x.get('_unreviewed') for x in notices): return
+        identities=[(tax_label(x['impuesto']).casefold(),x['periodo'].replace('-','/')) for x in notices]
+        if len(set(identities))<len(identities):
+            st.error('Hay más de un aviso del mismo impuesto y período. Dejá la DDJJ o el VEP en documentos a analizar, y el otro en respaldos, para no duplicar importes ni recordatorios.');return
         approval_key=key+hashlib.sha256(repr(sorted(fields.items())).encode()).hexdigest()[:12]
         reviewed=st.checkbox('Verifiqué cliente/CUIT, destinatarios, importes, período, fecha y todos los adjuntos contra los PDF.',key=approval_key)
         if not reviewed: return
