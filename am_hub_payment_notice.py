@@ -39,19 +39,19 @@ def parse_vep(text):
     result['advertencias'] = warnings
     return result
 
-def amount(value):
+def amount(value, allow_zero=False):
     s = value.strip().replace('$','').replace(' ','')
     # Argentine notation only; dot decimals without comma are ambiguous.
     if not re.fullmatch(r'(?:\d+|\d{1,3}(?:\.\d{3})+)(?:,\d{1,2})?', s):
         raise ValueError('Ingresá el monto en pesos: 123456,78 o 123.456,78.')
     n = Decimal(s.replace('.','').replace(',','.'))
-    if n <= 0: raise ValueError('El monto debe ser mayor a cero.')
+    if n < 0 or (n == 0 and not allow_zero): raise ValueError('El monto debe ser mayor a cero.')
     return n.quantize(Decimal('.01'))
 
 def is_payable(fields):
     kind=fields.get('resultado','A pagar')
-    if kind not in ('A pagar','Saldo a favor'):
-        raise ValueError('Seleccioná A pagar o Saldo a favor explícitamente.')
+    if kind not in ('A pagar','Saldo a favor','Sin saldo'):
+        raise ValueError('Seleccioná A pagar, Saldo a favor o Sin saldo explícitamente.')
     return kind == 'A pagar'
 
 def parse_credit(text):
@@ -68,7 +68,9 @@ def validate(fields):
         raise ValueError('Completá cliente e impuesto.')
     if not re.fullmatch(r'(?:\d{4}[-/](?:0[1-9]|1[0-2])|(?:0[1-9]|1[0-2])[-/]\d{4})',fields.get('periodo','')):
         raise ValueError('Período inválido: usá AAAA-MM o MM/AAAA.')
-    amount(fields.get('monto',''))
+    zero=fields.get('resultado')=='Sin saldo'
+    value=amount(fields.get('monto',''),allow_zero=zero)
+    if zero and value != 0: raise ValueError('Sin saldo requiere importe cero; revisá el resultado seleccionado.')
     if is_payable(fields):
         try: datetime.strptime(fields.get('vencimiento','').replace('-','/'),'%d/%m/%Y')
         except ValueError: raise ValueError('Vencimiento inválido: usá DD/MM/AAAA.')
@@ -168,6 +170,9 @@ def body(fields):
     items=notice_items(fields)
     sections=[]
     for item in items:
+        if item.get('resultado')=='Sin saldo':
+            sections.append(tax_label(item['impuesto']))
+            continue
         if not is_payable(item):
             sections.append(f"{tax_label(item['impuesto'])}\n- Saldo a favor: $ {item['monto']}\n- Sin importe a pagar.")
             continue
@@ -180,6 +185,9 @@ def body_html(fields):
     items=notice_items(fields)
     parts=['<p>Buenos días!</p>','<p>'+html.escape(notice_opening(items))+'</p>']
     for item in items:
+        if item.get('resultado')=='Sin saldo':
+            parts.append('<p><strong>'+html.escape(tax_label(item['impuesto']))+'</strong></p>')
+            continue
         if not is_payable(item):
             parts.append('<p><strong>'+html.escape(tax_label(item['impuesto']))+'</strong><br>'+
                          '- Saldo a favor: $ '+html.escape(item['monto'])+'<br>- Sin importe a pagar.</p>')
@@ -274,23 +282,24 @@ def render_payment_notice(cliente, perfil, tasks=()):
             if data.get('nota_saldo'): st.warning(data['nota_saldo'])
             if data.get('fuente_fecha'): st.caption(data['fuente_fecha'])
             detected_kind=data.get('resultado') or ('A pagar' if source_kind=='A pagar' else 'Seleccionar')
-            kinds=['Seleccionar','A pagar','Saldo a favor']
+            kinds=['Seleccionar','A pagar','Saldo a favor','Sin saldo']
             selected=st.selectbox('Resultado de la declaración',kinds,index=kinds.index(detected_kind),key=subkey+'_kind')
             if selected=='Seleccionar':
                 st.warning('Elegí el tipo de saldo luego de revisar la DDJJ.');return
             item={'resultado':selected}
-            labels=[('impuesto','Impuesto'),('periodo','Período fiscal'),('monto','Saldo a pagar en pesos' if is_payable(item) else 'Saldo a favor del contribuyente en pesos')]
+            labels=[('impuesto','Impuesto'),('periodo','Período fiscal'),('monto','Saldo a pagar en pesos' if is_payable(item) else ('Importe cero (sin saldo)' if selected=='Sin saldo' else 'Saldo a favor del contribuyente en pesos'))]
             if is_payable(item): labels.append(('vencimiento','Vencimiento / expiración del VEP (DD/MM/AAAA)'))
             else:
                 item['vencimiento']=''
                 st.caption('No se generará enlace ni recordatorio de pago para este impuesto.')
             for name,label in labels:
-                default=data[name]
+                default='0' if name=='monto' and selected=='Sin saldo' else data[name]
                 if name=='vencimiento' and tax_label(item.get('impuesto',''))=='IVA':
                     from am_hub_notice_extract import card_deadline
                     default,source=card_deadline(cliente,perfil.get('cuit',''),data.get('cuit',''),item.get('periodo',''),tasks)
                     st.caption(source)
                 fieldkey=subkey+'_'+name
+                if name=='monto': fieldkey+='_'+selected
                 if name=='vencimiento': fieldkey+='_'+hashlib.sha256((item.get('impuesto','')+'|'+item.get('periodo','')+'|'+str(perfil.get('cuit',''))).encode()).hexdigest()[:10]
                 item[name]=st.text_input(label,value=default,key=fieldkey)
             if source_kind=='Saldo a favor' and is_payable(item):
