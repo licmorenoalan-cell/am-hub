@@ -258,9 +258,15 @@ def apply_resolution(task, result, preserve_legacy_date=False):
 
 def pending_label(task):
     fiscal = metadata(task)
+    # A reviewed explicit configuration supersedes historical comment markers.
+    # Completion still re-resolves against the calendar and profile below; this
+    # does not turn an arbitrary manually-entered date into a valid deadline.
+    reviewed = (fiscal.get('estado') == 'verificado' and not fiscal.get('motivo')
+                and all(fiscal.get(k) for k in ('impuesto', 'obligacion', 'jurisdiccion', 'periodo', 'fuente'))
+                and bool(task.get('fecha_limite')))
     if ((task.get('recurrente') == 'Sí' or fiscal) and is_fiscal(task)
             and (not task.get('fecha_limite') or fiscal.get('estado') == 'pendiente'
-                 or PENDING in str(task.get('comentarios') or ''))):
+                 or (not reviewed and PENDING in str(task.get('comentarios') or '')))):
         previous = str(task.get('fecha_limite') or '')
         reason = str(fiscal.get('motivo') or '')
         if not reason:
