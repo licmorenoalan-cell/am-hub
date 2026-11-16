@@ -63,11 +63,16 @@ def validate(fields):
     return fields
 
 def body(fields):
+    calendar_url, _ = calendar_outputs(fields)
     return (f"Hola,\n\nAdjuntamos la documentación de {fields['cliente']} correspondiente a "
             f"{fields['impuesto']}, período {fields['periodo']}.\n"
             f"Importe a pagar: $ {fields['monto']}.\n"
             f"Vencimiento indicado en el VEP: {fields['vencimiento']}.\n\n"
-            "Por favor, enviános el comprobante una vez realizado el pago.\n\nAM Consultora")
+            "Por favor, enviános el comprobante una vez realizado el pago.\n\n"
+            f"Agregar vencimiento a Google Calendar: {calendar_url}\n"
+            "También adjuntamos vencimiento.ics para importar en tu calendario.\n"
+            "El archivo solicita un aviso un día antes. Al guardar/importar, revisá fecha, zona horaria y notificaciones: algunas aplicaciones ignoran las alarmas del archivo.\n"
+            "El enlace de Google requiere guardar el evento y configurar el aviso; no se agenda automáticamente.\n\nAM Consultora")
 
 def calendar_outputs(fields):
     validate(fields)
@@ -81,7 +86,9 @@ def calendar_outputs(fields):
     lines=['BEGIN:VCALENDAR','VERSION:2.0','PRODID:-//AM Hub//Aviso de pago//ES','BEGIN:VEVENT',
            'UID:'+uid,'DTSTAMP:'+datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ'),
            f'DTSTART;VALUE=DATE:{day:%Y%m%d}',f'DTEND;VALUE=DATE:{end:%Y%m%d}',
-           'SUMMARY:'+escape(title),'DESCRIPTION:'+escape(details),'END:VEVENT','END:VCALENDAR']
+           'SUMMARY:'+escape(title),'DESCRIPTION:'+escape(details),
+           'BEGIN:VALARM','ACTION:DISPLAY','TRIGGER:-P1D',
+           'DESCRIPTION:'+escape('Recordatorio: '+title),'END:VALARM','END:VEVENT','END:VCALENDAR']
     # Fold UTF-8 lines without splitting a codepoint (RFC 5545).
     folded=[]
     for line in lines:
@@ -101,6 +108,8 @@ def email_draft(fields, attachments):
     for name,data in attachments:
         if not data.startswith(b'%PDF-') or len(data)>MAX_BYTES: raise ValueError('Adjunto PDF inválido.')
         msg.add_attachment(data,maintype='application',subtype='pdf',filename=name.split('/')[-1].split('\\')[-1])
+    _, ics = calendar_outputs(fields)
+    msg.add_attachment(ics, maintype='text', subtype='calendar', filename='vencimiento.ics')
     return msg.as_bytes()
 
 def render_payment_notice(cliente, perfil):
