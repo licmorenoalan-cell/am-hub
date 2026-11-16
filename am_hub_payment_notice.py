@@ -87,11 +87,25 @@ def notice_items(fields):
         raise ValueError('Cargá entre 1 y 10 impuestos por correo.')
     return [validate(dict(item, cliente=fields['cliente'], email=fields['email'])) for item in items]
 
+def normalized_notice_period(value):
+    parts=re.split(r'[-/]',value)
+    if len(parts)!=2: return value
+    return parts[1]+'/'+parts[0] if len(parts[0])==4 else parts[0]+'/'+parts[1]
+
+def joined_taxes(labels):
+    labels=list(dict.fromkeys(labels))
+    if set(labels)=={'IVA','INGRESOS BRUTOS'}: return 'IVA e INGRESOS BRUTOS'
+    if len(labels)==1: return labels[0]
+    return ', '.join(labels[:-1])+(' e ' if labels[-1].startswith(('I','HI')) else ' y ')+labels[-1]
+
 def notice_subject(fields):
     items = notice_items(fields)
-    if len(items) == 1:
-        return f"{fields['cliente']} | {items[0]['impuesto']} | {items[0]['periodo']}"
-    return f"{fields['cliente']} | Documentación impositiva ({len(items)} impuestos)"
+    groups={}
+    for item in items:
+        period=normalized_notice_period(item['periodo'])
+        groups.setdefault(period,[]).append(tax_label(item['impuesto']).upper())
+    detail='; '.join(joined_taxes(labels)+' '+period for period,labels in groups.items())
+    return 'DDJJ '+detail+' - '+fields['cliente'].strip()
 
 def unique_pdfs(attachments):
     seen=set(); result=[]; names=set()
@@ -266,7 +280,7 @@ def render_payment_notice(cliente, perfil, tasks=()):
         fields={'cliente':cliente,'avisos':notices}
         fields['email']=st.text_input('Destinatarios (coma para separar)',value=str(perfil.get('email_destinatarios','') or ''),key=key+'_email')
         if any(x.get('_unreviewed') for x in notices): return
-        identities=[(tax_label(x['impuesto']).casefold(),x['periodo'].replace('-','/')) for x in notices]
+        identities=[(tax_label(x['impuesto']).casefold(),normalized_notice_period(x['periodo'])) for x in notices]
         if len(set(identities))<len(identities):
             st.error('Hay más de un aviso del mismo impuesto y período. Dejá la DDJJ o el VEP en documentos a analizar, y el otro en respaldos, para no duplicar importes ni recordatorios.');return
         approval_key=key+hashlib.sha256(repr(sorted(fields.items())).encode()).hexdigest()[:12]
@@ -275,6 +289,7 @@ def render_payment_notice(cliente, perfil, tasks=()):
         try:
             notice_items(fields);eml=email_draft(fields,files)
         except ValueError as exc: st.error(str(exc));return
+        st.text('Asunto: '+notice_subject(fields))
         st.markdown(body_html(fields), unsafe_allow_html=True)
         st.caption('Calendario: usar el enlace o importar el ICS (no ambos). El ICS solicita aviso un día antes; el cliente debe revisar notificaciones, fecha y zona horaria. En Google debe guardar el evento y configurar el aviso.')
         st.text_area('Texto listo para copiar',value=body(fields),height=230,disabled=True,key=approval_key+'_body')
