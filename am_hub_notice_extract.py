@@ -28,16 +28,40 @@ def parse_ddjj(text):
         d['impuesto']='Ingresos Brutos';d['monto']='';d['vencimiento']=''
         total=_one(re.findall(r'(?im)\b(?:SALDO A PAGAR|TOTAL A PAGAR)\s*:?\s*\$\s*([\d.,]+)\s*$',text))
         favor=_money(text,r'SUBTOTAL A FAVOR DEL CONTRIBUYENTE')
+        fisco=_money(text,r'SUBTOTAL A FAVOR DGR')
         d['vencimiento']=_one(re.findall(r'(?i)Fecha venc\s*:\s*(\d{2}/\d{2}/\d{4})',text))
         if d['vencimiento']:d['fuente_fecha']='Fecha venc de DDJJ AGIP local'
         if total and _number(total)>0:
             d.update(resultado='A pagar',monto=total)
             if favor and _number(favor)>0:d['advertencias'].append('AGIP informa saldo a pagar y favor positivos: revisar inconsistencia antes de continuar.')
+        elif total and _number(total)==0 and favor and _number(favor)==0 and fisco and _number(fisco)==0:
+            d.update(resultado='Sin saldo',monto='0,00')
         elif total and _number(total)==0:
             d['resultado']='Saldo a favor'
             d['monto']=favor if favor and _number(favor)>0 else ''
             if not d['monto']:d['advertencias'].append('Total a pagar cero no identifica el importe del saldo a favor. Completalo desde evidencia explícita; no se inventa.')
         d['advertencias'].append('Confirmar saldo y Fecha venc contra la DDJJ AGIP.')
+    elif 'CONVENIO MULTILATERAL' in text.upper() and re.search(r'\bCM03\b',text,re.I):
+        d.update(impuesto='Ingresos Brutos',monto='',vencimiento='',resultado='')
+        periods=re.findall(r'(?im)^\s*Anticipo\s*:\s*(\d{4})(\d{2})\b',text)
+        d['periodo']=_one([m+'/'+y for y,m in periods])
+        total=_one(re.findall(r'(?im)Total a pagar\s*:\s*\$\s*([\d.,]+)\s*$',text))
+        rows=re.findall(r'(?im)^\s*TOTALES\s+([^\n]+)$',text)
+        values=re.findall(r'\$\s*([\d.,]+)',rows[0]) if len(rows)==1 else []
+        headers=all(re.search(label,text,re.I) for label in ('Jurisdicciones incluidas','Valores Restan','Valores Suman','A Favor Fisco','Contribuyente','A Pagar'))
+        if headers and len(values)==6 and total and _number(values[5])==_number(total):
+            favor,fisco,pagar=map(_number,values[3:6])
+            if pagar>0:
+                d.update(resultado='A pagar',monto=total)
+                if favor>0:d['advertencias'].append('CM03 también muestra saldo a favor en otras jurisdicciones; no se compensa automáticamente con el total a pagar.')
+            elif pagar==0 and favor>0 and fisco==0:
+                d.update(resultado='Saldo a favor',monto=values[3])
+            elif pagar==0 and favor==0 and fisco==0:
+                d.update(resultado='Sin saldo',monto='0,00')
+            else:d['advertencias'].append('Totales CM03 no concluyentes: revisar saldo a favor del fisco y pagos antes de seleccionar resultado.')
+        else:
+            d['advertencias'].append('No se pudo validar la fila TOTALES y sus seis columnas contra Total a pagar; revisar manualmente.')
+        d['advertencias'].append('CM03: confirmar columnas de la fila TOTALES. Fecha de presentación no es vencimiento; verificar fecha manualmente si hay pago.')
     elif re.search(r'IMPUESTO AL VALOR\s+AGREGADO|F\.2051',text,re.I):
         d.update(impuesto='IVA',monto='',vencimiento='')
         favor=_money(text,r'Saldo t[eé]cnico a favor del contribuyente')
@@ -48,6 +72,7 @@ def parse_ddjj(text):
             d.update(resultado='A pagar',monto=arca,nota_saldo='Importe técnico a favor ARCA: confirmar saldo final a pagar tras percepciones/compensaciones; no equivale necesariamente al pago.')
         else:d['advertencias'].append('Saldo IVA no identificado de forma inequívoca; completar y confirmar manualmente.')
         d['advertencias'].append('Vencimiento IVA únicamente desde tarjeta verificada del mismo cliente/CUIT, impuesto y período; no se usa fecha de presentación ni vencimiento del VEP.')
+    d['advertencias']=[w for w in d['advertencias'] if not any(d.get(k) and w==k+': no identificado de forma única; completar/revisar.' for k in ('cuit','impuesto','periodo','monto','vencimiento'))]
     return d
 
 def card_deadline(cliente,profile_cuit,document_cuit,period,tasks):
