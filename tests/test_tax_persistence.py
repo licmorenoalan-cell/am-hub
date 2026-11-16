@@ -47,6 +47,26 @@ class PersistenceTests(unittest.TestCase):
             c.execute(text('INSERT INTO tareas ('+','.join(seed)+') VALUES ('+','.join(':'+k for k in seed)+')'),seed)
         self.engine=Engine(self.db)
 
+    def test_verified_configuration_supersedes_stale_pending_comment(self):
+        from am_hub_tax_calendar import resolve, encode_metadata, pending_label
+        with self.db.begin() as c:
+            row=dict(c.execute(text("SELECT * FROM tareas WHERE id='one'")).mappings().one())
+            row['id_externo']=encode_metadata(resolve(row)['contexto'])
+            row['comentarios']='Historical note\nVencimiento fiscal pendiente: Falta periodo'
+            c.execute(text("UPDATE tareas SET id_externo=:id_externo,comentarios=:comentarios WHERE id='one'"),row)
+        self.assertEqual(pending_label(row),'')
+        result=actualizar_estado_tarea_postgres(self.engine,'one','Finalizada','test')
+        self.assertEqual(result['generada']['fecha_limite'],'2027-01-20')
+
+    def test_stale_comment_fix_does_not_allow_wrong_date(self):
+        from am_hub_tax_calendar import resolve, encode_metadata
+        with self.db.begin() as c:
+            row=dict(c.execute(text("SELECT * FROM tareas WHERE id='one'")).mappings().one())
+            row['id_externo']=encode_metadata(resolve(row)['contexto'])
+            c.execute(text("UPDATE tareas SET id_externo=:id_externo,fecha_limite='2026-12-31',comentarios='Vencimiento fiscal pendiente: Falta periodo' WHERE id='one'"),row)
+        with self.assertRaisesRegex(ValueError,'calendario oficial'):
+            actualizar_estado_tarea_postgres(self.engine,'one','Finalizada','test')
+
     def test_complete_replay_and_reopen_do_not_duplicate(self):
         r=actualizar_estado_tarea_postgres(self.engine,'one','Finalizada','test')
         self.assertEqual(r['generada']['fecha_limite'],'2027-01-20')
