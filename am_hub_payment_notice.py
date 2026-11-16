@@ -10,7 +10,7 @@ from email import policy
 from urllib.parse import urlencode
 
 MAX_BYTES = 15 * 1024 * 1024
-PARSER_REVISION = "ddjj-cm03-zero-v2"
+PARSER_REVISION = "unified-ddjj-vep-v3"
 
 def pdf_text(data):
     from pypdf import PdfReader
@@ -241,6 +241,12 @@ def email_draft(fields, attachments):
         msg.add_attachment(ics, maintype='text', subtype='calendar', filename=name)
     return msg.as_bytes()
 
+def detect_document_type(text):
+    """Classify by document text, never by filename or a guessed tax amount."""
+    ddjj=bool(re.search(r'IVA SIMPLE|F\.2051|IMPUESTO AL VALOR\s+AGREGADO|CONTRIBUYENTES LOCALES|DJ MENSUAL\s*-?\s*CM03',text,re.I))
+    vep=bool(re.search(r'VOLANTE ELECTR[OÓ]NICO DE PAGO|(?:N[ÚU]MERO|NRO\.?|N[°º])\s*(?:DE\s*)?VEP|VEP\s*(?:N[°º]|NRO)',text,re.I))
+    return 'DDJJ' if ddjj and not vep else ('VEP' if vep and not ddjj else '')
+
 def extraction_state_key(key,index,reread=0):
     """Version parsed data AND widget state; retain separate draft receipt keys."""
     return key+'_'+str(index)+'_'+PARSER_REVISION+'_'+str(reread)
@@ -250,25 +256,28 @@ def render_payment_notice(cliente, perfil, tasks=()):
     with st.expander('Preparar aviso de pago · DDJJ / VEP',expanded=False):
         st.caption('Borrador asistido. Los PDF se procesan en AM Hub, sin enviarse a servicios de IA. No se envían correos ni se crean eventos automáticamente.')
         base='aviso_'+hashlib.sha256(cliente.encode()).hexdigest()[:12]
-        veps=st.file_uploader('VEP (PDF, uno o varios)',type=['pdf'],accept_multiple_files=True,key=base+'_veps')
-        ddjj=st.file_uploader('DDJJ y respaldos (PDF)',type=['pdf'],accept_multiple_files=True,key=base+'_ddjj')
-        credits=st.file_uploader('DDJJ a analizar (con o sin VEP)',type=['pdf'],accept_multiple_files=True,key=base+'_credits')
-        # Preserve the familiar uploader while fixing the silent DDJJ-only path.
-        auto_ddjj=bool(ddjj and not veps and not credits)
-        if auto_ddjj:
-            credits=ddjj
-            st.info('Se analizarán las DDJJ cargadas automáticamente porque no hay VEP ni otros documentos a analizar.')
-        elif ddjj:
-            st.caption('DDJJ y respaldos se adjuntan sin analizar cuando ya hay VEP u otras DDJJ a analizar. Para extraer otro impuesto, cargá su DDJJ en «DDJJ a analizar».')
-        if not veps and not credits: return
-        vep_files=unique_pdfs([(x.name,x.getvalue()) for x in veps])
-        credit_files=unique_pdfs([(x.name,x.getvalue()) for x in credits])
-        if {hashlib.sha256(d).hexdigest() for _,d in vep_files} & {hashlib.sha256(d).hexdigest() for _,d in credit_files}:
-            st.error('El mismo PDF está cargado como VEP y saldo a favor. Elegí una sola categoría para evitar duplicar el impuesto.');return
-        source_files=[(n,d,'A pagar') for n,d in vep_files]+[(n,d,'Saldo a favor') for n,d in credit_files]
-        files=unique_pdfs(vep_files+credit_files+[(x.name,x.getvalue()) for x in ddjj])
+        uploads=st.file_uploader('DDJJ y VEP (PDF, uno o varios)',type=['pdf'],accept_multiple_files=True,key=base+'_documents')
+        if not uploads: return
+        files=unique_pdfs([(x.name,x.getvalue()) for x in uploads])
         if len(files)>10 or sum(len(x[1]) for x in files)>25*1024*1024:
             st.error('Máximo 10 PDF y 25 MB por correo.');return
+        source_files=[];document_kinds={}
+        for filename,raw in files:
+            docid=hashlib.sha256(raw).hexdigest()
+            textkey=base+'_text_'+docid+'_'+PARSER_REVISION
+            try:
+                if textkey not in st.session_state: st.session_state[textkey]=pdf_text(raw)
+                detected_type=detect_document_type(st.session_state[textkey])
+            except Exception:
+                st.error('No se pudo leer '+filename+'. Usá PDF legible sin contraseña, hasta 15 MB / 40 páginas.');return
+            choices=['Seleccionar','DDJJ','VEP','Respaldo']
+            kind=st.selectbox('Tipo de documento · '+filename,choices,index=choices.index(detected_type) if detected_type else 0,key=textkey+'_type')
+            if kind=='Seleccionar':
+                st.warning('No se pudo identificar el tipo de '+filename+'. Seleccionalo tras revisar el PDF.');return
+            document_kinds[docid]=kind
+            if kind!='Respaldo':source_files.append((filename,raw,'A pagar' if kind=='VEP' else 'Saldo a favor'))
+        if not source_files:
+            st.warning('Cargá al menos una DDJJ o VEP para obtener los datos del aviso.');return
         digest=hashlib.sha256(b''.join(x[1] for x in files)+repr([(n,k) for n,_,k in source_files]).encode()).hexdigest()[:16]
         key=base+'_'+digest
         reread_key=key+'_reread'
@@ -327,19 +336,25 @@ def render_payment_notice(cliente, perfil, tasks=()):
                 notices.append(dict(item,_unreviewed=True))
             else: notices.append(item)
             documentos[hashlib.sha256(raw).hexdigest()]={'tipo':'VEP' if source_kind=='A pagar' else 'DDJJ','impuesto':item['impuesto'],'periodo':item['periodo']}
-        # Supporting PDFs are never guessed to be a VEP or linked by filename.
-        choices=['Seleccionar']+[str(i+1)+' · '+x['impuesto']+' · '+x['periodo'] for i,x in enumerate(notices)]
-        for j,(filename,raw) in enumerate(files):
+        # Unknown/support files remain attached without inventing document identity.
+        for filename,raw in files:
             docid=hashlib.sha256(raw).hexdigest()
-            if docid in documentos: continue
-            st.markdown('**Identificar adjunto · '+filename+'**')
-            kind=st.selectbox('Tipo de documento', ['Seleccionar','DDJJ','VEP','Respaldo'],key=key+'_doctype_'+docid)
-            if kind=='Seleccionar': st.caption('Identificá este PDF antes de preparar el correo.');return
-            if kind=='Respaldo': documentos[docid]={'tipo':kind};continue
-            linked=st.selectbox('Impuesto y período de este adjunto',choices,key=key+'_doclink_'+docid)
-            if linked=='Seleccionar': return
-            item=notices[choices.index(linked)-1]
-            documentos[docid]={'tipo':kind,'impuesto':item['impuesto'],'periodo':item['periodo']}
+            if docid not in documentos:documentos[docid]={'tipo':'Respaldo'}
+        # Multiple PDFs can document one obligation. Require a reviewed primary
+        # source rather than duplicate amounts/events or silently net balances.
+        groups={}
+        for i,item in enumerate(notices):
+            ident=(tax_label(item['impuesto']).casefold(),normalized_notice_period(item['periodo']))
+            groups.setdefault(ident,[]).append(i)
+        selected_notices=[]
+        for ident,indices in groups.items():
+            if len(indices)==1:selected_notices.append(notices[indices[0]]);continue
+            labels=['Seleccionar']+[str(i+1)+' · '+source_files[i][0] for i in indices]
+            st.warning('Hay DDJJ/VEP del mismo impuesto y período. Verificá saldos y elegí la fuente del importe y vencimiento; se adjuntan todos, pero se genera un solo aviso.')
+            choice=st.selectbox('Datos principales · '+ident[0]+' · '+ident[1],labels,key=key+'_primary_'+str(indices))
+            if choice=='Seleccionar':return
+            selected_notices.append(notices[indices[labels.index(choice)-1]])
+        notices=selected_notices
         fields={'cliente':cliente,'avisos':notices,'documentos':documentos}
         st.caption('Nombres PDF: MMAAAA DDJJ IVA/IIBB; los volantes llevan prefijo VEP. Los respaldos conservan su nombre.')
         fields['email']=st.text_input('Destinatarios (coma para separar)',value=str(perfil.get('email_destinatarios','') or ''),key=key+'_email')
