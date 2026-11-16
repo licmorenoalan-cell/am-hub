@@ -142,7 +142,32 @@ def render_payment_notice(cliente, perfil):
         st.text_area('Texto listo para copiar',value=body(fields),height=230,disabled=True,key=approval_key+'_body')
         for index,(name,content) in enumerate(files):
             st.download_button('Descargar '+name,content,file_name=name,mime='application/pdf',key=key+'_pdf_'+str(index))
-        st.warning('Zoho no está integrado por API: esta descarga NO guarda un borrador en Zoho. Podés copiar el texto y adjuntar los PDF, o abrir el .eml en un cliente compatible.')
+        # OAuth secrets are deployment-only, never user inputs or repository data.
+        zoho_settings = st.secrets.get('zoho_drafts', {})
+        if zoho_settings:
+            from am_hub_zoho_drafts import ZohoConfig, ZohoDraftClient, ZohoDraftError
+            draft_state = approval_key + '_zoho_result'
+            result = st.session_state.get(draft_state)
+            st.caption('Guardar en Zoho transfiere estos campos y PDF a la cuenta AM Consultora. Se crea sólo un borrador: el envío se realiza manualmente en Zoho.')
+            if result:
+                if result.get('message_id'):
+                    st.success('Borrador guardado en Zoho con los PDF. No enviado.')
+                else:
+                    st.warning('El resultado de este intento no pudo confirmarse. Revisá Borradores antes de crear otro aviso para evitar duplicados.')
+                st.link_button('Abrir Borradores de Zoho', 'https://mail.zoho.com/zm/#mail/folder/drafts')
+            elif st.button('Guardar borrador en Zoho (no enviar)', key=approval_key+'_zoho'):
+                # Mark before networking; reruns/double clicks never repeat an uncertain POST.
+                st.session_state[draft_state] = {'uncertain': True}
+                try:
+                    config = ZohoConfig(**dict(zoho_settings))
+                    st.session_state[draft_state] = ZohoDraftClient(config).create_draft(fields, files)
+                    st.rerun()
+                except (ZohoDraftError, ValueError) as exc:
+                    st.error(str(exc))
+                except Exception:
+                    st.error('No se pudo confirmar el borrador. Revisá Zoho antes de reintentar.')
+        else:
+            st.warning('La conexión Zoho aún no está configurada en este servidor. El .eml NO guarda un borrador en Zoho; podés copiar el texto y adjuntar los PDF manualmente.')
         st.download_button('Descargar correo preparado (.eml con PDF)',eml,file_name='aviso_pago.eml',mime='message/rfc822',key=key+'_eml')
         st.download_button('Descargar recordatorio (.ics)',ics,file_name='vencimiento.ics',mime='text/calendar',key=key+'_ics')
         st.link_button('Abrir evento en Google Calendar',url,help='El enlace contiene cliente, impuesto e importe. Sólo se envían a Google cuando lo abrís; el evento requiere guardar.')
