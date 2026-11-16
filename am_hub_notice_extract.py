@@ -1,0 +1,72 @@
+"""Conservative labeled DDJJ extraction; never derive payable amounts from sign."""
+import re,json
+from datetime import datetime
+
+def _one(values):
+    vals=list(dict.fromkeys(v.strip() for v in values))
+    return vals[0] if len(vals)==1 else ''
+
+def _money(text,label):
+    return _one(re.findall(r'(?im)^\s*'+label+r'\s*:?\s*\$\s*([\d.,]+)\s*$',text))
+
+def _number(s):
+    return float(s.replace('.','').replace(',','.')) if s else None
+
+def parse_ddjj(text):
+    from am_hub_payment_notice import parse_vep
+    d=parse_vep(text);d.update(resultado='',fuente_fecha='',nota_saldo='')
+    # Layout text preserves AGIP's labels and columns. CUIT of signatory is excluded.
+    cuits=re.findall(r'(?im)^\s*(?:Raz[oó]n Social:[^\n]*?\s+)?CUIT\s*:?\s*(\d{2}-?\d{8}-?\d)\b',text)
+    if not cuits: cuits=re.findall(r'(?im)Raz[oó]n Social:[^\n]*?\bCUIT:\s*(\d{2}-?\d{8}-?\d)',text)
+    cuits += re.findall(r'(?im)^\s*CUIT[^\n]*\n\s*(\d{2}-?\d{8}-?\d)\b',text)
+    d['cuit']=_one(cuits)
+    periods=re.findall(r'(?im)Per[ií]odo\s*:?\s*(\d{2})\s*-\s*(\d{4})',text)
+    periods += [(m,y) for y,m in re.findall(r'(?im)Per[ií]odo\s*:?\s*(\d{4})(\d{2})\b',text)]
+    periods += re.findall(r'(?im)Vista Previa\s*\|\s*(\d{2})/(\d{4})',text)
+    if periods:d['periodo']=_one([m+'/'+y for m,y in periods])
+    if 'CONTRIBUYENTES LOCALES' in text.upper() and ('SICOL' in text.upper() or 'AGIP' in text.upper()):
+        d['impuesto']='Ingresos Brutos';d['monto']='';d['vencimiento']=''
+        total=_one(re.findall(r'(?im)\b(?:SALDO A PAGAR|TOTAL A PAGAR)\s*:?\s*\$\s*([\d.,]+)\s*$',text))
+        favor=_money(text,r'SUBTOTAL A FAVOR DEL CONTRIBUYENTE')
+        d['vencimiento']=_one(re.findall(r'(?i)Fecha venc\s*:\s*(\d{2}/\d{2}/\d{4})',text))
+        if d['vencimiento']:d['fuente_fecha']='Fecha venc de DDJJ AGIP local'
+        if total and _number(total)>0:
+            d.update(resultado='A pagar',monto=total)
+            if favor and _number(favor)>0:d['advertencias'].append('AGIP informa saldo a pagar y favor positivos: revisar inconsistencia antes de continuar.')
+        elif total and _number(total)==0:
+            d['resultado']='Saldo a favor'
+            d['monto']=favor if favor and _number(favor)>0 else ''
+            if not d['monto']:d['advertencias'].append('Total a pagar cero no identifica el importe del saldo a favor. Completalo desde evidencia explícita; no se inventa.')
+        d['advertencias'].append('Confirmar saldo y Fecha venc contra la DDJJ AGIP.')
+    elif re.search(r'IMPUESTO AL VALOR\s+AGREGADO|F\.2051',text,re.I):
+        d.update(impuesto='IVA',monto='',vencimiento='')
+        favor=_money(text,r'Saldo t[eé]cnico a favor del contribuyente')
+        arca=_money(text,r'Saldo t[eé]cnico a favor de ARCA')
+        if favor and _number(favor)>0 and (not arca or _number(arca)==0):
+            d.update(resultado='Saldo a favor',monto=favor,nota_saldo='Saldo técnico a favor del contribuyente. No incluye libre disponibilidad.')
+        elif arca and _number(arca)>0 and (not favor or _number(favor)==0):
+            d.update(resultado='A pagar',monto=arca,nota_saldo='Importe técnico a favor ARCA: confirmar saldo final a pagar tras percepciones/compensaciones; no equivale necesariamente al pago.')
+        else:d['advertencias'].append('Saldo IVA no identificado de forma inequívoca; completar y confirmar manualmente.')
+        d['advertencias'].append('Vencimiento IVA únicamente desde tarjeta verificada del mismo cliente/CUIT, impuesto y período; no se usa fecha de presentación ni vencimiento del VEP.')
+    return d
+
+def card_deadline(cliente,profile_cuit,document_cuit,period,tasks):
+    norm=lambda x: re.sub(r'\D','',str(x or ''))
+    cuit=norm(profile_cuit)
+    if len(cuit)!=11 or cuit!=norm(document_cuit):return '', 'CUIT de documento y ficha no verificados.'
+    m=re.fullmatch(r'(\d{2})/(\d{4})',period)
+    period=m[2]+'-'+m[1] if m else period
+    found=[]
+    for t in tasks:
+        if str(t.get('cliente','')).strip().casefold()!=cliente.strip().casefold():continue
+        raw=str(t.get('id_externo',''))
+        try: meta=json.loads(raw[len('fiscal:v1:'):]) if raw.startswith('fiscal:v1:') else {}
+        except (ValueError,TypeError):continue
+        if meta.get('impuesto')!='IVA' or meta.get('periodo')!=period or meta.get('estado')!='verificado':continue
+        if str(meta.get('terminacion'))!=cuit[-1] or not meta.get('fuente'):continue
+        try: day=datetime.strptime(str(t.get('fecha_limite','')),'%Y-%m-%d').strftime('%d/%m/%Y')
+        except ValueError:continue
+        found.append((day,str(t.get('id',''))))
+    dates=set(d for d,_ in found)
+    if len(dates)!=1:return '', 'Sin tarjeta IVA inequívoca para este CUIT y período: verificar vencimiento manualmente.'
+    return found[0][0], 'Tarjeta(s) IVA verificada(s): '+', '.join(i for _,i in found)+'; período '+period+'; terminación CUIT '+cuit[-1]
