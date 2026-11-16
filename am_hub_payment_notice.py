@@ -118,6 +118,30 @@ def unique_pdfs(attachments):
         names.add(name); result.append((name,data))
     return result
 
+def named_attachments(fields, attachments):
+    """Only rename PDFs explicitly mapped to reviewed document metadata."""
+    mapping=fields.get('documentos',{})
+    result=[];used=set()
+    for original,data in unique_pdfs(attachments):
+        meta=mapping.get(hashlib.sha256(data).hexdigest())
+        name=original
+        if meta and meta.get('tipo')!='Respaldo':
+            if meta.get('tipo') not in ('DDJJ','VEP'):
+                raise ValueError('Confirmá el tipo del documento adjunto.')
+            tax=tax_label(meta.get('impuesto',''))
+            if tax not in ('IVA','Ingresos brutos'):
+                raise ValueError('Confirmá IVA o Ingresos brutos para nombrar el adjunto.')
+            period=normalized_notice_period(meta.get('periodo',''))
+            if not re.fullmatch(r'(0[1-9]|1[0-2])/20\d{2}',period):
+                raise ValueError('Período del adjunto inválido.')
+            name=('VEP ' if meta['tipo']=='VEP' else '')+period.replace('/','')+' DDJJ '+('IVA' if tax=='IVA' else 'IIBB')+'.pdf'
+        base=name[:-4] if name.lower().endswith('.pdf') else name
+        n=2
+        while name.casefold() in used:
+            name=base+' ('+str(n)+').pdf';n+=1
+        used.add(name.casefold());result.append((name,data))
+    return result
+
 def calendar_attachments(fields):
     items=[item for item in notice_items(fields) if is_payable(item)]
     return [('vencimiento.ics' if len(items)==1 else f'vencimiento_{i+1:02d}.ics', calendar_outputs(item)[1]) for i,item in enumerate(items)]
@@ -201,7 +225,7 @@ def email_draft(fields, attachments):
     msg['To']=fields['email'];msg['Subject']=notice_subject(fields)
     msg['X-Unsent']='1';msg.set_content(body(fields))
     msg.add_alternative(body_html(fields),subtype='html')
-    for name,data in unique_pdfs(attachments):
+    for name,data in named_attachments(fields,attachments):
         if not data.startswith(b'%PDF-') or len(data)>MAX_BYTES: raise ValueError('Adjunto PDF inválido.')
         msg.add_attachment(data,maintype='application',subtype='pdf',filename=name.split('/')[-1].split('\\')[-1])
     for name,ics in calendar_attachments(fields):
@@ -227,7 +251,7 @@ def render_payment_notice(cliente, perfil, tasks=()):
             st.error('Máximo 10 PDF y 25 MB por correo.');return
         digest=hashlib.sha256(b''.join(x[1] for x in files)+repr([(n,k) for n,_,k in source_files]).encode()).hexdigest()[:16]
         key=base+'_'+digest
-        notices=[]
+        notices=[];documentos={}
         for i,(filename,raw,source_kind) in enumerate(source_files):
             subkey=key+'_'+str(i)
             st.markdown('**Documento '+str(i+1)+' · '+filename+'**')
@@ -277,7 +301,22 @@ def render_payment_notice(cliente, perfil, tasks=()):
                 st.caption('Revisá este VEP antes de preparar el correo.')
                 notices.append(dict(item,_unreviewed=True))
             else: notices.append(item)
-        fields={'cliente':cliente,'avisos':notices}
+            documentos[hashlib.sha256(raw).hexdigest()]={'tipo':'VEP' if source_kind=='A pagar' else 'DDJJ','impuesto':item['impuesto'],'periodo':item['periodo']}
+        # Supporting PDFs are never guessed to be a VEP or linked by filename.
+        choices=['Seleccionar']+[str(i+1)+' · '+x['impuesto']+' · '+x['periodo'] for i,x in enumerate(notices)]
+        for j,(filename,raw) in enumerate(files):
+            docid=hashlib.sha256(raw).hexdigest()
+            if docid in documentos: continue
+            st.markdown('**Identificar adjunto · '+filename+'**')
+            kind=st.selectbox('Tipo de documento', ['Seleccionar','DDJJ','VEP','Respaldo'],key=key+'_doctype_'+docid)
+            if kind=='Seleccionar': st.caption('Identificá este PDF antes de preparar el correo.');return
+            if kind=='Respaldo': documentos[docid]={'tipo':kind};continue
+            linked=st.selectbox('Impuesto y período de este adjunto',choices,key=key+'_doclink_'+docid)
+            if linked=='Seleccionar': return
+            item=notices[choices.index(linked)-1]
+            documentos[docid]={'tipo':kind,'impuesto':item['impuesto'],'periodo':item['periodo']}
+        fields={'cliente':cliente,'avisos':notices,'documentos':documentos}
+        st.caption('Nombres PDF: MMAAAA DDJJ IVA/IIBB; los volantes llevan prefijo VEP. Los respaldos conservan su nombre.')
         fields['email']=st.text_input('Destinatarios (coma para separar)',value=str(perfil.get('email_destinatarios','') or ''),key=key+'_email')
         if any(x.get('_unreviewed') for x in notices): return
         identities=[(tax_label(x['impuesto']).casefold(),normalized_notice_period(x['periodo'])) for x in notices]
@@ -287,7 +326,7 @@ def render_payment_notice(cliente, perfil, tasks=()):
         reviewed=st.checkbox('Verifiqué cliente/CUIT, destinatarios, importes, período, fecha y todos los adjuntos contra los PDF.',key=approval_key)
         if not reviewed: return
         try:
-            notice_items(fields);eml=email_draft(fields,files)
+            notice_items(fields);files=named_attachments(fields,files);eml=email_draft(fields,files)
         except ValueError as exc: st.error(str(exc));return
         st.text('Asunto: '+notice_subject(fields))
         st.markdown(body_html(fields), unsafe_allow_html=True)
