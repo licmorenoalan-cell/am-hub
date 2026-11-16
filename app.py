@@ -18676,6 +18676,18 @@ def render_liquidaciones_fiscales(cliente_fijo="", modo="admin"):
         st.info("No hay clientes disponibles.")
         return
     cliente = cliente_fijo or st.selectbox("Cliente", clientes, key="fiscal_cliente")
+    flujo = st.radio("Flujo de trabajo", ["Aviso DDJJ / VEP", "Liquidación y papel de trabajo"], horizontal=True, key="fiscal_flujo")
+    if flujo == "Aviso DDJJ / VEP":
+        from am_hub_payment_notice import render_payment_notice
+        perfil_aviso = cargar_perfil_fiscal(cliente)
+        try:
+            tarjetas_aviso = cargar_tareas_internas(cliente).to_dict("records")
+        except Exception:
+            tarjetas_aviso = []
+            st.warning("No se pudieron consultar las tarjetas fiscales. Verificá los vencimientos manualmente.")
+        st.caption("Este aviso es independiente de ventas, compras y papel de trabajo. Solo genera documentación para revisar; no presenta impuestos ni envía correos.")
+        render_payment_notice(cliente, perfil_aviso, tarjetas_aviso)
+        return
     col_periodo, col_responsable = st.columns([1, 2])
     with col_periodo:
         fecha_periodo = st.date_input("Período", value=date.today().replace(day=1), key=f"fiscal_mes_{cliente}")
@@ -18709,8 +18721,6 @@ def render_liquidaciones_fiscales(cliente_fijo="", modo="admin"):
         cm05_aplicable = cargar_coeficientes_cm05(
             cliente, periodo_aplicacion_cm05(periodo),
         )
-    from am_hub_payment_notice import render_payment_notice
-    render_payment_notice(cliente, perfil)
 
     resumen = resumir_movimientos(movimientos)
     expediente = evaluar_expediente_fiscal(
