@@ -165,6 +165,29 @@ def _checklist_reiniciado(valor) -> str:
     return json.dumps(reiniciado, ensure_ascii=False)
 
 
+
+_OCCURRENCE_START = '[AM HUB: datos de esta ocurrencia]'
+_OCCURRENCE_END = '[/AM HUB: datos de esta ocurrencia]'
+_INHERITED_NOTES = 'Notas heredadas (las fechas citadas son antecedentes, no el vencimiento actual):'
+
+
+def descripcion_siguiente_ocurrencia(original, resultado):
+    """Refresh only our managed header; never rewrite dates in user/historic notes."""
+    body = str(original or '')
+    # Only remove our own leading block, never similar text quoted in a note.
+    if body.startswith(_OCCURRENCE_START + '\n'):
+        end = body.find('\n' + _OCCURRENCE_END + '\n')
+        if end != -1:
+            body = body[end + len('\n' + _OCCURRENCE_END + '\n'):]
+            if body.startswith(_INHERITED_NOTES + '\n'):
+                body = body[len(_INHERITED_NOTES + '\n'):]
+    ctx = resultado['contexto']
+    period = ctx.get('periodo') or 'Pendiente de confirmar'
+    due = resultado.get('fecha') or 'Pendiente de validar contra calendario oficial'
+    label = 'Fecha de control estimada (no oficial)' if ctx.get('estado') == 'estimado' else 'Vencimiento de esta ocurrencia'
+    header = f'{_OCCURRENCE_START}\nPeríodo de esta ocurrencia: {period}\n{label}: {due}\n{_OCCURRENCE_END}\n'
+    return header + (_INHERITED_NOTES + '\n' + body if body else '')
+
 def construir_siguiente_ocurrencia(
     tarea: dict,
     usuario: str,
@@ -206,7 +229,8 @@ def construir_siguiente_ocurrencia(
             str(tarea.get("frecuencia", "") or ""),
             intervalo,
         ),
-        "descripcion": str(tarea.get("descripcion", "") or ""),
+        "descripcion": (descripcion_siguiente_ocurrencia(tarea.get("descripcion"), resultado)
+                        if fiscal else str(tarea.get("descripcion", "") or "")),
         "comentarios": "",
         "fecha_carga": hoy.strftime("%Y-%m-%d"),
         "creado_por": "Generación automática",
