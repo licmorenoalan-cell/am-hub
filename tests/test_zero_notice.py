@@ -8,7 +8,7 @@ class ZeroNoticeTests(unittest.TestCase):
  def test_zero_omits_balance_and_calendar(self):
   validate(self.f)
   for content in [body(self.f),body_html(self.f)]:
-   self.assertNotIn('Saldo',content);self.assertNotIn('Vencimiento',content);self.assertNotIn('calendar.google',content)
+   self.assertIn('Sin importe a pagar',content);self.assertNotIn('Saldo',content);self.assertNotIn('Vencimiento',content);self.assertNotIn('calendar.google',content)
   self.assertEqual(calendar_attachments(self.f),[])
   msg=BytesParser(policy=policy.default).parsebytes(email_draft(self.f,[('DDJJ.pdf',b'%PDF-test')]))
   self.assertEqual(len(list(msg.iter_attachments())),1)
