@@ -171,7 +171,7 @@ def body(fields):
     sections=[]
     for item in items:
         if item.get('resultado')=='Sin saldo':
-            sections.append(tax_label(item['impuesto']))
+            sections.append(tax_label(item['impuesto'])+'\nSin importe a pagar')
             continue
         if not is_payable(item):
             sections.append(f"{tax_label(item['impuesto'])}\n- Saldo a favor: $ {item['monto']}\n- Sin importe a pagar.")
@@ -186,7 +186,7 @@ def body_html(fields):
     parts=['<p>Buenos días!</p>','<p>'+html.escape(notice_opening(items))+'</p>']
     for item in items:
         if item.get('resultado')=='Sin saldo':
-            parts.append('<p><strong>'+html.escape(tax_label(item['impuesto']))+'</strong></p>')
+            parts.append('<p><strong>'+html.escape(tax_label(item['impuesto']))+'</strong><br>Sin importe a pagar</p>')
             continue
         if not is_payable(item):
             parts.append('<p><strong>'+html.escape(tax_label(item['impuesto']))+'</strong><br>'+
