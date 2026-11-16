@@ -271,7 +271,7 @@ def resolve(task, profiles=(), calendar=None, next_period=False):
         ctx.pop(field, None)
     if not reason:
         ctx.update({k: matches[0][k] for k in EVIDENCE_FIELDS if k in matches[0]})
-    ctx.update(estado='pendiente' if reason else 'verificado', motivo=reason,
+    ctx.update(estado=('pendiente' if reason else ('control' if ctx.get('modo_fecha') == 'control_alta_periodo' else 'verificado')), motivo=reason,
                fuente='' if reason else matches[0]['fuente'])
     return {'fecha': '' if reason else matches[0]['vencimiento'], 'contexto': ctx, 'motivo': reason}
 
@@ -296,7 +296,7 @@ def pending_label(task):
     # A reviewed explicit configuration supersedes historical comment markers.
     # Completion still re-resolves against the calendar and profile below; this
     # does not turn an arbitrary manually-entered date into a valid deadline.
-    reviewed = (fiscal.get('estado') in {'verificado', 'estimado'} and not fiscal.get('motivo')
+    reviewed = ((fiscal.get('estado') in {'verificado', 'estimado'} or (fiscal.get('estado') == 'control' and fiscal.get('modo_fecha') == 'control_alta_periodo')) and not fiscal.get('motivo')
                 and all(fiscal.get(k) for k in ('impuesto', 'obligacion', 'jurisdiccion', 'periodo', 'fuente'))
                 and bool(task.get('fecha_limite')))
     if ((task.get('recurrente') == 'Sí' or fiscal) and is_fiscal(task)
@@ -321,6 +321,9 @@ def pending_label(task):
 def fiscal_period_label(task):
     fiscal = metadata(task)
     period = fiscal.get('periodo')
+    if fiscal.get('modo_fecha') == 'control_alta_periodo':
+        return (f'Control preventivo · período de referencia: {period or "por confirmar"} · '
+                'alta y obligación por verificar; finalizar no acredita presentación ni pago')
     if fiscal.get('modo_fecha') == 'preventiva_sin_cuit':
         return (f'Control preventivo mensual · día {fiscal.get("dia_control", "?")} · '
                 'fecha estimada, no vencimiento fiscal oficial · CUIT/alta pendientes')

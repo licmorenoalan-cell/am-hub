@@ -184,7 +184,9 @@ def descripcion_siguiente_ocurrencia(original, resultado):
     ctx = resultado['contexto']
     period = ctx.get('periodo') or 'Pendiente de confirmar'
     due = resultado.get('fecha') or 'Pendiente de validar contra calendario oficial'
-    label = 'Fecha de control estimada (no oficial)' if ctx.get('estado') == 'estimado' else 'Vencimiento de esta ocurrencia'
+    label = ('Fecha de control estimada (no oficial)' if ctx.get('estado') == 'estimado' else
+             ('Fecha de control según calendario (alta/obligación por verificar)'
+              if ctx.get('modo_fecha') == 'control_alta_periodo' else 'Vencimiento de esta ocurrencia'))
     header = f'{_OCCURRENCE_START}\nPeríodo de esta ocurrencia: {period}\n{label}: {due}\n{_OCCURRENCE_END}\n'
     return header + (_INHERITED_NOTES + '\n' + body if body else '')
 
