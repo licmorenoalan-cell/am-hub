@@ -62,7 +62,46 @@ def validate(fields):
         raise ValueError('Los campos no deben contener saltos de línea.')
     return fields
 
+def notice_items(fields):
+    items = fields.get('avisos')
+    if items is None:
+        return [validate(fields)]
+    if not isinstance(items, list) or not 1 <= len(items) <= 10:
+        raise ValueError('Cargá entre 1 y 10 VEP por correo.')
+    return [validate(dict(item, cliente=fields['cliente'], email=fields['email'])) for item in items]
+
+def notice_subject(fields):
+    items = notice_items(fields)
+    if len(items) == 1:
+        return f"{fields['cliente']} | {items[0]['impuesto']} | {items[0]['periodo']}"
+    return f"{fields['cliente']} | Avisos de pago ({len(items)} VEP)"
+
+def unique_pdfs(attachments):
+    seen=set(); result=[]; names=set()
+    for name,data in attachments:
+        digest=hashlib.sha256(data).hexdigest()
+        if digest in seen: continue
+        seen.add(digest)
+        name=name.split('/')[-1].split('\\')[-1]
+        if name in names: name=digest[:8]+'_'+name
+        names.add(name); result.append((name,data))
+    return result
+
+def calendar_attachments(fields):
+    items=notice_items(fields)
+    return [('vencimiento.ics' if len(items)==1 else f'vencimiento_{i+1:02d}.ics', calendar_outputs(item)[1]) for i,item in enumerate(items)]
+
 def body(fields):
+    if 'avisos' in fields:
+        items=notice_items(fields)
+        sections=[]
+        for i,item in enumerate(items):
+            url,_=calendar_outputs(item)
+            sections.append(f"{i+1}. {item['impuesto']} | {item['periodo']}\nImporte: $ {item['monto']} | Vencimiento: {item['vencimiento']}\nGoogle Calendar: {url}")
+        return ("Hola,\n\nAdjuntamos la documentación de "+fields['cliente']+".\n\n"+'\n\n'.join(sections)+
+                "\n\nAdjuntamos un archivo ICS por vencimiento. Importalo o usá el enlace Google (no ambos, para evitar duplicados). "
+                "Cada ICS solicita un aviso un día antes; revisá fecha, zona horaria y notificaciones al importar: algunas aplicaciones ignoran alarmas. "
+                "En Google debés guardar y configurar el aviso. No se agenda automáticamente.\n\nPor favor, enviános el comprobante una vez realizado el pago.\n\nAM Consultora")
     calendar_url, _ = calendar_outputs(fields)
     return (f"Hola,\n\nAdjuntamos la documentación de {fields['cliente']} correspondiente a "
             f"{fields['impuesto']}, período {fields['periodo']}.\n"
@@ -101,15 +140,15 @@ def calendar_outputs(fields):
     return url, ('\r\n'.join(folded)+'\r\n').encode()
 
 def email_draft(fields, attachments):
-    validate(fields)
+    notice_items(fields)
     msg=EmailMessage(policy=policy.SMTP)
-    msg['To']=fields['email'];msg['Subject']=f"{fields['cliente']} | {fields['impuesto']} | {fields['periodo']}"
+    msg['To']=fields['email'];msg['Subject']=notice_subject(fields)
     msg['X-Unsent']='1';msg.set_content(body(fields))
-    for name,data in attachments:
+    for name,data in unique_pdfs(attachments):
         if not data.startswith(b'%PDF-') or len(data)>MAX_BYTES: raise ValueError('Adjunto PDF inválido.')
         msg.add_attachment(data,maintype='application',subtype='pdf',filename=name.split('/')[-1].split('\\')[-1])
-    _, ics = calendar_outputs(fields)
-    msg.add_attachment(ics, maintype='text', subtype='calendar', filename='vencimiento.ics')
+    for name,ics in calendar_attachments(fields):
+        msg.add_attachment(ics, maintype='text', subtype='calendar', filename=name)
     return msg.as_bytes()
 
 def render_payment_notice(cliente, perfil):
@@ -117,37 +156,48 @@ def render_payment_notice(cliente, perfil):
     with st.expander('Preparar aviso de pago · DDJJ / VEP',expanded=False):
         st.caption('Borrador asistido. Los PDF se procesan en AM Hub, sin enviarse a servicios de IA. No se envían correos ni se crean eventos automáticamente.')
         base='aviso_'+hashlib.sha256(cliente.encode()).hexdigest()[:12]
-        vep=st.file_uploader('VEP (PDF, uno por aviso)',type=['pdf'],key=base+'_vep')
+        veps=st.file_uploader('VEP (PDF, uno o varios)',type=['pdf'],accept_multiple_files=True,key=base+'_veps')
         ddjj=st.file_uploader('DDJJ y respaldos (PDF)',type=['pdf'],accept_multiple_files=True,key=base+'_ddjj')
-        if not vep: return
-        files=[(vep.name,vep.getvalue())]+[(x.name,x.getvalue()) for x in ddjj]
+        if not veps: return
+        vep_files=unique_pdfs([(x.name,x.getvalue()) for x in veps])
+        files=unique_pdfs(vep_files+[(x.name,x.getvalue()) for x in ddjj])
         if len(files)>10 or sum(len(x[1]) for x in files)>25*1024*1024:
-            st.error('Máximo 10 PDF y 25 MB por aviso.');return
+            st.error('Máximo 10 PDF y 25 MB por correo.');return
         digest=hashlib.sha256(b''.join(x[1] for x in files)).hexdigest()[:16]
         key=base+'_'+digest
-        try:
-            if key+'_parsed' not in st.session_state:
-                text=pdf_text(files[0][1]);st.session_state[key+'_parsed']=(text,parse_vep(text))
-            text,data=st.session_state[key+'_parsed']
-        except Exception:
-            st.error('No se pudo leer el VEP. Usá un PDF legible, sin contraseña y de hasta 15 MB / 40 páginas.');return
-        if not text.strip(): st.warning('PDF sin texto: completá todos los campos manualmente contrastando el documento.')
-        if st.checkbox('Mostrar texto extraído del VEP (evidencia)', key=key+'_evidence'):
-            st.text(text[:30000])
-        for warn in data['advertencias']: st.caption(warn)
-        detected=re.sub(r'\D','',data['cuit']);expected=re.sub(r'\D','',str(perfil.get('cuit','')))
-        if detected and expected and detected!=expected:
-            st.error('El CUIT del VEP no coincide con el cliente. Cambiá el cliente o el archivo.');return
-        if not detected or not expected: st.warning('No se pudo contrastar el CUIT automáticamente: revisalo en el PDF y la ficha del cliente.')
-        fields={'cliente':cliente}
-        for name,label in [('impuesto','Impuesto'),('periodo','Período fiscal'),('monto','Importe total en pesos'),('vencimiento','Vencimiento / expiración del VEP (DD/MM/AAAA)')]:
-            fields[name]=st.text_input(label,value=data[name],key=key+'_'+name)
+        notices=[]
+        for i,(filename,raw) in enumerate(vep_files):
+            subkey=key+'_'+str(i)
+            st.markdown('**VEP '+str(i+1)+' · '+filename+'**')
+            try:
+                if subkey+'_parsed' not in st.session_state:
+                    text=pdf_text(raw);st.session_state[subkey+'_parsed']=(text,parse_vep(text))
+                text,data=st.session_state[subkey+'_parsed']
+            except Exception:
+                st.error('No se pudo leer este VEP. Usá PDF legible sin contraseña, hasta 15 MB / 40 páginas.');return
+            if not text.strip(): st.warning('PDF sin texto: completá este VEP manualmente contrastando el documento.')
+            if st.checkbox('Mostrar evidencia VEP '+str(i+1),key=subkey+'_evidence'): st.text(text[:30000])
+            for warn in data['advertencias']: st.caption(warn)
+            detected=re.sub(r'\D','',data['cuit']);expected=re.sub(r'\D','',str(perfil.get('cuit','')))
+            if detected and expected and detected!=expected:
+                st.error('El CUIT de este VEP no coincide con el cliente.');return
+            if not detected or not expected: st.warning('Revisá CUIT de este VEP y ficha del cliente: contraste automático no disponible.')
+            item={}
+            for name,label in [('impuesto','Impuesto'),('periodo','Período fiscal'),('monto','Importe total en pesos'),('vencimiento','Vencimiento / expiración del VEP (DD/MM/AAAA)')]:
+                item[name]=st.text_input(label,value=data[name],key=subkey+'_'+name)
+            reviewkey=subkey+hashlib.sha256(repr(sorted(item.items())).encode()).hexdigest()[:12]
+            if not st.checkbox('Verifiqué los datos y vencimiento del VEP '+str(i+1),key=reviewkey):
+                st.caption('Revisá este VEP antes de preparar el correo.')
+                notices.append(dict(item,_unreviewed=True))
+            else: notices.append(item)
+        fields={'cliente':cliente,'avisos':notices}
         fields['email']=st.text_input('Destinatarios (coma para separar)',value=str(perfil.get('email_destinatarios','') or ''),key=key+'_email')
+        if any(x.get('_unreviewed') for x in notices): return
         approval_key=key+hashlib.sha256(repr(sorted(fields.items())).encode()).hexdigest()[:12]
         reviewed=st.checkbox('Verifiqué cliente/CUIT, destinatarios, importes, período, fecha y todos los adjuntos contra los PDF.',key=approval_key)
         if not reviewed: return
         try:
-            validate(fields);url,ics=calendar_outputs(fields);eml=email_draft(fields,files)
+            notice_items(fields);eml=email_draft(fields,files)
         except ValueError as exc: st.error(str(exc));return
         st.text_area('Texto listo para copiar',value=body(fields),height=230,disabled=True,key=approval_key+'_body')
         for index,(name,content) in enumerate(files):
@@ -179,5 +229,7 @@ def render_payment_notice(cliente, perfil):
         else:
             st.warning('La conexión Zoho aún no está configurada en este servidor. El .eml NO guarda un borrador en Zoho; podés copiar el texto y adjuntar los PDF manualmente.')
         st.download_button('Descargar correo preparado (.eml con PDF)',eml,file_name='aviso_pago.eml',mime='message/rfc822',key=key+'_eml')
-        st.download_button('Descargar recordatorio (.ics)',ics,file_name='vencimiento.ics',mime='text/calendar',key=key+'_ics')
-        st.link_button('Abrir evento en Google Calendar',url,help='El enlace contiene cliente, impuesto e importe. Sólo se envían a Google cuando lo abrís; el evento requiere guardar.')
+        for i,item in enumerate(notice_items(fields)):
+            url,ics=calendar_outputs(item)
+            st.download_button('Descargar recordatorio VEP '+str(i+1),ics,file_name=f'vencimiento_{i+1:02d}.ics',mime='text/calendar',key=key+'_ics_'+str(i))
+            st.link_button('Google Calendar · VEP '+str(i+1),url,help='Requiere guardar y configurar el aviso en Google.')
