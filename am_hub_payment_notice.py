@@ -48,14 +48,30 @@ def amount(value):
     if n <= 0: raise ValueError('El monto debe ser mayor a cero.')
     return n.quantize(Decimal('.01'))
 
+def is_payable(fields):
+    kind=fields.get('resultado','A pagar')
+    if kind not in ('A pagar','Saldo a favor'):
+        raise ValueError('Seleccioná A pagar o Saldo a favor explícitamente.')
+    return kind == 'A pagar'
+
+def parse_credit(text):
+    result=parse_vep(text)
+    # Never infer sign or take an unlabeled total as a taxpayer credit.
+    vals=list(dict.fromkeys(v.strip() for v in re.findall(r'(?im)^\s*Saldo\s+a\s+favor\s+del\s+contribuyente\s*:?\s*\$?\s*([\d.,]+)\s*$',text)))
+    result['monto']=vals[0] if len(vals)==1 else ''
+    result['vencimiento']=''
+    if len(vals)!=1: result['advertencias'].append('Saldo a favor no identificado de forma única: completar manualmente; no usar saldo a favor del fisco.')
+    return result
+
 def validate(fields):
     if not fields.get('cliente','').strip() or not fields.get('impuesto','').strip():
         raise ValueError('Completá cliente e impuesto.')
     if not re.fullmatch(r'(?:\d{4}[-/](?:0[1-9]|1[0-2])|(?:0[1-9]|1[0-2])[-/]\d{4})',fields.get('periodo','')):
         raise ValueError('Período inválido: usá AAAA-MM o MM/AAAA.')
     amount(fields.get('monto',''))
-    try: datetime.strptime(fields.get('vencimiento','').replace('-','/'),'%d/%m/%Y')
-    except ValueError: raise ValueError('Vencimiento inválido: usá DD/MM/AAAA.')
+    if is_payable(fields):
+        try: datetime.strptime(fields.get('vencimiento','').replace('-','/'),'%d/%m/%Y')
+        except ValueError: raise ValueError('Vencimiento inválido: usá DD/MM/AAAA.')
     emails = [x.strip() for x in fields.get('email','').split(',') if x.strip()]
     if not emails or any(not re.fullmatch(r'[^\s@,<>]+@[^\s@,<>]+\.[^\s@,<>]+',x) for x in emails):
         raise ValueError('Completá destinatarios válidos separados por coma.')
@@ -68,14 +84,14 @@ def notice_items(fields):
     if items is None:
         return [validate(fields)]
     if not isinstance(items, list) or not 1 <= len(items) <= 10:
-        raise ValueError('Cargá entre 1 y 10 VEP por correo.')
+        raise ValueError('Cargá entre 1 y 10 impuestos por correo.')
     return [validate(dict(item, cliente=fields['cliente'], email=fields['email'])) for item in items]
 
 def notice_subject(fields):
     items = notice_items(fields)
     if len(items) == 1:
         return f"{fields['cliente']} | {items[0]['impuesto']} | {items[0]['periodo']}"
-    return f"{fields['cliente']} | Avisos de pago ({len(items)} VEP)"
+    return f"{fields['cliente']} | Documentación impositiva ({len(items)} impuestos)"
 
 def unique_pdfs(attachments):
     seen=set(); result=[]; names=set()
@@ -89,7 +105,7 @@ def unique_pdfs(attachments):
     return result
 
 def calendar_attachments(fields):
-    items=notice_items(fields)
+    items=[item for item in notice_items(fields) if is_payable(item)]
     return [('vencimiento.ics' if len(items)==1 else f'vencimiento_{i+1:02d}.ics', calendar_outputs(item)[1]) for i,item in enumerate(items)]
 
 def tax_label(value):
@@ -114,6 +130,9 @@ def body(fields):
     items=notice_items(fields)
     sections=[]
     for item in items:
+        if not is_payable(item):
+            sections.append(f"{tax_label(item['impuesto'])}\n- Saldo a favor: $ {item['monto']}\n- Sin importe a pagar.")
+            continue
         url,_=calendar_outputs(item)
         sections.append(f"{tax_label(item['impuesto'])}\n- Saldo a pagar: $ {item['monto']}\n- Vencimiento: {item['vencimiento']} (Agendar vencimiento: {url})")
     return ('Buenos días!\n\n'+notice_opening(items)+'\n\n'+'\n\n'.join(sections)+
@@ -123,6 +142,10 @@ def body_html(fields):
     items=notice_items(fields)
     parts=['<p>Buenos días!</p>','<p>'+html.escape(notice_opening(items))+'</p>']
     for item in items:
+        if not is_payable(item):
+            parts.append('<p><strong>'+html.escape(tax_label(item['impuesto']))+'</strong><br>'+
+                         '- Saldo a favor: $ '+html.escape(item['monto'])+'<br>- Sin importe a pagar.</p>')
+            continue
         url,_=calendar_outputs(item)
         parts.append('<p><strong>'+html.escape(tax_label(item['impuesto']))+'</strong><br>'+
                      '- Saldo a pagar: $ '+html.escape(item['monto'])+'<br>'+
@@ -133,6 +156,7 @@ def body_html(fields):
 
 def calendar_outputs(fields):
     validate(fields)
+    if not is_payable(fields): raise ValueError('Saldo a favor no genera calendario de pago.')
     day = datetime.strptime(fields['vencimiento'].replace('-','/'),'%d/%m/%Y').date()
     end = day + timedelta(days=1)
     title = f"Pago {fields['impuesto']} — {fields['cliente']} — {fields['periodo']}"
@@ -177,20 +201,25 @@ def render_payment_notice(cliente, perfil):
         base='aviso_'+hashlib.sha256(cliente.encode()).hexdigest()[:12]
         veps=st.file_uploader('VEP (PDF, uno o varios)',type=['pdf'],accept_multiple_files=True,key=base+'_veps')
         ddjj=st.file_uploader('DDJJ y respaldos (PDF)',type=['pdf'],accept_multiple_files=True,key=base+'_ddjj')
-        if not veps: return
+        credits=st.file_uploader('DDJJ con saldo a favor (sin VEP)',type=['pdf'],accept_multiple_files=True,key=base+'_credits')
+        if not veps and not credits: return
         vep_files=unique_pdfs([(x.name,x.getvalue()) for x in veps])
-        files=unique_pdfs(vep_files+[(x.name,x.getvalue()) for x in ddjj])
+        credit_files=unique_pdfs([(x.name,x.getvalue()) for x in credits])
+        if {hashlib.sha256(d).hexdigest() for _,d in vep_files} & {hashlib.sha256(d).hexdigest() for _,d in credit_files}:
+            st.error('El mismo PDF está cargado como VEP y saldo a favor. Elegí una sola categoría para evitar duplicar el impuesto.');return
+        source_files=[(n,d,'A pagar') for n,d in vep_files]+[(n,d,'Saldo a favor') for n,d in credit_files]
+        files=unique_pdfs(vep_files+credit_files+[(x.name,x.getvalue()) for x in ddjj])
         if len(files)>10 or sum(len(x[1]) for x in files)>25*1024*1024:
             st.error('Máximo 10 PDF y 25 MB por correo.');return
-        digest=hashlib.sha256(b''.join(x[1] for x in files)).hexdigest()[:16]
+        digest=hashlib.sha256(b''.join(x[1] for x in files)+repr([(n,k) for n,_,k in source_files]).encode()).hexdigest()[:16]
         key=base+'_'+digest
         notices=[]
-        for i,(filename,raw) in enumerate(vep_files):
+        for i,(filename,raw,source_kind) in enumerate(source_files):
             subkey=key+'_'+str(i)
-            st.markdown('**VEP '+str(i+1)+' · '+filename+'**')
+            st.markdown('**Documento '+str(i+1)+' · '+filename+'**')
             try:
                 if subkey+'_parsed' not in st.session_state:
-                    text=pdf_text(raw);st.session_state[subkey+'_parsed']=(text,parse_vep(text))
+                    text=pdf_text(raw);st.session_state[subkey+'_parsed']=(text,parse_credit(text) if source_kind=='Saldo a favor' else parse_vep(text))
                 text,data=st.session_state[subkey+'_parsed']
             except Exception:
                 st.error('No se pudo leer este VEP. Usá PDF legible sin contraseña, hasta 15 MB / 40 páginas.');return
@@ -201,11 +230,16 @@ def render_payment_notice(cliente, perfil):
             if detected and expected and detected!=expected:
                 st.error('El CUIT de este VEP no coincide con el cliente.');return
             if not detected or not expected: st.warning('Revisá CUIT de este VEP y ficha del cliente: contraste automático no disponible.')
-            item={}
-            for name,label in [('impuesto','Impuesto'),('periodo','Período fiscal'),('monto','Importe total en pesos'),('vencimiento','Vencimiento / expiración del VEP (DD/MM/AAAA)')]:
+            item={'resultado':st.selectbox('Resultado de la declaración', ['A pagar','Saldo a favor'],index=1 if source_kind=='Saldo a favor' else 0,key=subkey+'_kind')}
+            labels=[('impuesto','Impuesto'),('periodo','Período fiscal'),('monto','Saldo a pagar en pesos' if is_payable(item) else 'Saldo a favor del contribuyente en pesos')]
+            if is_payable(item): labels.append(('vencimiento','Vencimiento / expiración del VEP (DD/MM/AAAA)'))
+            else:
+                item['vencimiento']=''
+                st.caption('No se generará enlace ni recordatorio de pago para este impuesto.')
+            for name,label in labels:
                 item[name]=st.text_input(label,value=data[name],key=subkey+'_'+name)
             reviewkey=subkey+hashlib.sha256(repr(sorted(item.items())).encode()).hexdigest()[:12]
-            if not st.checkbox('Verifiqué los datos y vencimiento del VEP '+str(i+1),key=reviewkey):
+            if not st.checkbox('Verifiqué impuesto, período, tipo de saldo e importe del documento '+str(i+1),key=reviewkey):
                 st.caption('Revisá este VEP antes de preparar el correo.')
                 notices.append(dict(item,_unreviewed=True))
             else: notices.append(item)
@@ -251,6 +285,7 @@ def render_payment_notice(cliente, perfil):
             st.warning('La conexión Zoho aún no está configurada en este servidor. El .eml NO guarda un borrador en Zoho; podés copiar el texto y adjuntar los PDF manualmente.')
         st.download_button('Descargar correo preparado (.eml con PDF)',eml,file_name='aviso_pago.eml',mime='message/rfc822',key=key+'_eml')
         for i,item in enumerate(notice_items(fields)):
+            if not is_payable(item): continue
             url,ics=calendar_outputs(item)
             st.download_button('Descargar recordatorio VEP '+str(i+1),ics,file_name=f'vencimiento_{i+1:02d}.ics',mime='text/calendar',key=key+'_ics_'+str(i))
             st.link_button('Google Calendar · VEP '+str(i+1),url,help='Requiere guardar y configurar el aviso en Google.')
