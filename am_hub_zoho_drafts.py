@@ -46,9 +46,9 @@ class ZohoDraftClient:
             raise ZohoDraftError('No se pudo confirmar la operación. Revisá Borradores en Zoho antes de reintentar.') from None
 
     def create_draft(self,fields,attachments):
-        from am_hub_payment_notice import notice_items,notice_subject,unique_pdfs,body_html,MAX_BYTES,calendar_attachments
+        from am_hub_payment_notice import notice_items,notice_subject,named_attachments,body_html,MAX_BYTES,calendar_attachments
         notice_items(fields)
-        attachments=unique_pdfs(attachments)
+        attachments=named_attachments(fields,attachments)
         if not 1<=len(attachments)<=10 or sum(len(d) for _,d in attachments)>25*1024*1024:
             raise ValueError('Cantidad o tamaño de adjuntos inválidos.')
         prepared=[]
@@ -65,6 +65,8 @@ class ZohoDraftClient:
         access=token.get('access_token')
         if not access: raise ZohoDraftError('No se pudo renovar el acceso a Zoho.')
         headers={'Authorization':'Zoho-oauthtoken '+access}
+        signatures=self._request('GET',self.config.mail_url+'/api/accounts/signature',headers=headers)
+        signature=select_accounting_signature(signatures)
         base=self.config.mail_url+'/api/accounts/'+self.config.account_id+'/messages'
         refs=[]
         for name,data,mimetype in prepared:
@@ -78,8 +80,21 @@ class ZohoDraftClient:
         result=self._request('POST',base,headers=headers,json={
             'fromAddress':self.config.from_address,'toAddress':fields['email'],
             'subject':notice_subject(fields),
-            'content':body_html(fields),'mailFormat':'html','mode':'draft','attachments':refs})
+            'content':body_html(fields)+'<br>'+signature,'mailFormat':'html','mode':'draft','attachments':refs})
         data=result.get('data',{})
         if not isinstance(data,dict) or not data.get('messageId'):
             raise ZohoDraftError('Respuesta sin identificador. Revisá Borradores antes de reintentar.')
         return {'message_id':str(data['messageId']),'attachments':len(refs)}
+
+
+def select_accounting_signature(response):
+    """Use the existing account signature, never invent a replacement."""
+    entries=response.get('data',[])
+    if isinstance(entries,dict): entries=[entries]
+    matching=[x for x in entries if str(x.get('name','')).strip().casefold()=='contable']
+    if len(matching)!=1:
+        raise ZohoDraftError('No se encontró una única firma Contable en Zoho. No se creó el borrador.')
+    content=matching[0].get('content','')
+    if not isinstance(content,str) or not re.search(r'Depto\.?\s*Contable',content,re.I):
+        raise ZohoDraftError('La firma Contable no coincide con Depto. Contable. Revisá Zoho.')
+    return content
