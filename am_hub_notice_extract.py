@@ -22,7 +22,7 @@ def parse_ddjj(text):
     d['cuit']=_one(cuits)
     periods=re.findall(r'(?im)Per[ií]odo\s*:?\s*(\d{2})\s*-\s*(\d{4})',text)
     periods += [(m,y) for y,m in re.findall(r'(?im)Per[ií]odo\s*:?\s*(\d{4})(\d{2})\b',text)]
-    periods += re.findall(r'(?im)Vista Previa\s*\|\s*(\d{2})/(\d{4})',text)
+    periods += re.findall(r'(?im)(?:Vista Previa|Determinaci[oó]n del impuesto)\s*\|\s*(\d{2})/(\d{4})',text)
     if periods:d['periodo']=_one([m+'/'+y for m,y in periods])
     if 'CONTRIBUYENTES LOCALES' in text.upper() and ('SICOL' in text.upper() or 'AGIP' in text.upper()):
         d['impuesto']='Ingresos Brutos';d['monto']='';d['vencimiento']=''
@@ -62,7 +62,7 @@ def parse_ddjj(text):
         else:
             d['advertencias'].append('No se pudo validar la fila TOTALES y sus seis columnas contra Total a pagar; revisar manualmente.')
         d['advertencias'].append('CM03: confirmar columnas de la fila TOTALES. Fecha de presentación no es vencimiento; verificar fecha manualmente si hay pago.')
-    elif re.search(r'IMPUESTO AL VALOR\s+AGREGADO|F\.2051',text,re.I):
+    elif re.search(r'IMPUESTO AL VALOR\s+AGREGADO|F\.2051|\bIVA SIMPLE\b',text,re.I):
         d.update(impuesto='IVA',monto='',vencimiento='')
         favor=_money(text,r'Saldo t[eé]cnico a favor del contribuyente')
         arca=_money(text,r'Saldo t[eé]cnico a favor de ARCA')
