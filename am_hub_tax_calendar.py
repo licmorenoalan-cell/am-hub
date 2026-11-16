@@ -33,7 +33,7 @@ def metadata(task):
 
 def encode_metadata(values):
     allowed = ('impuesto', 'obligacion', 'jurisdiccion', 'periodo', 'terminacion',
-               'estado', 'motivo', 'fuente', 'periodo_fuente') + EVIDENCE_FIELDS
+               'estado', 'motivo', 'fuente', 'periodo_fuente', 'modo_fecha', 'dia_control') + EVIDENCE_FIELDS
     return PREFIX + json.dumps({k: values[k] for k in allowed if k in values}, ensure_ascii=False, sort_keys=True)
 
 
@@ -197,9 +197,44 @@ def next_ganancias_ph_period(period):
             3: f'{year + 1}-02', 4: f'{year + 1}-04'}[advance]
 
 
+
+def preventive_date(task, ctx, next_period=False):
+    """Explicit operational reminders only, never a substitute fiscal calendar."""
+    if ctx.get('modo_fecha') != 'preventiva_sin_cuit' or ctx.get('terminacion') is not None:
+        return None
+    expected = {('IVA', 'MENSUAL', 'NACIONAL'): 20,
+                ('IIBB', 'CM03', 'COMARB'): 13}
+    key = tuple(ctx.get(k) for k in ('impuesto', 'obligacion', 'jurisdiccion'))
+    if (key not in expected or ctx.get('dia_control') != expected[key]
+            or task.get('frecuencia') != 'Mensual'):
+        raise ValueError('Configuración de control preventivo inválida')
+    interval = float(task.get('intervalo') or 1)
+    if interval != 1:
+        raise ValueError('El control preventivo requiere intervalo mensual de 1')
+    # Period is an explicit planning reference, not proof of tax registration.
+    period = shift_period(ctx.get('periodo'), 1 if next_period else 0)
+    due_month = shift_period(period, 1)
+    return period, f'{due_month}-{expected[key]:02d}'
+
 def resolve(task, profiles=(), calendar=None, next_period=False):
     rows = load_calendar() if calendar is None else calendar
     ctx, reason = context(task, profiles, rows)
+    if not reason and ctx.get('modo_fecha') == 'preventiva_sin_cuit':
+        if ctx.get('terminacion') is not None:
+            # A registered CUIT returns the task to the strict official resolver.
+            ctx.pop('modo_fecha', None)
+            ctx.pop('dia_control', None)
+        else:
+            try:
+                period, due = preventive_date(task, ctx, next_period)
+                ctx.update(periodo=period, estado='estimado', motivo='',
+                           fuente='Control interno autorizado; no es vencimiento fiscal oficial',
+                           periodo_fuente='Referencia preventiva sujeta a alta efectiva')
+                for field in EVIDENCE_FIELDS:
+                    ctx.pop(field, None)
+                return {'fecha': due, 'contexto': ctx, 'motivo': ''}
+            except (ValueError, TypeError):
+                reason = 'Configuración de control preventivo inválida'
     if is_ganancias_ph(ctx) and ctx.get('periodo'):
         try:
             ganancias_ph_period(ctx['periodo'])
@@ -261,7 +296,7 @@ def pending_label(task):
     # A reviewed explicit configuration supersedes historical comment markers.
     # Completion still re-resolves against the calendar and profile below; this
     # does not turn an arbitrary manually-entered date into a valid deadline.
-    reviewed = (fiscal.get('estado') == 'verificado' and not fiscal.get('motivo')
+    reviewed = (fiscal.get('estado') in {'verificado', 'estimado'} and not fiscal.get('motivo')
                 and all(fiscal.get(k) for k in ('impuesto', 'obligacion', 'jurisdiccion', 'periodo', 'fuente'))
                 and bool(task.get('fecha_limite')))
     if ((task.get('recurrente') == 'Sí' or fiscal) and is_fiscal(task)
@@ -286,6 +321,9 @@ def pending_label(task):
 def fiscal_period_label(task):
     fiscal = metadata(task)
     period = fiscal.get('periodo')
+    if fiscal.get('modo_fecha') == 'preventiva_sin_cuit':
+        return (f'Control preventivo mensual · día {fiscal.get("dia_control", "?")} · '
+                'fecha estimada, no vencimiento fiscal oficial · CUIT/alta pendientes')
     label = f'Período fiscal: {period}' if period else ''
     if is_ganancias_ph(fiscal) and period:
         try:
