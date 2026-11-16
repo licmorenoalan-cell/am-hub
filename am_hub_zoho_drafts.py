@@ -46,7 +46,7 @@ class ZohoDraftClient:
             raise ZohoDraftError('No se pudo confirmar la operación. Revisá Borradores en Zoho antes de reintentar.') from None
 
     def create_draft(self,fields,attachments):
-        from am_hub_payment_notice import validate,body,MAX_BYTES
+        from am_hub_payment_notice import validate,body,MAX_BYTES,calendar_outputs
         validate(fields)
         if not 1<=len(attachments)<=10 or sum(len(d) for _,d in attachments)>25*1024*1024:
             raise ValueError('Cantidad o tamaño de adjuntos inválidos.')
@@ -55,7 +55,9 @@ class ZohoDraftClient:
             name=name.split('/')[-1].split('\\')[-1]
             if not name or '\n' in name or '\r' in name or not data.startswith(b'%PDF-') or len(data)>MAX_BYTES:
                 raise ValueError('Adjunto PDF inválido.')
-            prepared.append((name,data))
+            prepared.append((name,data,'application/pdf'))
+        _, ics = calendar_outputs(fields)
+        prepared.append(('vencimiento.ics',ics,'text/calendar'))
         token=self._request('POST',self.config.accounts_url+'/oauth/v2/token',data={
             'grant_type':'refresh_token','client_id':self.config.client_id,
             'client_secret':self.config.client_secret,'refresh_token':self.config.refresh_token})
@@ -64,9 +66,9 @@ class ZohoDraftClient:
         headers={'Authorization':'Zoho-oauthtoken '+access}
         base=self.config.mail_url+'/api/accounts/'+self.config.account_id+'/messages'
         refs=[]
-        for name,data in prepared:
+        for name,data,mimetype in prepared:
             uploaded=self._request('POST',base+'/attachments',headers=headers,
-                params={'uploadType':'multipart','isInline':'false'},files={'attach':(name,data,'application/pdf')})
+                params={'uploadType':'multipart','isInline':'false'},files={'attach':(name,data,mimetype)})
             entries=uploaded.get('data',[])
             if isinstance(entries,dict): entries=[entries]
             if len(entries)!=1 or not all(entries[0].get(k) for k in ('attachmentName','attachmentPath','storeName')):
