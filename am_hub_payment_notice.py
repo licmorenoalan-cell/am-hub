@@ -88,7 +88,18 @@ def notice_items(fields):
         return [validate(fields)]
     if not isinstance(items, list) or not 1 <= len(items) <= 10:
         raise ValueError('Cargá entre 1 y 10 impuestos por correo.')
-    return [validate(dict(item, cliente=fields['cliente'], email=fields['email'])) for item in items]
+    validated = []
+    for index, item in enumerate(items, 1):
+        try:
+            validated.append(validate(dict(item, cliente=fields['cliente'], email=fields['email'])))
+        except ValueError as exc:
+            # A shared error below the final PDF must identify the actual
+            # obligation, rather than implicating an unrelated credit balance.
+            label = 'Aviso ' + str(index) + ' · ' + str(item.get('impuesto') or 'Impuesto sin completar')
+            if item.get('periodo'):
+                label += ' · ' + str(item['periodo'])
+            raise ValueError(label + ': ' + str(exc)) from exc
+    return validated
 
 def normalized_notice_period(value):
     parts=re.split(r'[-/]',value)
@@ -299,19 +310,22 @@ def render_payment_notice(cliente, perfil, tasks=()):
                 st.error('No se pudo leer este documento. Usá PDF legible sin contraseña, hasta 15 MB / 40 páginas.');return
             if not text.strip(): st.warning('PDF sin texto: completá este documento manualmente contrastando el documento.')
             if st.checkbox('Mostrar evidencia del documento '+str(i+1),key=subkey+'_evidence'): st.text(text[:30000])
-            for warn in data['advertencias']: st.caption(warn)
             detected=re.sub(r'\D','',data['cuit']);expected=re.sub(r'\D','',str(perfil.get('cuit','')))
             if detected and expected and detected!=expected:
                 st.error('El CUIT de este documento no coincide con el cliente.');return
             if not detected or not expected: st.warning('Revisá CUIT de este documento y ficha del cliente: contraste automático no disponible.')
             if data.get('nota_saldo'): st.warning(data['nota_saldo'])
-            if data.get('fuente_fecha'): st.caption(data['fuente_fecha'])
             detected_kind=data.get('resultado') or ('A pagar' if source_kind=='A pagar' else 'Seleccionar')
             kinds=['Seleccionar','A pagar','Saldo a favor','Sin saldo']
             selected=st.selectbox('Resultado de la declaración',kinds,index=kinds.index(detected_kind),key=subkey+'_kind')
             if selected=='Seleccionar':
                 st.warning('Elegí el tipo de saldo luego de revisar la DDJJ.');return
             item={'resultado':selected}
+            for warn in data['advertencias']:
+                if is_payable(item) or not warn.lower().startswith('vencimiento'):
+                    st.caption(warn)
+            if is_payable(item) and data.get('fuente_fecha'):
+                st.caption(data['fuente_fecha'])
             labels=[('impuesto','Impuesto'),('periodo','Período fiscal'),('monto','Saldo a pagar en pesos' if is_payable(item) else ('Importe cero (sin saldo)' if selected=='Sin saldo' else 'Saldo a favor del contribuyente en pesos'))]
             if is_payable(item): labels.append(('vencimiento','Vencimiento / expiración del VEP (DD/MM/AAAA)'))
             else:
