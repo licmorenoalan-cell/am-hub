@@ -5555,7 +5555,19 @@ def render_onboarding_cliente():
         st.error("No tenés permisos para acceder al onboarding.")
         return
 
-    st.info("Paso 1: creá el cliente y sus accesos. Luego AM HUB te lleva a la Ficha cliente para completar datos fiscales, constancias y plan de cuentas una sola vez.")
+    onboarding_flow = st.radio("Servicio / tipo de alta", ["Contabilidad / gestión", "Otros servicios y accesos"], key="onboarding_flow")
+    if onboarding_flow == "Contabilidad / gestión":
+        if not usar_postgres():
+            st.warning("El alta fiscal segura requiere conexión a la base compartida. No se modificaron archivos locales.")
+            return
+        asegurar_tablas_fiscales()
+        from am_hub_fiscal_onboarding_ui import render_fiscal_onboarding
+        def onboarding_saved(result):
+            _limpiar_cache_postgres()
+            registrar_actividad("conciliar", "onboarding_fiscal", detalle=json.dumps(result, ensure_ascii=False, default=str))
+        render_fiscal_onboarding(st, get_postgres_engine(), actor=st.session_state.get("name", st.session_state.get("username", "")), on_saved=onboarding_saved)
+        return
+    st.info("Este formulario administra otros servicios y accesos. Para contabilidad, elegí Contabilidad / gestión arriba: se reutilizan las fichas y tarjetas existentes.")
 
     clientes_df = read_csv(
         CLIENTES_PATH,
@@ -5612,7 +5624,8 @@ def render_onboarding_cliente():
             servicio_consultoria = st.checkbox("Consultoría")
 
         with s3:
-            servicio_contabilidad = st.checkbox("Contabilidad / gestión")
+            servicio_contabilidad = False
+            st.caption("Contabilidad / gestión tiene su alta fiscal en el selector superior.")
 
         notas = st.text_area("Notas internas")
 
