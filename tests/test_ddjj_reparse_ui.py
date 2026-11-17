@@ -31,7 +31,7 @@ class RereadTests(unittest.TestCase):
   from am_hub_notice_extract import parse_ddjj
   text='IVA SIMPLE\nDeterminación del impuesto | 10/2026\nSaldo técnico a favor del contribuyente del período anterior $ 6.804.191,58\nSaldo técnico a favor del contribuyente $ 7.554.648,62\nSaldo técnico a favor del contribuyente $ 7.554.648,62\nSaldo de libre disponibilidad a favor del contribuyente del período $ 64.779,11'
   d=parse_ddjj(text)
-  self.assertEqual(d['impuesto'],'IVA');self.assertEqual(d['periodo'],'10/2026');self.assertEqual(d['monto'],'7.554.648,62');self.assertEqual(d['resultado'],'Saldo a favor')
+  self.assertEqual(d['impuesto'],'IVA');self.assertEqual(d['periodo'],'10/2026');self.assertEqual(d['monto'],'64.779,11');self.assertEqual(d['resultado'],'Saldo a favor')
   self.assertEqual(d['cuit'],'');self.assertEqual(d['vencimiento'],'')
 
  def test_type_detection_avoids_filename_guessing(self):

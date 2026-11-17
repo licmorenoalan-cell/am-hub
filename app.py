@@ -18683,17 +18683,20 @@ def render_liquidaciones_fiscales(cliente_fijo="", modo="admin"):
         import importlib
         import am_hub_payment_notice as notice_module
         import am_hub_notice_extract as extract_module
-        if getattr(notice_module, "PARSER_REVISION", "") != "unified-ddjj-vep-v3":
+        if getattr(notice_module, "PARSER_REVISION", "") != "unified-ddjj-vep-v4":
             notice_module = importlib.reload(notice_module)
-        if getattr(extract_module, "EXTRACTOR_REVISION", "") != "iva-simple-cm03-v3":
+        if getattr(extract_module, "EXTRACTOR_REVISION", "") != "iva-simple-cm03-v4":
             extract_module = importlib.reload(extract_module)
-        if (getattr(notice_module, "PARSER_REVISION", "") != "unified-ddjj-vep-v3"
-                or getattr(extract_module, "EXTRACTOR_REVISION", "") != "iva-simple-cm03-v3"):
+        if (getattr(notice_module, "PARSER_REVISION", "") != "unified-ddjj-vep-v4"
+                or getattr(extract_module, "EXTRACTOR_REVISION", "") != "iva-simple-cm03-v4"):
             st.warning("Actualización de avisos en curso. Recargá en unos segundos antes de cargar documentos.")
             return
         render_payment_notice = notice_module.render_payment_notice
-        st.caption("Avisos fiscales · versión 2026.11.16-3 · cargador único DDJJ / VEP")
-        perfil_aviso = cargar_perfil_fiscal(cliente)
+        st.caption("Avisos fiscales · versión 2026.11.17-4 · cargador único DDJJ / VEP")
+        perfiles_aviso = _cargar_tabla_fiscal(FISCAL_CLIENTES_PATH, FISCAL_CLIENTE_COLUMNAS, cliente)
+        perfil_aviso = perfiles_aviso.iloc[0].to_dict() if len(perfiles_aviso) == 1 else {}
+        if len(perfiles_aviso) > 1:
+            st.warning("Hay más de una ficha fiscal para este cliente. No se autocompletará el vencimiento hasta resolver la identidad.")
         try:
             tarjetas_aviso = cargar_tareas_internas(cliente).to_dict("records")
         except Exception:

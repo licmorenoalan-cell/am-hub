@@ -10,7 +10,7 @@ from email import policy
 from urllib.parse import urlencode
 
 MAX_BYTES = 15 * 1024 * 1024
-PARSER_REVISION = "unified-ddjj-vep-v3"
+PARSER_REVISION = "unified-ddjj-vep-v4"
 
 def pdf_text(data):
     from pypdf import PdfReader
@@ -332,14 +332,15 @@ def render_payment_notice(cliente, perfil, tasks=()):
                 item['vencimiento']=''
                 st.caption('No se generará enlace ni recordatorio de pago para este impuesto.')
             for name,label in labels:
+                source=''
                 default='0' if name=='monto' and selected=='Sin saldo' else data[name]
-                if name=='vencimiento' and tax_label(item.get('impuesto',''))=='IVA':
+                if name=='vencimiento' and tax_label(item.get('impuesto','')) in ('IVA','Ingresos brutos'):
                     from am_hub_notice_extract import card_deadline
-                    default,source=card_deadline(cliente,perfil.get('cuit',''),data.get('cuit',''),item.get('periodo',''),tasks)
+                    default,source=card_deadline(cliente,perfil.get('cuit',''),data.get('cuit',''),item.get('periodo',''),tasks,impuesto=item.get('impuesto',''))
                     st.caption(source)
                 fieldkey=subkey+'_'+name
                 if name=='monto': fieldkey+='_'+selected
-                if name=='vencimiento': fieldkey+='_'+hashlib.sha256((item.get('impuesto','')+'|'+item.get('periodo','')+'|'+str(perfil.get('cuit',''))).encode()).hexdigest()[:10]
+                if name=='vencimiento': fieldkey+='_'+hashlib.sha256((item.get('impuesto','')+'|'+item.get('periodo','')+'|'+str(perfil.get('cuit',''))+'|'+str(default)+'|'+str(source)).encode()).hexdigest()[:10]
                 item[name]=st.text_input(label,value=default,key=fieldkey)
             if source_kind=='Saldo a favor' and is_payable(item):
                 if not st.checkbox('Confirmé el saldo final a pagar contra la DDJJ y el VEP, incluyendo compensaciones y percepciones.',key=subkey+'_final_payment'):
