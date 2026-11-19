@@ -10,11 +10,24 @@ from am_hub_tax_calendar import (apply_resolution, encode_metadata, metadata,
                                  pending_label, resolve, validate_completion)
 
 
+def preventive_reference(row):
+    current = metadata(row)
+    title = ' '.join(str(row.get('tarea') or '').casefold().split())
+    period = current.get('periodo') or ''
+    if (re.match(r'^control preventivo\b', title)
+            and re.fullmatch(r'20\d{2}-(0[1-9]|1[0-2])', period)
+            and current.get('modo_fecha') in (None, '', 'control_alta_periodo')
+            and not current.get('dia_control')):
+        return period
+    return ''
+
+
 def eligible(row):
     return (str(row.get('categoria') or '').strip().casefold() == 'iva'
             and row.get('estado') in {'A priorizar', 'Pendiente', 'En curso', 'En revisión'}
             and row.get('recurrente') == 'Sí' and row.get('frecuencia') == 'Mensual'
-            and bool(row.get('serie_id')) and not metadata(row).get('periodo')
+            and bool(row.get('serie_id'))
+            and (not metadata(row).get('periodo') or bool(preventive_reference(row)))
             and bool(row.get('cliente')))
 
 
@@ -45,6 +58,7 @@ def _successors(rows, row, prepared):
                or metadata(r).get('impuesto') != 'IVA'
                or metadata(r).get('obligacion') != 'MENSUAL'
                or metadata(r).get('jurisdiccion') != 'NACIONAL'
+               or metadata(r).get('modo_fecha') != metadata(prepared).get('modo_fecha')
                or (bool(prepared['fecha_limite']) and bool(pending_label(r)))
                or r.get('estado') == 'Finalizada'
                or metadata(r).get('terminacion') != metadata(prepared).get('terminacion')
@@ -64,7 +78,10 @@ def plan(row, rows, profiles, period):
     if len(cuit) != 11:
         raise ValueError('Falta una ficha fiscal única con el CUIT del cliente. No se cambió la tarjeta.')
     old = metadata(row)
-    if (row.get('id_externo') and not old) or old.get('modo_fecha') or old.get('dia_control'):
+    reference = preventive_reference(row)
+    if reference and reference != period:
+        raise ValueError('No se puede cambiar el período ya guardado del control preventivo.')
+    if (row.get('id_externo') and not old) or (old.get('modo_fecha') and not reference) or old.get('dia_control'):
         raise ValueError('La tarjeta tiene una vinculación previa que se debe revisar por separado.')
     context = dict(impuesto='IVA', obligacion='MENSUAL', jurisdiccion='NACIONAL',
                    periodo=period, terminacion=int(cuit[-1]))
@@ -80,7 +97,9 @@ def plan(row, rows, profiles, period):
                 (_occurrence(related) < _occurrence(row) and prior >= period) or
                 (_occurrence(related) > _occurrence(row) and prior <= period)):
             raise ValueError('El período no respeta el orden de las tarjetas de esa serie.')
-    context['periodo_fuente'] = 'Período del recordatorio confirmado en AM Hub'
+    if reference:
+        context['modo_fecha'] = 'control_alta_periodo'
+    context['periodo_fuente'] = old.get('periodo_fuente') or 'Período del recordatorio confirmado en AM Hub'
     candidate = dict(row, id_externo=encode_metadata(context))
     fiscal = resolve(candidate, profiles)
     if fiscal['motivo'] or fiscal['fecha'] != row.get('fecha_limite'):

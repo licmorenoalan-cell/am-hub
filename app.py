@@ -45,7 +45,8 @@ from am_hub_core import (
 from am_hub_i18n import LANGUAGES, normalize_language, translate
 from am_hub_auth import crear_token_sesion, validar_token_sesion
 from am_hub_tax_calendar import announce_release
-from am_hub_verified_iva import eligible as iva_legacy_eligible, inspect_or_apply as verified_iva_close
+from am_hub_verified_iva import (eligible as iva_legacy_eligible,
+                                inspect_or_apply as verified_iva_close, preventive_reference as iva_control_period)
 from am_hub_tasks import (
     RecurrenceDateError,
     actualizar_estado_tarea_postgres,
@@ -14623,9 +14624,14 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
                             st.divider()
 
                             if role == "admin_general" and usar_postgres() and iva_legacy_eligible(row):
-                                with st.expander("Completar período de este recordatorio"):
-                                    st.caption("Solo para tarjetas antiguas sin período. Usa el CUIT guardado del cliente. Cerrar un recordatorio no registra ninguna presentación ni pago.")
-                                    periodo_iva = st.text_input("Período fiscal (AAAA-MM)", key=f"iva_periodo_{tarea_id}", max_chars=7).strip()
+                                control_ref = iva_control_period(row)
+                                with st.expander("Reparar recordatorio preventivo" if control_ref else "Completar período de este recordatorio"):
+                                    st.caption("Usa el CUIT guardado. Cerrar el recordatorio no registra ninguna presentación ni pago.")
+                                    if control_ref:
+                                        periodo_iva = control_ref
+                                        st.caption(f"Período de referencia: {control_ref}. La próxima tarjeta seguirá siendo un control preventivo.")
+                                    else:
+                                        periodo_iva = st.text_input("Período fiscal (AAAA-MM)", key=f"iva_periodo_{tarea_id}", max_chars=7).strip()
                                     preview_key = f"iva_cierre_preview_{tarea_id}"
                                     if st.button("Revisar vencimientos", key=f"iva_revisar_{tarea_id}"):
                                         st.session_state.pop(preview_key, None)
