@@ -102,11 +102,23 @@ def titulo_visual_tarea(titulo, cliente="", categoria="") -> str:
     return titulo_limpio
 
 
+MISSING_RECURRENCE_DATE = (
+    "La recurrencia no tiene una fecha de origen válida. "
+    "Revisá la fecha y la frecuencia en el detalle."
+)
+
+
+class RecurrenceDateError(ValueError):
+    """A recurrence cannot start from an absent or invalid due date."""
+
+
 def siguiente_fecha_recurrente(fecha_actual, frecuencia, intervalo=1) -> str:
     try:
         fecha = pd.Timestamp(fecha_actual)
-    except Exception:
-        fecha = pd.Timestamp(date.today())
+    except (ValueError, TypeError, OverflowError):
+        raise RecurrenceDateError(MISSING_RECURRENCE_DATE) from None
+    if pd.isna(fecha):
+        raise RecurrenceDateError(MISSING_RECURRENCE_DATE)
 
     try:
         intervalo = max(1, int(float(intervalo or 1)))

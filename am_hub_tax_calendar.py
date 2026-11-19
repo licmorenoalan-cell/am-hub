@@ -38,11 +38,22 @@ def encode_metadata(values):
 
 
 def is_fiscal(task):
-    words = ' '.join(str(task.get(k) or '') for k in ('categoria', 'tarea', 'descripcion')).casefold()
-    return bool(metadata(task) or re.search(
+    if metadata(task):
+        return True
+    fiscal_words = (
         r'\b(iva|iibb|ingresos brutos|convenio multilateral|cm03|cm05|monotributo|'
         r'recategorizaci[oó]n|aut[oó]nomos?|anticipos?|ganancias|bienes personales|'
-        r'tasas? municipales?|impuestos?|fiscal(?:es)?|suss|sicore|sircar|sifere)\b', words))
+        r'tasas? municipales?|impuestos?|fiscal(?:es)?|suss|sicore|sircar|sifere)\b'
+    )
+    category = ' '.join(str(task.get('categoria') or '').casefold().split())
+    title = str(task.get('tarea') or '').casefold()
+    if re.search(fiscal_words, f'{category} {title}'):
+        return True
+    # Only explicit operational categories disable free-text note inference.
+    # Legacy administrative and unknown/new categories keep prior behavior.
+    if category in {'marketing', 'publicidad', 'diseño', 'redes sociales', 'producción audiovisual'}:
+        return False
+    return bool(re.search(fiscal_words, str(task.get('descripcion') or '').casefold()))
 
 
 def load_calendar():
