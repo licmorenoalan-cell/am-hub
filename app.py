@@ -45,6 +45,7 @@ from am_hub_core import (
 from am_hub_i18n import LANGUAGES, normalize_language, translate
 from am_hub_auth import crear_token_sesion, validar_token_sesion
 from am_hub_tax_calendar import announce_release
+from am_hub_verified_iva import eligible as iva_legacy_eligible, inspect_or_apply as verified_iva_close
 from am_hub_tasks import (
     RecurrenceDateError,
     actualizar_estado_tarea_postgres,
@@ -14620,6 +14621,39 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
                         # la tarea actualmente seleccionada.
                         if tarjeta_abierta:
                             st.divider()
+
+                            if role == "admin_general" and usar_postgres() and iva_legacy_eligible(row):
+                                with st.expander("Completar período de este recordatorio"):
+                                    st.caption("Solo para tarjetas antiguas sin período. Usa el CUIT guardado del cliente. Cerrar un recordatorio no registra ninguna presentación ni pago.")
+                                    periodo_iva = st.text_input("Período fiscal (AAAA-MM)", key=f"iva_periodo_{tarea_id}", max_chars=7).strip()
+                                    preview_key = f"iva_cierre_preview_{tarea_id}"
+                                    if st.button("Revisar vencimientos", key=f"iva_revisar_{tarea_id}"):
+                                        st.session_state.pop(preview_key, None)
+                                        try:
+                                            st.session_state[preview_key] = verified_iva_close(
+                                                get_postgres_engine(), role, nombre_usuario, tarea_id, periodo_iva
+                                            )
+                                        except (ValueError, PermissionError) as exc:
+                                            st.error(str(exc))
+                                        except Exception:
+                                            st.error("No se pudo consultar la tarjeta. No se guardaron cambios.")
+                                    preview = st.session_state.get(preview_key)
+                                    if preview and preview["periodo"] == periodo_iva:
+                                        proxima = preview["proxima_fecha"] or "vencimiento por verificar"
+                                        st.info(f"IVA {preview['periodo']}: {preview['fecha']}. Próxima tarjeta: {preview['proximo_periodo']} ({proxima}).")
+                                        if preview["reutiliza"]:
+                                            st.caption("La próxima tarjeta ya existe y se conservará sin duplicarla.")
+                                        if st.button("Finalizar recordatorio y continuar la recurrencia", key=f"iva_finalizar_{tarea_id}"):
+                                            try:
+                                                verified_iva_close(get_postgres_engine(), role, nombre_usuario, tarea_id, periodo_iva, revision=preview["revision"])
+                                                _limpiar_cache_postgres()
+                                                st.session_state.pop(preview_key, None)
+                                                st.session_state["mensaje_checklist_inline"] = f"IVA {periodo_iva} finalizado. Próxima tarjeta: {preview['proximo_periodo']} ({proxima})."
+                                                st.rerun()
+                                            except (ValueError, PermissionError) as exc:
+                                                st.error(str(exc))
+                                            except Exception:
+                                                st.error("No se pudo verificar el cierre. Revisá el estado antes de reintentar.")
 
                             mensaje_checklist_inline = (
                                 st.session_state.pop(
