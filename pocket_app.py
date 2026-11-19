@@ -14,7 +14,7 @@ import pandas as pd
 import streamlit as st
 from sqlalchemy import create_engine, text
 from am_hub_i18n import LANGUAGES, normalize_language, translate
-from am_hub_tax_calendar import announce_release
+from am_hub_tax_calendar import announce_release, pending_label
 from am_hub_tasks import (
     actualizar_estado_tarea_postgres,
     actualizar_estado_tarea_en_conexion,
@@ -981,6 +981,37 @@ def insertar_tareas(
 
     return ids_creados
 
+def mensaje_error_actualizacion(error: Exception) -> str:
+    """Expose only known fiscal validation messages; never arbitrary exceptions."""
+    mensajes_fiscales = {
+        "Vencimiento fiscal pendiente: completar los datos y el calendario antes de finalizar.":
+            "No se finalizó la tarjeta: faltan datos fiscales o validar el calendario. "
+            "Abrí el detalle para revisar la configuración fiscal.",
+        "Vencimiento fiscal pendiente: fecha no validada contra el calendario oficial.":
+            "No se finalizó la tarjeta: la fecha no está validada contra el calendario oficial. "
+            "Revisá el período fiscal, la terminación de CUIT y el vencimiento en el detalle.",
+        "Vencimiento fiscal pendiente: frecuencia no válida; no se repite el período anterior.":
+            "No se finalizó la tarjeta: la frecuencia fiscal no es válida. "
+            "Revisá la frecuencia y el intervalo en el detalle.",
+        "Vencimiento fiscal pendiente: falta período de origen; no se genera una ocurrencia sin período.":
+            "No se finalizó la tarjeta: falta el período fiscal de origen. "
+            "Completá ese período en el detalle antes de finalizar.",
+    }
+    mensaje_fecha = ("La recurrencia no tiene una fecha de origen válida. "
+                     "Revisá la fecha y la frecuencia en el detalle.")
+    if isinstance(error, ValueError) and str(error) in {
+        "NaTType does not support strftime", mensaje_fecha,
+    }:
+        return ("No se finalizó la tarjeta: la recurrencia no tiene una fecha de origen válida. "
+                "Revisá la fecha y la frecuencia en el detalle. La recurrencia no se modificó.")
+    if isinstance(error, ValueError) and str(error) in mensajes_fiscales:
+        return mensajes_fiscales[str(error)] + " La recurrencia no se modificó."
+    return (
+        "No pudimos actualizar la tarjeta. No se perdió ningún dato; "
+        "recargá la pantalla e intentá nuevamente."
+    )
+
+
 def actualizar_estado(
     tarea_id: str,
     nuevo_estado: str,
@@ -998,16 +1029,13 @@ def actualizar_estado(
             nuevo_estado,
             usuario,
         )
-    except Exception:
+    except Exception as exc:
         logger.exception(
             "No se pudo actualizar la tarea %s a %s",
             tarea_id,
             nuevo_estado,
         )
-        st.error(
-            "No pudimos actualizar la tarjeta. No se perdió ningún dato; "
-            "recargá la pantalla e intentá nuevamente."
-        )
+        st.error(mensaje_error_actualizacion(exc))
         return False
 
     limpiar_cache()
@@ -2155,6 +2183,8 @@ if pagina_pocket == "📋 Mi tablero":
             str(row.get("archivos_habilitados", "")).strip() == "Sí"
         )
 
+        bloqueo_cierre = pending_label(row) if estado != "Finalizada" else ""
+
         with st.container(border=True):
             titulo_col, check_col = st.columns(
                 [6, 1],
@@ -2207,7 +2237,11 @@ if pagina_pocket == "📋 Mi tablero":
                     if st.button(
                         "✓",
                         key=f"pocket_fin_{tarea_id}",
-                        help="Finalizar",
+                        help=(
+                            "Revisá los datos fiscales de la tarjeta antes de finalizar."
+                            if bloqueo_cierre else "Finalizar"
+                        ),
+                        disabled=bool(bloqueo_cierre),
                         use_container_width=True,
                     ):
                         if actualizar_estado(
@@ -2243,17 +2277,21 @@ if pagina_pocket == "📋 Mi tablero":
 
             if fiscal_period_label(row):
                 st.caption(fiscal_period_label(row))
+            if bloqueo_cierre:
+                st.warning(bloqueo_cierre)
 
             detalle = f"👤 {responsable}"
 
             st.caption(detalle)
 
+            opciones_estado = ([op for op in ESTADOS if op != "Finalizada"]
+                               if bloqueo_cierre else ESTADOS)
             nuevo_estado = st.selectbox(
                 "Mover a",
-                ESTADOS,
+                opciones_estado,
                 index=(
-                    ESTADOS.index(estado)
-                    if estado in ESTADOS
+                    opciones_estado.index(estado)
+                    if estado in opciones_estado
                     else 0
                 ),
                 key=f"pocket_estado_{tarea_id}",

@@ -46,6 +46,7 @@ from am_hub_i18n import LANGUAGES, normalize_language, translate
 from am_hub_auth import crear_token_sesion, validar_token_sesion
 from am_hub_tax_calendar import announce_release
 from am_hub_tasks import (
+    RecurrenceDateError,
     actualizar_estado_tarea_postgres,
     guardar_detalle_tarea_postgres,
     construir_siguiente_ocurrencia,
@@ -6245,11 +6246,15 @@ def render_edicion_rapida(clientes, contenidos, materiales, campanias, reportes,
         )
 
         if st.button("Guardar tareas", use_container_width=True, key="guardar_rapido_tareas"):
-            edited = generar_recurrencias_desde_edicion(
-                tareas,
-                edited,
-                st.session_state.get("name", "Sistema"),
-            )
+            try:
+                edited = generar_recurrencias_desde_edicion(
+                    tareas,
+                    edited,
+                    st.session_state.get("name", "Sistema"),
+                )
+            except RecurrenceDateError as exc:
+                st.warning(str(exc))
+                st.stop()
             save_csv(edited, TAREAS_PATH)
             st.success("Tareas guardadas.")
             st.rerun()
@@ -11992,11 +11997,15 @@ def render_crud_table(title, path, df=None, cliente_preview=""):
 
         if st.button(f"Guardar {title}", use_container_width=True, key=f"guardar_{title}_{cliente_preview}"):
             if path == TAREAS_PATH:
-                edited = generar_recurrencias_desde_edicion(
-                    full,
-                    edited,
-                    st.session_state.get("name", "Sistema"),
-                )
+                try:
+                    edited = generar_recurrencias_desde_edicion(
+                        full,
+                        edited,
+                        st.session_state.get("name", "Sistema"),
+                    )
+                except RecurrenceDateError as exc:
+                    st.warning(str(exc))
+                    st.stop()
             if cliente_preview and "cliente" in edited.columns:
                 edited = edited.copy().fillna("")
                 edited["cliente"] = cliente_preview
@@ -13162,9 +13171,12 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
                 ).any()
 
             if not ya_existe:
-                nueva_ocurrencia = construir_siguiente_ocurrencia(
-                    dict(row_tarea), nombre_usuario,
-                )
+                try:
+                    nueva_ocurrencia = construir_siguiente_ocurrencia(
+                        dict(row_tarea), nombre_usuario,
+                    )
+                except RecurrenceDateError as exc:
+                    return False, str(exc)
 
                 tareas_actualizadas = pd.concat(
                     [
@@ -15597,9 +15609,13 @@ def render_tareas_internas(cliente_fijo="", modo="admin"):
                                                 )
                                             _limpiar_cache_postgres()
                                     else:
-                                        tareas_actualizadas = generar_recurrencias_desde_edicion(
-                                            pd.DataFrame([row]), tareas_actualizadas, nombre_usuario,
-                                        )
+                                        try:
+                                            tareas_actualizadas = generar_recurrencias_desde_edicion(
+                                                pd.DataFrame([row]), tareas_actualizadas, nombre_usuario,
+                                            )
+                                        except RecurrenceDateError as exc:
+                                            st.warning(str(exc))
+                                            st.stop()
                                         save_csv(tareas_actualizadas, TAREAS_PATH)
 
                                     st.session_state[
