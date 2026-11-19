@@ -117,3 +117,40 @@ class VerifiedIvaAdminCloseTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,'otra tarjeta'):
             self.preview()
         self.assertEqual([r['estado'] for r in self.rows()],['Pendiente','Pendiente'])
+
+    def set_preventive(self, *, title='CONTROL PREVENTIVO — IVA — Fixture'):
+        with self.db.begin() as conn:
+            conn.execute(text("UPDATE fiscal_clientes SET cuit='30-00000000-0'"))
+            conn.execute(text("UPDATE tareas SET tarea=:title,fecha_limite='2026-11-18',id_externo=:meta"),
+                         {'title':title,'meta':encode_metadata(
+                             {'periodo':'2026-10','impuesto':'IVA','terminacion':0,'estado':'pendiente',
+                              'motivo':'Vencimiento por verificar'})})
+
+    def test_existing_period_control_remains_preventive_and_next_date_uses_cuit(self):
+        self.set_preventive()
+        preview = self.preview()
+        self.assertEqual((preview['fecha'],preview['proximo_periodo'],preview['proxima_fecha']),
+                         ('2026-11-18','2026-11','2026-12-18'))
+        inspect_or_apply(self.engine, *_ARGS, revision=preview['revision'])
+        parent, child = self.rows()
+        self.assertEqual((parent['estado'], child['estado']), ('Finalizada','Pendiente'))
+        self.assertEqual(metadata(parent)['modo_fecha'],'control_alta_periodo')
+        self.assertEqual(metadata(child)['modo_fecha'],'control_alta_periodo')
+        self.assertEqual(metadata(child)['estado'],'control')
+        self.assertIn('CONTROL PREVENTIVO',child['tarea'])
+        self.assertEqual((child['fecha_limite'],child['recurrente']),('2026-12-18','Sí'))
+        with self.assertRaises(ValueError):
+            inspect_or_apply(self.engine, *_ARGS, revision=preview['revision'])
+        self.assertEqual(len(self.rows()),2)
+
+    def test_control_cannot_change_existing_period(self):
+        self.set_preventive()
+        with self.assertRaisesRegex(ValueError,'No se puede cambiar'):
+            inspect_or_apply(self.engine,*_ARGS[:-1],'2026-11')
+        self.assertEqual(self.rows()[0]['estado'],'Pendiente')
+
+    def test_ordinary_iva_card_with_known_period_not_eligible(self):
+        self.set_preventive(title='Presentar IVA')
+        with self.assertRaises(ValueError):
+            self.preview()
+        self.assertEqual(len(self.rows()),1)
